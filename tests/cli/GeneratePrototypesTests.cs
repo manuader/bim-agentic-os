@@ -30,6 +30,9 @@ using Bim.Generative;
 //   9. P7-28: a stderr that throws while Run's catch-all writes the internal-error diagnostic (forced in process with a
 //      rejecting TextWriter) still leaves the typed line on stdout, exit 1, nothing escaping Run, and the P7-26 / P7-27
 //      cleanup unchanged (DiagnosticWriteStage).
+//  10. P7-29: a stdout that throws while Run's catch-all writes the typed line (forced in process with a rejecting
+//      TextWriter) leaves exit 1 with nothing escaping Run; the guarded block's own diagnostic write throwing is contained
+//      (pinned bytes and a static pin of that write); success, refusal and section 7-9 bytes unchanged (OutputWriteStage).
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -445,6 +448,7 @@ internal static class GeneratePrototypesTests
         PostWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PostWriteDeleteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         DiagnosticWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
+        OutputWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
     }
 
     // ---- 7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
@@ -1417,6 +1421,277 @@ internal static class GeneratePrototypesTests
         }
     }
 
+    // ---- 10. P7-29: a stdout that throws while Run's catch-all writes the typed line is contained ----
+    // GenerateCommand.Run of the real Release CLI assembly (reflection), in process, with stdout and stderr replaced by the
+    // section-9 recording writers (EventWriter; either may reject) and restored, with the exit code and every seam, in a
+    // finally. A non-refusal exception reaches Run's P7-25 catch-all through UnguardedStageProbe (before any write),
+    // PostWriteStageProbe (after the write; P7-26 deletes the file) or that seam plus PostWriteDeleteProbe (P7-27: the file
+    // is left and named on stderr). When stdout throws on the typed line (IOException, non-IO InvalidOperationException, a
+    // disposed StringWriter's ObjectDisposedException): nothing escapes Run, the exit code is 1, the typed line was
+    // attempted exactly once, stderr is the section 7-9 bytes (the diagnostic once, after the P7-27 line when the delete
+    // fails) and the stdout exception's message appears nowhere. A stdout that rejects the success line makes the run an
+    // internal error: the just-written file is deleted (P7-26) and stderr is the stdout exception's diagnostic. The guarded
+    // pipeline block's own diagnostic write (InternalRefusal in GenerateCommand.cs, forced through GuardedWorkProbe with a
+    // stderr rejecting it) throws out of Generate; Run's catch-all contains it: the pinned bytes are the typed line on
+    // stdout, exit 1, and two rejected diagnostics (the original exception's, then the stderr exception's); with stdout
+    // rejecting too, still exit 1 and nothing escapes. Statically, that write is pinned unguarded in InternalRefusal and
+    // reached only from the guarded block's catch. Controls: with accepting writers the catch-all is section 7's order
+    // (diagnostic, then the typed line), and success and sampled refusals equal the real process.
+    static void OutputWriteStage(string root, string scratch, string cliDll, byte[] expected, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-29 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        const string Left = "generate-prototypes: could not delete partial output: ";
+        const string DiagnosticPrefix = "generate-prototypes internal error: ";
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+
+        var inputs = Path.Combine(scratch, "p7-29-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            const string good = "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a9\"}";
+            var request = Input("request.json", good);
+            var derivedRequest = Input("derived.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2}");
+            var pinned = Hex(expected);
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var postWrite = type?.GetProperty("PostWriteStageProbe", Any);
+            var deleteSeam = type?.GetProperty("PostWriteDeleteProbe", Any);
+            var unguarded = type?.GetProperty("UnguardedStageProbe", Any);
+            var guarded = type?.GetProperty("GuardedWorkProbe", Any);
+            static bool Seam(System.Reflection.PropertyInfo? p, Type t) => p is not null && p.PropertyType == t && p.CanWrite && p.CanRead;
+            Check(run is not null && Seam(postWrite, typeof(Action)) && Seam(deleteSeam, typeof(Action<string>)) && Seam(unguarded, typeof(Action)) && Seam(guarded, typeof(Action)),
+                "Run(string[]) and the seams UnguardedStageProbe / PostWriteStageProbe / PostWriteDeleteProbe / GuardedWorkProbe found in the Release CLI");
+            if (run is null || postWrite is null || deleteSeam is null || unguarded is null || guarded is null) return;
+            System.Reflection.MethodInfo runMethod = run;
+            System.Reflection.PropertyInfo stageProbe = postWrite;
+            System.Reflection.PropertyInfo deleteProbe = deleteSeam;
+            System.Reflection.PropertyInfo unguardedProbe = unguarded;
+            System.Reflection.PropertyInfo guardedProbe = guarded;
+            Exception? Invoke(string[] args)
+            {
+                try { runMethod.Invoke(null, new object?[] { args }); return null; }
+                catch (System.Reflection.TargetInvocationException error) { return error.InnerException; }
+            }
+            bool AllNull() => stageProbe.GetValue(null) is null && deleteProbe.GetValue(null) is null && unguardedProbe.GetValue(null) is null && guardedProbe.GetValue(null) is null;
+            Check(AllNull(), "the generate-prototypes seams are null unless a test sets them");
+
+            // One in-process Run with stdout / stderr replaced and the seams set; Console, exit code and seams restored in finally.
+            (Exception? Thrown, List<string> Events, int Exit, EventWriter? Out, EventWriter? Err, bool Restored) Forced(
+                Func<List<string>, TextWriter> stdoutOf, Func<List<string>, TextWriter> stderrOf, Action? before, Action? work, Action? stage, Action<string>? delete, string[] args)
+            {
+                var events = new List<string>();
+                var stdout = stdoutOf(events);
+                var stderr = stderrOf(events);
+                var previousOut = Console.Out;
+                var previousError = Console.Error;
+                var previousExit = Environment.ExitCode;
+                Exception? thrown;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(stderr);
+                    Environment.ExitCode = 0;
+                    unguardedProbe.SetValue(null, before);
+                    guardedProbe.SetValue(null, work);
+                    stageProbe.SetValue(null, stage);
+                    deleteProbe.SetValue(null, delete);
+                    try { thrown = Invoke(args); }
+                    finally { unguardedProbe.SetValue(null, null); guardedProbe.SetValue(null, null); stageProbe.SetValue(null, null); deleteProbe.SetValue(null, null); }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(previousOut);
+                    Console.SetError(previousError);
+                    Environment.ExitCode = previousExit;
+                }
+                var restored = ReferenceEquals(Console.Out, previousOut) && ReferenceEquals(Console.Error, previousError) && Environment.ExitCode == previousExit;
+                return (thrown, events, exit, stdout as EventWriter, stderr as EventWriter, restored);
+            }
+            static string D((Exception? Thrown, List<string> Events, int Exit, EventWriter? Out, EventWriter? Err, bool Restored) r) =>
+                "events [" + string.Join(" | ", r.Events) + "] exit " + r.Exit.ToString(CultureInfo.InvariantCulture)
+                + (r.Out is { } o ? " stdout text [" + o.Text + "] stdout rejected [" + string.Join(" | ", o.RejectedLines) + "]" : "")
+                + (r.Err is { } e ? " stderr rejected [" + string.Join(" | ", e.RejectedLines) + "]" : "") + " restored " + r.Restored
+                + (r.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : " threw nothing");
+
+            var failure = new InvalidOperationException("boom generate-prototypes P7-29 original");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-prototypes", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}" && envelope.Exit == 1
+                && envelope.Diagnostic == DiagnosticPrefix + "System.InvalidOperationException: boom generate-prototypes P7-29 original",
+                "fixture: IntentPlan.Internal(\"generate-prototypes\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
+            const string StdoutMessage = "p7-29 stdout rejects the write";
+            const string StderrMessage = "p7-29 stderr rejects the write";
+            Func<List<string>, TextWriter> AcceptOut = events => new EventWriter("out", events);
+            Func<List<string>, TextWriter> AcceptErr = events => new EventWriter("err", events);
+            Func<List<string>, TextWriter> RejectOut = events => new EventWriter("out", events, null, rejectAll: true, () => new IOException(StdoutMessage));
+            Func<List<string>, TextWriter> RejectOutNonIo = events => new EventWriter("out", events, null, rejectAll: true, () => new InvalidOperationException(StdoutMessage));
+            Func<List<string>, TextWriter> RejectErrAll = events => new EventWriter("err", events, null, rejectAll: true, () => new InvalidOperationException(StderrMessage));
+            Func<List<string>, TextWriter> RejectErrDiagnostic = events => new EventWriter("err", events, DiagnosticPrefix, rejectAll: false, () => new IOException(StderrMessage));
+            Func<List<string>, TextWriter> DisposedOut = _ => { var closed = new StringWriter(CultureInfo.InvariantCulture); closed.Dispose(); return closed; };
+            bool NoMessage((Exception? Thrown, List<string> Events, int Exit, EventWriter? Out, EventWriter? Err, bool Restored) r, string message) =>
+                !string.Join("\n", r.Events).Contains(message, StringComparison.Ordinal) && (r.Out is null || !r.Out.Text.Contains(message, StringComparison.Ordinal));
+            bool Contained((Exception? Thrown, List<string> Events, int Exit, EventWriter? Out, EventWriter? Err, bool Restored) r) =>
+                r.Thrown is null && r.Restored && r.Exit == 1 && AllNull();
+            bool TypedRejectedOnce((Exception? Thrown, List<string> Events, int Exit, EventWriter? Out, EventWriter? Err, bool Restored) r) =>
+                r.Out is { } o && o.RejectedLines.SequenceEqual(new[] { envelope.Line }) && o.Text.Length == 0 && o.Partial.Length == 0;
+
+            // Control: accepting writers keep section 7's bytes and order (diagnostic, then the typed line).
+            {
+                var output = Output();
+                var r = Forced(AcceptOut, AcceptErr, null, null, () => throw failure, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic, "out:" + envelope.Line }) && r.Out is { } o && o.Text == envelope.Line + Environment.NewLine && !File.Exists(output),
+                    "control: accepting writers record the diagnostic, then the typed line, exit 1, file deleted (section 7's bytes)", D(r));
+            }
+
+            // Before any write (P7-25 path): stdout rejects the typed line.
+            {
+                var output = Output();
+                var r = Forced(RejectOut, AcceptErr, () => throw failure, null, null, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && TypedRejectedOnce(r) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && NoMessage(r, StdoutMessage) && !File.Exists(output) && !Directory.Exists(output),
+                    "UnguardedStageProbe + stdout IOException on the typed line: nothing escapes Run, exit 1, typed line attempted once, stderr the original diagnostic once, no file", D(r));
+            }
+
+            // After the write (P7-26 path): the file is still deleted.
+            foreach (var (label, requestPath, pin) in new (string, string, string?)[] { ("explicit project id", request, pinned), ("derived project id", derivedRequest, null) })
+            {
+                var output = Output();
+                byte[]? seen = null;
+                var r = Forced(RejectOut, AcceptErr, null, null, () => { seen = File.Exists(output) ? File.ReadAllBytes(output) : null; throw failure; }, null, new[] { "generate-prototypes", requestPath, output });
+                Check(Contained(r) && TypedRejectedOnce(r) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && NoMessage(r, StdoutMessage)
+                    && seen is { Length: > 0 } && (pin is null || Hex(seen) == pin) && !File.Exists(output),
+                    "PostWriteStageProbe (" + label + ") + stdout IOException on the typed line: exit 1, nothing escapes, diagnostic once, the just-written file still deleted (P7-26)",
+                    D(r) + " seen " + (seen is null ? "<no file>" : Hex(seen)) + (File.Exists(output) ? " <file left>" : ""));
+            }
+
+            // Cleanup delete failing too (P7-27 path): the cleanup line, then the diagnostic; the file is left.
+            {
+                var output = Output();
+                var deletes = 0;
+                var r = Forced(RejectOut, AcceptErr, null, null, () => throw failure, _ => { deletes++; throw new IOException("p7-29 delete io failure"); }, new[] { "generate-prototypes", request, output });
+                var left = File.Exists(output) ? File.ReadAllBytes(output) : null;
+                Check(Contained(r) && TypedRejectedOnce(r) && deletes == 1 && r.Events.SequenceEqual(new[] { "err:" + Left + output, "err:" + envelope.Diagnostic }) && NoMessage(r, StdoutMessage)
+                    && left is { Length: > 0 } && Hex(left) == pinned,
+                    "PostWriteStageProbe + failing delete + stdout IOException on the typed line: the P7-27 line, then the diagnostic, exit 1, nothing escapes, file left with the pipeline's bytes",
+                    D(r) + (left is null ? " <no file>" : " left " + Hex(left)));
+                if (File.Exists(output)) File.Delete(output);
+            }
+
+            // Both streams throwing a non-IO exception on every write.
+            {
+                var output = Output();
+                var r = Forced(RejectOutNonIo, RejectErrAll, () => throw failure, null, null, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && TypedRejectedOnce(r) && r.Events.Count == 0 && r.Err is { } e && e.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic }) && !File.Exists(output),
+                    "UnguardedStageProbe + stdout and stderr throwing InvalidOperationException on every write: exit 1, nothing escapes, each line attempted once, no file", D(r));
+            }
+
+            // A real closed stdout (a disposed StringWriter throws ObjectDisposedException).
+            {
+                var output = Output();
+                var r = Forced(DisposedOut, AcceptErr, null, null, () => throw failure, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
+                    "PostWriteStageProbe + a disposed stdout (ObjectDisposedException): exit 1, nothing escapes, diagnostic once, file deleted", D(r));
+            }
+
+            // A stdout rejecting the success line: an internal error about the stdout exception; the written file is deleted.
+            {
+                var output = Output();
+                var r = Forced(RejectOut, AcceptErr, null, null, null, null, new[] { "generate-prototypes", request, output });
+                var stdoutDiagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-prototypes", new IOException(StdoutMessage));
+                Check(Contained(r) && r.Out is { } o && o.RejectedLines.Count == 2 && o.RejectedLines[0].StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal)
+                    && o.RejectedLines[1] == envelope.Line && o.Text.Length == 0 && r.Events.SequenceEqual(new[] { "err:" + stdoutDiagnostic }) && !File.Exists(output),
+                    "a stdout rejecting the success line: exit 1, nothing escapes, success then typed line attempted once each, stderr the stdout exception's diagnostic, file deleted (P7-26)",
+                    D(r) + (File.Exists(output) ? " <file left>" : ""));
+            }
+
+            // The guarded block's own diagnostic write (InternalRefusal) throwing: pinned bytes, contained by Run's catch-all.
+            var stderrDiagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-prototypes", new IOException(StderrMessage));
+            {
+                var output = Output();
+                var r = Forced(AcceptOut, RejectErrDiagnostic, null, () => throw failure, null, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && r.Events.SequenceEqual(new[] { "out:" + envelope.Line }) && r.Err is { } e && e.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic, stderrDiagnostic })
+                    && r.Out is { } o && o.Text == envelope.Line + Environment.NewLine && !File.Exists(output),
+                    "GuardedWorkProbe + stderr rejecting the guarded block's diagnostic: the typed line, exit 1, nothing escapes, the original then the stderr exception's diagnostic attempted, no file (pinned)", D(r));
+            }
+            {
+                var output = Output();
+                var r = Forced(RejectOut, RejectErrDiagnostic, null, () => throw failure, null, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && TypedRejectedOnce(r) && r.Events.Count == 0 && r.Err is { } e && e.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic, stderrDiagnostic }) && !File.Exists(output),
+                    "GuardedWorkProbe + stderr rejecting the guarded diagnostic + stdout rejecting the typed line: exit 1, nothing escapes, no file", D(r));
+            }
+            {
+                var output = Output();
+                var r = Forced(AcceptOut, AcceptErr, null, () => throw failure, null, null, new[] { "generate-prototypes", request, output });
+                Check(Contained(r) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic, "out:" + envelope.Line }) && !File.Exists(output),
+                    "control: GuardedWorkProbe with accepting writers is the diagnostic once, then the typed line, exit 1 (P3-20 bytes)", D(r));
+            }
+
+            // Static: the guarded block's diagnostic write is the unguarded line in InternalRefusal, reached only from that catch.
+            var shared = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")), blankStrings: false);
+            var internalRefusal = System.Text.RegularExpressions.Regex.Matches(shared,
+                @"static\s+Refusal\s+InternalRefusal\s*\(\s*Exception\s+error\s*\)\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*IntentPlan\s*\.\s*InternalDiagnostic\s*\(\s*""generate-prototypes""\s*,\s*error\s*\)\s*\)\s*;\s*return\s+new\s+Refusal\s*\(\s*InternalError\s*\)\s*;\s*\}").Count;
+            var guardedCatch = System.Text.RegularExpressions.Regex.Matches(shared,
+                @"try\s*\{\s*GuardedWorkProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;[^{}]*\}\s*catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*throw\s+InternalRefusal\s*\(\s*error\s*\)\s*;\s*\}").Count;
+            var calls = System.Text.RegularExpressions.Regex.Matches(shared, @"\bInternalRefusal\s*\(").Count;
+            Check(internalRefusal == 1 && guardedCatch == 1 && calls == 2,
+                "GenerateCommand.cs: InternalRefusal writes IntentPlan.InternalDiagnostic to Console.Error unguarded then returns Refusal(InternalError), and is called only from the guarded block's catch (Exception) (pinned; containment rests on Run's catch-all)",
+                "InternalRefusal " + internalRefusal.ToString(CultureInfo.InvariantCulture) + ", guarded catch " + guardedCatch.ToString(CultureInfo.InvariantCulture) + ", name occurrences " + calls.ToString(CultureInfo.InvariantCulture));
+
+            // Success with accepting writers equals the real process (file and stdout); stderr is never written.
+            foreach (var (label, requestPath, pin) in new (string, string, string?)[] { ("explicit project id", request, pinned), ("derived project id", derivedRequest, null) })
+            {
+                var inOut = Output();
+                var r = Forced(AcceptOut, RejectErrAll, null, null, null, null, new[] { "generate-prototypes", requestPath, inOut });
+                var processOut = Output();
+                var process = cli(new[] { "generate-prototypes", requestPath, processOut });
+                var inBytes = File.Exists(inOut) ? File.ReadAllBytes(inOut) : Array.Empty<byte>();
+                var processBytes = File.Exists(processOut) ? File.ReadAllBytes(processOut) : Array.Empty<byte>();
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && r.Err is { Rejected: 0 } && r.Out is { } o && o.Text == process.Out + Environment.NewLine && process.Exit == 0 && process.Err.Length == 0
+                    && process.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && inBytes.Length > 0 && (pin is null || Hex(inBytes) == pin) && inBytes.SequenceEqual(processBytes),
+                    "the " + label + " success writes no stderr and equals the real process's file and stdout", D(r) + " vs process " + process.Out + " " + process.Err);
+            }
+
+            // Refusals with accepting writers equal the real process bytes.
+            var existing = Output();
+            File.WriteAllText(existing, "keep");
+            var refusals = new (string Label, Func<string, string[]> Args)[]
+            {
+                ("usage", output => new[] { "generate-prototypes", request }),
+                ("output extension", output => new[] { "generate-prototypes", request, output + ".txt" }),
+                ("output exists", output => new[] { "generate-prototypes", request, existing }),
+                ("missing request", output => new[] { "generate-prototypes", Path.Combine(inputs, "missing.json"), output }),
+                ("malformed JSON", output => new[] { "generate-prototypes", Input("json.json", "{"), output }),
+                ("unknown pack", output => new[] { "generate-prototypes", Input("pack.json", good[..^1] + ",\"pack\":\"xx.no-such.pack\"}"), output }),
+                ("pipeline refusal", output => new[] { "generate-prototypes", Input("refused.json", good.Replace("\"typology\":2", "\"typology\":4", StringComparison.Ordinal)), output }),
+            };
+            foreach (var (label, argsOf) in refusals)
+            {
+                var a = Output();
+                var b = Output();
+                var mine = Forced(AcceptOut, RejectErrAll, null, null, null, null, argsOf(a));
+                var theirs = cli(argsOf(b));
+                Check(mine.Thrown is null && mine.Restored && mine.Exit == 1 && theirs.Exit == 1 && mine.Err is { Rejected: 0 } && theirs.Err.Length == 0 && mine.Out is { } o && o.Text == theirs.Out + Environment.NewLine
+                    && o.Text.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !o.Text.Contains("internal_error", StringComparison.Ordinal)
+                    && !File.Exists(a) && !File.Exists(b) && !File.Exists(a + ".txt") && !File.Exists(b + ".txt"),
+                    "the " + label + " refusal equals the real process bytes", D(mine) + " vs process " + theirs.Out + " " + theirs.Err);
+            }
+            Check(File.ReadAllText(existing) == "keep" && AllNull(), "the existing output is left untouched and the seams are null after the sample");
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
     // ---- P7-25: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
     // GenerateCommand.Run of the real Release CLI assembly (loaded from cliDll, members by reflection, so a missing seam is
     // an assertion failure), in process, with a valid request and the P7-23 test seam UnguardedStageProbe (null in
@@ -1574,9 +1849,12 @@ internal static class GeneratePrototypesTests
                     // P7-28: the catch-all writes the diagnostic guarded (a throwing stderr drops only it), then prints the typed line.
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+internalError\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-prototypes""\s*,\s*error\s*\)\s*;\s*"
                     + @"try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*internalError\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*"
-                    + @"\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
+                    // P7-29: the exit code is set first, then the typed line is printed guarded (a throwing stdout drops only it).
+                    + @"Environment\s*\.\s*ExitCode\s*=\s*internalError\s*\.\s*Exit\s*;\s*"
+                    + @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*\}"),
                 "GenerateCommand.Run is try Execute / catch (Refusal) Fail / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-prototypes\", error); "
-                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } (internalError with { Diagnostic = null }).Print(); } (P7-28)");
+                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } Environment.ExitCode = internalError.Exit; "
+                + "try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { } } (P7-28, P7-29)");
         }
         finally
         {
