@@ -400,13 +400,6 @@ internal static class InternalErrorDelegationTests
                 foreach (var (name, uses) in found)
                     Check(uses.Clean, "P3-27 seam hygiene: " + name + " declares " + seam + " once without an initializer, reads it once as [" + read + "], never assigns it", uses.Detail);
             }
-            // PROBE RED (P3-27, removed in the green commit): a planted interpolation-hole assignment appended to each
-            // real seam file must be caught; asserted the wrong way here so CI shows the checker failing on it.
-            foreach (var (seam, file, type, _) in seams)
-            {
-                var planted = SeamHygiene(sources.Single(s => s.Name == file).Text + "\nstatic class Planted { static string S() => $\"{" + seam + " = null}\"; }\n", seam, type);
-                Check(planted.Clean, "P3-27 PROBE RED: " + file + " with a planted $\"{" + seam + " = null}\" is clean", planted.Detail);
-            }
         }
 
         // 2f. MCP audit_verify (AuditVerifyTool.Run, in process): the catch-all forced by an actor list whose enumeration
