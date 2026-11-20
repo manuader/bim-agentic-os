@@ -1710,6 +1710,8 @@ DeletedCwdPathToolTests.Run(cliDir,Call,Check);
 JurisdictionResolveToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 // P5-22 skill_list (tests/mcp/SkillListToolTests.cs).
 SkillListToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
+// P10-31 every tool refuses a repeated argument name uniformly in CallTool (tests/mcp/RepeatedArgumentToolTests.cs).
+RepeatedArgumentToolTests.Run(root,cliDir,Check);
 foreach(var hidden in new[]{"native","evaluate","init","commit-intent","ifc-export","unknown"}) {
     var unknown=ToolCall(hidden,new JsonObject());
     Check(IsError(unknown) && Text(unknown)=="""{"status":"failed","code":"unknown_tool"}""","tool "+hidden+" is not exposed and returns isError");
