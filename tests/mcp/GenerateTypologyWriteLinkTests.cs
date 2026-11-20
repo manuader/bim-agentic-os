@@ -27,7 +27,7 @@ using System.Text.RegularExpressions;
 // GltfExporter.WriteNew callers checked below is empty (tests/mcp/GenerateWriteLinkTests.cs).
 internal static class GenerateTypologyWriteLinkTests
 {
-    static readonly Regex ForbiddenUse = new(@"\bGenerateTypologyCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteProbe)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateTypologyCommand\b",
+    static readonly Regex ForbiddenUse = new(@"\bGenerateTypologyCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteProbe|PostWriteRemovalProbe|PartialOutputLeft)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateTypologyCommand\b",
         RegexOptions.CultureInvariant);
 
     // SHA-256 and length of the pre-split text (LF line ends) of Run, Execute, the PostWriteProbe seam (from its comment's
@@ -48,7 +48,8 @@ internal static class GenerateTypologyWriteLinkTests
         .Where(c => IsWrite(c.Include) || IsWrite(c.Link) || c.Files.Any(IsWrite))
         .Select(c => c.Include + (c.Link is null ? "" : " (Link " + c.Link + ")")).ToArray();
 
-    // The uses of GenerateTypologyCommand.Run / .Execute / .Fail / .PostWriteProbe (or a using static of the class) in code.
+    // The uses of GenerateTypologyCommand.Run / .Execute / .Fail / .PostWriteProbe / .PostWriteRemovalProbe / .PartialOutputLeft
+    // (or a using static of the class) in code (P3-28 added the last two).
     internal static string[] WriteUses(string source) =>
         ForbiddenUse.Matches(DocUpdateLinkTests.CodeOf(source)).Select(m => Regex.Replace(m.Value, @"\s+", " ")).ToArray();
 
@@ -85,6 +86,25 @@ internal static class GenerateTypologyWriteLinkTests
     };
     const int ExecuteAfterP326Length = 3998;
     const string ExecuteAfterP326Sha256 = "21e46bf089ba67bcd27f5e4b22591a441eef013c1f1bb1ac6ca7cedbd9dfb14c";
+
+    // P3-28 changed Run after the P4-26 move: the last line of its P3-24 comment paragraph and the catch-all (the diagnostic
+    // is written guarded, then the typed line). The documented delta below is reversed on the current Run block (fail closed
+    // as above); the result must be the pre-split Run pinned in Moved. The current block is pinned too ("Run after P3-28").
+    static readonly (string New, string Old)[] RunDeltaP328 =
+    {
+        ("        // diagnostic written once. P3-28: the diagnostic is written on its own, guarded, so a stderr that throws (any\n"
+            + "        // exception) drops only that line: the typed line still reaches stdout, exit 1, nothing escapes.\n"
+            + "        catch (Exception error)\n"
+            + "        {\n"
+            + "            var internalError = IntentPlan.Internal(\"generate-typology\", error);\n"
+            + "            try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { }\n"
+            + "            (internalError with { Diagnostic = null }).Print();\n"
+            + "        }\n",
+            "        // diagnostic written once.\n"
+            + "        catch (Exception error) { IntentPlan.Internal(\"generate-typology\", error).Print(); }\n"),
+    };
+    const int RunAfterP328Length = 1326;
+    const string RunAfterP328Sha256 = "ddc03df447a1926ca1c1ba2a816c567f58d513f42d3cf64fb2982f7227fbdcb5";
 
     // The block with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
     internal static string? ReverseDelta(string block, IReadOnlyList<(string New, string Old)> delta)
@@ -180,6 +200,12 @@ internal static class GenerateTypologyWriteLinkTests
             ("a method group", "Action<string, string?, string?> f = GenerateTypologyCommand . Fail;", true),
             ("Execute by name", "GenerateTypologyCommand.Execute(args);", true),
             ("the post-write seam", "GenerateTypologyCommand.PostWriteProbe = null;", true),
+            // P3-28: the P3-26 removal seam and cleanup-report constant are CLI-only members too.
+            ("the post-write removal seam", "GenerateTypologyCommand.PostWriteRemovalProbe = null;", true),
+            ("the removal seam split over lines", "Bim.Cli.GenerateTypologyCommand\n        .PostWriteRemovalProbe?.Invoke(path);", true),
+            ("the partial-output line", "var s = GenerateTypologyCommand.PartialOutputLeft;", true),
+            ("the partial-output line in a comment", "// GenerateTypologyCommand.PartialOutputLeft\nvar x = 1;", false),
+            ("longer removal / partial-output names", "GenerateTypologyCommand.PostWriteRemovalProbes(); var t = GenerateTypologyCommand.PartialOutputLeftover;", false),
             ("a using static", "using static Bim.Cli.GenerateTypologyCommand;\nRun(args);", true),
             ("a line comment", "// GenerateTypologyCommand.Run(args)\nvar x = 1;", false),
             ("a block comment", "/* GenerateTypologyCommand.Run(\n */ var x = 1;", false),
@@ -213,7 +239,7 @@ internal static class GenerateTypologyWriteLinkTests
             .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
         var users = compiledSources.Select(path => (Name: Path.GetFileName(path), Found: WriteUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
             .Select(u => u.Name + " " + string.Join(" ", u.Found)).ToArray();
-        Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe [" + string.Join(", ", users) + "]");
+        Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe / PostWriteRemovalProbe / PartialOutputLeft [" + string.Join(", ", users) + "]");
         var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
             .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
         // After P4-27 (generate-prototypes moved its write path into GenerateWrite.cs) no server-compiled writer is left.
@@ -250,10 +276,17 @@ internal static class GenerateTypologyWriteLinkTests
         foreach (var (name, start, end, length, sha256) in Moved)
         {
             var current = Block(writeText, start, end);
-            // P3-26: Execute is compared after reversing its documented delta (ExecuteDeltaP326).
-            var block = name == "Execute" && current is not null ? ReverseDelta(current, ExecuteDeltaP326) : current;
+            // P3-26: Execute is compared after reversing its documented delta (ExecuteDeltaP326); P3-28: Run after reversing
+            // RunDeltaP328.
+            var block = current is null ? null : name switch
+            {
+                "Execute" => ReverseDelta(current, ExecuteDeltaP326),
+                "Run" => ReverseDelta(current, RunDeltaP328),
+                _ => current,
+            };
             Check(block is not null && block.Length == length && Sha256(block) == sha256,
-                "GenerateTypologyWrite.cs holds " + name + " moved verbatim" + (name == "Execute" ? " (the documented P3-26 delta reversed)" : "")
+                "GenerateTypologyWrite.cs holds " + name + " moved verbatim"
+                + (name == "Execute" ? " (the documented P3-26 delta reversed)" : name == "Run" ? " (the documented P3-28 delta reversed)" : "")
                 + " (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
             Check(!sharedText.Contains(start, StringComparison.Ordinal), "GenerateTypologyCommand.cs no longer holds " + name);
         }
@@ -277,6 +310,27 @@ internal static class GenerateTypologyWriteLinkTests
                     "delta self-test: P3-26 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
             }
             Check(Pinned(ReverseDelta(executeNow, ExecuteDeltaP326)), "delta self-test: the unchanged block reverses to the pre-split Execute pin (positive control)");
+        }
+        // P3-28: the current Run block is pinned, and the delta reversal fails closed (self-tests on the real block).
+        var runPin = Moved.Single(m => m.Name == "Run");
+        var runNow = Block(writeText, runPin.Start, runPin.End);
+        Check(runNow is not null && runNow.Length == RunAfterP328Length && Sha256(runNow) == RunAfterP328Sha256,
+            "GenerateTypologyWrite.cs holds Run after P3-28 (" + (runNow?.Length ?? -1) + " chars, sha256 " + (runNow is null ? "-" : Sha256(runNow)) + ")");
+        if (runNow is not null)
+        {
+            bool RunPinned(string? text) => text is not null && text.Length == runPin.Length && Sha256(text) == runPin.Sha256;
+            const string RunOutside = "        try { Execute(args); }\n";
+            Check(runNow.Contains(RunOutside, StringComparison.Ordinal)
+                && !RunPinned(ReverseDelta(runNow.Replace(RunOutside, "        try { Execute(argz); }\n", StringComparison.Ordinal), RunDeltaP328)),
+                "delta self-test: a one-character change outside the P3-28 delta no longer reverses to the pre-split Run pin");
+            foreach (var (index, pair) in RunDeltaP328.Select((p, i) => (i, p)))
+            {
+                Check(runNow.Contains(pair.New, StringComparison.Ordinal) && ReverseDelta(runNow.Replace(pair.New, "", StringComparison.Ordinal), RunDeltaP328) is null,
+                    "delta self-test: P3-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " missing fails closed (null)");
+                Check(ReverseDelta(runNow + pair.New, RunDeltaP328) is null,
+                    "delta self-test: P3-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
+            }
+            Check(RunPinned(ReverseDelta(runNow, RunDeltaP328)), "delta self-test: the unchanged block reverses to the pre-split Run pin (positive control)");
         }
         var write = Compact(DocUpdateLinkTests.CodeOf(writeText));
         var sharedCode = Compact(DocUpdateLinkTests.CodeOf(sharedText));
