@@ -40,7 +40,8 @@ using Bim.Core;
 //      --all cut page ends succeeded); none by the cancel is pipe_read_timeout / query_all_deadline_exceeded (pinned).
 //   2f. P1-35: ReadReplyLine's late outcomes: a read faulting on or after the cancel raises no
 //      TaskScheduler.UnobservedTaskException (the late fault is observed; a deliberately unobserved control fault is
-//      seen by the same detector), and a line completed from inside a cancel registration callback is KEPT.
+//      seen by the same detector), and a line completed from inside a cancel registration callback is KEPT when it
+//      completes before the read's own cancel callback (LIFO order pinned), otherwise pipe_read_timeout.
 //   2e. P1-33: cutReads false never cuts: a last page replying after the deadline is kept (succeeded, byte-equal).
 //   3d. P1-34: a page with at least 5 s left (connect not cut) on the default (real pipe) transports is read with
 //      min(configured read timeout, time left after the connect): an add-in accepting 4 s into a 6 s deadline and never
@@ -561,8 +562,9 @@ internal static class RevitCommandDeadlineTests
     // unobserved faulted task: once the task is collected (bounded GC loop, no sleep over 2 s) the process-global
     // TaskScheduler.UnobservedTaskException, filtered to this section's "P1-35 " messages, sees no such fault; a control
     // task faulted and never observed proves the detector sees one. A line completed from inside a cancel registration
-    // callback on the read's token (it runs synchronously within the seam's Cancel()) is KEPT, like a line that
-    // completed before the cancel (documented in ReadReplyLine: the read completed successfully by the cancel's end).
+    // callback on the read's token (it runs synchronously within the seam's Cancel()) is KEPT when it completes before
+    // the read's own cancel callback (or the read ignores the cancel), consistent with ReadReplyLine's after-the-wait
+    // rule (a read completed successfully by the end of Cancel() is the reply); otherwise it is pipe_read_timeout.
     const string LateFaultPrefix = "P1-35 ";
 
     [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
@@ -641,27 +643,55 @@ internal static class RevitCommandDeadlineTests
         }
         finally { TaskScheduler.UnobservedTaskException -= detector; }
 
-        // A line completed from inside a cancel registration callback on the read's token is kept. The read itself
-        // ignores the cancel, so the outcome does not depend on the order the token runs its callbacks in.
-        Func<CancellationToken, Task<string?>> CallbackLine(GatedRead gate, Func<string> line) => token =>
+        // A line completed from inside a cancel registration callback on the read's token is kept when it completes
+        // before the read's own cancel: the token runs its callbacks in reverse registration order (LIFO, the .NET 8
+        // CancellationTokenSource), so a line callback registered after the read's runs first (kept), one registered
+        // before it runs after a read that honours the cancel has already ended cancelled (pipe_read_timeout). A read
+        // that ignores the cancel keeps the line whatever the order. The callback never throws (the line is computed
+        // before the read; a failure inside it is recorded as an event, so it fails the check instead of escaping Cancel()).
+        Func<CancellationToken, Task<string?>> CallbackLine(GatedRead gate, string line, bool registerAfterRead) => token =>
         {
+            void Complete()
+            {
+                try { gate.Event("callback line"); gate.Line.TrySetResult(line); }
+                catch (Exception error) { gate.Event("callback error " + error.GetType().Name); }
+            }
+            if (!registerAfterRead) token.Register(Complete);
             var read = gate.Start(token);
-            token.Register(() => { gate.Event("callback line"); gate.Line.TrySetResult(line()); });
+            if (registerAfterRead) token.Register(Complete);
             return read;
         };
-        var inCancel = new GatedRead { HonoursCancel = false };
-        string? inCancelLine = null;
-        var inCancelError = Thrown(() => inCancelLine = RevitCommandService.ReadReplyLine(CallbackLine(inCancel, () => "cancel-callback-line"), wait, () => inCancel.Event("gave up")));
-        var inCancelEvents = inCancel.Events.Split(',');
-        check(inCancelError is null && inCancelLine == "cancel-callback-line" && inCancelEvents.Length == 4 && inCancelEvents[0] == "read" && inCancelEvents[1] == "gave up"
-            && inCancelEvents.Skip(2).OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(new[] { "callback line", "cancel" }),
-            "P1-35 cancel callback: a reply line completed from inside a cancel registration callback is kept (returned as the reply)",
-            (inCancelError?.GetType().Name ?? "no error") + " line " + (inCancelLine ?? "null") + " events " + inCancel.Events);
+        (Exception? Error, string? Line, string Events, bool Cancelled) InCancel(bool honoursCancel, bool registerAfterRead)
+        {
+            var gate = new GatedRead { HonoursCancel = honoursCancel };
+            string? line = null;
+            var error = Thrown(() => line = RevitCommandService.ReadReplyLine(CallbackLine(gate, "cancel-callback-line", registerAfterRead), wait, () => gate.Event("gave up")));
+            return (error, line, gate.Events, gate.Line.Task.IsCanceled);
+        }
+        static string Describe((Exception? Error, string? Line, string Events, bool Cancelled) outcome)
+            => (outcome.Error?.GetType().Name ?? "no error") + " line " + (outcome.Line ?? "null") + " events " + outcome.Events + (outcome.Cancelled ? " cancelled" : "");
+
+        var ignoring = InCancel(false, true);
+        var ignoringEvents = ignoring.Events.Split(',');
+        check(ignoring.Error is null && ignoring.Line == "cancel-callback-line" && ignoringEvents.Length == 4 && ignoringEvents[0] == "read" && ignoringEvents[1] == "gave up"
+            && ignoringEvents.Skip(2).OrderBy(name => name, StringComparer.Ordinal).SequenceEqual(new[] { "callback line", "cancel" }),
+            "P1-35 cancel callback: a reply line completed from inside a cancel registration callback on a read ignoring the cancel is kept (returned as the reply)",
+            Describe(ignoring));
+        var lineFirst = InCancel(true, true);
+        check(lineFirst.Error is null && lineFirst.Line == "cancel-callback-line" && lineFirst.Events == "read,gave up,callback line,cancel" && !lineFirst.Cancelled,
+            "P1-35 cancel callback: a line callback registered after the read's runs before its cancel (LIFO) and the line is kept", Describe(lineFirst));
+        var cancelFirst = InCancel(true, false);
+        check(cancelFirst.Error is RevitPipeReadTimeoutException { Timeout: var cancelFirstWait } && cancelFirstWait == wait && cancelFirst.Line is null
+            && cancelFirst.Events == "read,gave up,cancel,callback line" && cancelFirst.Cancelled,
+            "P1-35 cancel callback: a line callback registered before the read's runs after the read ended cancelled: RevitPipeReadTimeoutException (the line is dropped)",
+            Describe(cancelFirst));
+
         var expected = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, line) => PageReply(line, single)).Line;
         var runInCancel = RevitCommandService.Run(RacePipe, wallsText, RevitCommandPolicy.None, (_, line) =>
         {
             var gate = new GatedRead { HonoursCancel = false };
-            return RevitCommandService.ReadReplyLine(CallbackLine(gate, () => PageReply(line, single)), wait);
+            var reply = PageReply(line, single);
+            return RevitCommandService.ReadReplyLine(CallbackLine(gate, reply, true), wait);
         });
         check(!runInCancel.IsError && runInCancel.Forwarded && runInCancel.Line == expected,
             "P1-35 cancel callback through RevitCommandService.Run: the line completed in the cancel callback is the verified reply, byte-equal to a prompt one", runInCancel.Line);
