@@ -15,7 +15,10 @@ using System.Xml.Linq;
 //      P10-18 package layout pin (tests/cli/PackageLayoutPackTests.cs, requiredFirstParty) requires mcp/Bim.Gltf.dll.
 //      Asserted: the reference is present only while that pin names mcp/Bim.Gltf.dll (dropping both is one follow-up),
 //      and the Release Bim.Mcp.deps.json names Bim.Gltf exactly when the csproj references it (Bim.Cli.deps.json control).
+//      The pin is read from the requiredFirstParty initializer itself (comments stripped), fail closed if it is not found.
 //   4. A self-test of the ProjectReference reader on synthetic csproj texts.
+//   5. A self-test of the requiredFirstParty reader (comment-only name unpinned, initializer name pinned, missing -> error).
+//   6. No #US user string of Bim.Mcp.dll contains Bim.Gltf (no reflection by name); reader control: "tools/list" is found.
 // tools/list and every MCP tool's bytes are pinned by the existing sections (tests/mcp/Program.cs and the *ToolTests.cs
 // files), unchanged.
 internal static class GltfReferenceTests
@@ -54,6 +57,9 @@ internal static class GltfReferenceTests
         foreach (var handle in metadata.MemberReferences)
         {
             var reference = metadata.GetMemberReference(handle);
+            // Only TypeRef parents are counted here (Bim.Gltf has no generic types, so no TypeSpec parent exists today); the
+            // exporter-only count is the P4-28 headline, and the complete gate is the zero AssemblyRef / TypeRef / MemberRef
+            // check in Run (no AssemblyRef to Bim.Gltf means no TypeSpec over a Bim.Gltf type can exist either).
             if (reference.Parent.Kind != HandleKind.TypeReference) continue;
             var parent = (TypeReferenceHandle)reference.Parent;
             if (!InGltf(parent)) continue;
@@ -75,6 +81,36 @@ internal static class GltfReferenceTests
         .SelectMany(include => include.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
         .Where(include => string.Equals(include.Replace('\\', '/').Split('/')[^1], "Bim.Gltf.csproj", StringComparison.OrdinalIgnoreCase))
         .ToArray();
+
+    static readonly System.Text.RegularExpressions.Regex RequiredFirstParty = new(
+        @"\brequiredFirstParty\s*=\s*new\s*(?:string\s*)?\[\s*\]\s*\{(?<items>[^{}]*)\}", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    static readonly System.Text.RegularExpressions.Regex StringItem = new(@"""(?<value>[^""\\\r\n]*)""", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    // The entries of the P10-18 `requiredFirstParty = new[] { ... }` initializer in tests/cli/PackageLayoutPackTests.cs
+    // (comments stripped, literals kept), or null when there is not exactly one such initializer (fail closed).
+    internal static string[]? RequiredFirstPartyOf(string source)
+    {
+        var matches = RequiredFirstParty.Matches(DocUpdateLinkTests.CodeOf(source));
+        return matches.Count != 1 ? null
+            : StringItem.Matches(matches[0].Groups["items"].Value).Select(m => m.Groups["value"].Value).ToArray();
+    }
+
+    // The #US (user string heap) entries of an assembly: ldstr literals, which reflection-by-name would need.
+    internal static string[] UserStrings(string assemblyPath)
+    {
+        using var stream = File.OpenRead(assemblyPath);
+        using var pe = new PEReader(stream);
+        var metadata = pe.GetMetadataReader();
+        var strings = new List<string>();
+        var handle = default(UserStringHandle);
+        while (true)
+        {
+            handle = metadata.GetNextHandle(handle);
+            if (handle.IsNil) break;
+            strings.Add(metadata.GetUserString(handle));
+        }
+        return strings.ToArray();
+    }
 
     // The library names of a deps.json ("Bim.Gltf/1.0.0" -> "Bim.Gltf").
     static string[] DepsLibraries(string depsPath)
@@ -106,7 +142,11 @@ internal static class GltfReferenceTests
         var project = Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj");
         var gltfRefs = GltfProjectReferences(File.ReadAllText(project));
         var layoutPin = Path.Combine(root, "tests", "cli", "PackageLayoutPackTests.cs");
-        var pinned = File.Exists(layoutPin) && File.ReadAllText(layoutPin).Contains("\"mcp/Bim.Gltf.dll\"", StringComparison.Ordinal);
+        var required = File.Exists(layoutPin) ? RequiredFirstPartyOf(File.ReadAllText(layoutPin)) : null;
+        Check(required is not null && required.Contains("mcp/Bim.Mcp.dll"),
+            "tests/cli/PackageLayoutPackTests.cs holds exactly one P10-18 requiredFirstParty initializer (read fail-closed; it names mcp/Bim.Mcp.dll) ["
+            + string.Join(", ", required ?? Array.Empty<string>()) + "]");
+        var pinned = required is not null && required.Contains("mcp/Bim.Gltf.dll");
         Console.WriteLine("NOTE P4-28 Bim.Mcp.csproj ProjectReference to Bim.Gltf.csproj: [" + string.Join(", ", gltfRefs) + "]; unused by the binary ("
             + Show(mcp) + "); kept because the P10-18 package layout pin requires mcp/Bim.Gltf.dll: " + pinned);
         Check(gltfRefs.Length <= 1 && (gltfRefs.Length == 0 || pinned),
@@ -127,5 +167,22 @@ internal static class GltfReferenceTests
             && GltfProjectReferences("""<Project><ItemGroup><ProjectReference Include="../a/Bim.Core.csproj; ../b/Bim.Gltf.csproj" /></ItemGroup></Project>""").Length == 1
             && GltfProjectReferences("""<Project><ItemGroup><ProjectReference Include="../../core/Bim.Core/Bim.Core.csproj" /><ProjectReference Include="../x/Bim.Gltf.Tests.csproj" /></ItemGroup></Project>""").Length == 0,
             "the ProjectReference reader finds Bim.Gltf.csproj by file name ('\\' or '/', any case, ';' lists) and nothing else");
+        // ---- 5. self-test of the P10-18 initializer reader ----
+        var inComment = "// \"mcp/Bim.Gltf.dll\" was pinned\nvar requiredFirstParty = new[] { \"cli/Bim.Gltf.dll\", /* \"mcp/Bim.Gltf.dll\" */ \"mcp/Bim.Mcp.dll\" };\n";
+        var inInitializer = "var requiredFirstParty = new[] { \"cli/Bim.Gltf.dll\",\n    \"mcp/Bim.Gltf.dll\", \"mcp/Bim.Mcp.dll\" };\n";
+        var commentedOnly = "// var requiredFirstParty = new[] { \"mcp/Bim.Gltf.dll\" };\nvar other = new[] { \"mcp/Bim.Gltf.dll\" };\n";
+        Check(RequiredFirstPartyOf(inComment) is { } a && !a.Contains("mcp/Bim.Gltf.dll") && a.Contains("mcp/Bim.Mcp.dll")
+            && RequiredFirstPartyOf(inInitializer) is { } b && b.Contains("mcp/Bim.Gltf.dll")
+            && RequiredFirstPartyOf(commentedOnly) is null
+            && RequiredFirstPartyOf(inInitializer + inInitializer) is null,
+            "the requiredFirstParty reader: a name only in a comment is unpinned, in the initializer pinned; a missing (or commented-out) or duplicated initializer is an error (null)");
+
+        // ---- 6. no reflection-by-name into Bim.Gltf: no #US user string of Bim.Mcp.dll mentions Bim.Gltf ----
+        // Control: the same reader finds the server's own "tools/list" literal in Bim.Mcp.dll. There is no honest Bim.Gltf-side
+        // positive control (no first-party binary loads Bim.Gltf by name), so the control proves the reader, not the pattern.
+        var mcpStrings = UserStrings(mcpDll);
+        var gltfStrings = mcpStrings.Where(s => s.Contains("Bim.Gltf", StringComparison.OrdinalIgnoreCase)).ToArray();
+        Check(mcpStrings.Contains("tools/list"), "the #US reader finds the \"tools/list\" literal in the Release Bim.Mcp.dll (reader control) [" + mcpStrings.Length + " strings]");
+        Check(gltfStrings.Length == 0, "no #US user string of the Release Bim.Mcp.dll contains Bim.Gltf (no reflection by name) [" + string.Join(", ", gltfStrings) + "]");
     }
 }
