@@ -2254,11 +2254,13 @@ static class MirrorDriftLoopChecks
             // P2-33 probe red (run 44582611952): wire 39757 bytes, 13 reports, handed 12288 = the 4096 bytes the fake read
             // plus its socket's 8192-byte receive buffer (InBufferSize; a new Unix socket's send buffer, a distinct setting,
             // was also 8192 and is only reported in the measured detail); the next
-            // piece's Write was pending when the fake closed (27469 bytes never handed). The fake does not measure queued
-            // bytes on macOS (its FakePipeQueue answers -1 off Windows and Linux) → P2-34.
+            // piece's Write was pending when the fake closed (27469 bytes never handed).
+            // P2-34 probe red (run 44671009756): the fake's FIONREAD (Socket.Available) found 8192 bytes queued in both
+            // runs = InBufferSize, so the receive buffer was full and handed == the bytes read + the bytes queued; the CLI
+            // process's queued count is the same full buffer, less than its unread remainder (its write still pending too).
             Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
-                && cliQueued == long.MinValue && seamQueued == long.MinValue,
-                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); P2-34 probe: queued measured by FIONREAD (deliberately impossible pin)", measured);
+                && seamQueued == inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
+                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued (FIONREAD): the full receive buffer in both runs, less than the CLI's unread remainder", measured);
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
