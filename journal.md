@@ -1928,3 +1928,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay251
 - 2026-11-20T15:53:17Z lock taken (relay251; was FREE, relay250 released 2026-11-20T15:38:39Z)
+- 2026-11-20T15:53:41Z picked P10-33 (phase 10), P6-31 (phase 6), P7-30 (phase 7) — oldest-touched (relay248); disjoint files (McpServer.cs Handle/CallTool + new tests/mcp file + tests/mcp/Program.cs registration only by P10-33; tests/cad/PdfType3GlyphListTests.cs new section (+ PdfContent.cs font decoder if defect) only by P6-31; GenerateWrite.cs Fail/Refusal path + GeneratePrototypesTests.cs new section + tests/mcp/GenerateWriteLinkTests.cs third Run delta only by P7-30). Workers spawned.
