@@ -384,3 +384,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay253 (2026-11-20, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`.
+
+## Relay254 (2026-11-20, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`. Upcoming (P6-34): a written proposal on whether CAD briefs should surface dropped tilted inserts (opt-in flag); it will need your decision, nothing to do yet.
