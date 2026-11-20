@@ -30,6 +30,12 @@ using Bim.Core;
 //   7. Static: the tool calls SkillListCommand.List and has no loader, registry, serializer, file or Console.Out path of
 //      its own; no interfaces/mcp source calls SkillListCommand.Run; the four csprojs compiling McpServer.cs compile the
 //      CLI SkillListCommand.cs and the tool; the Release Bim.Mcp.dll defines Bim.Cli.SkillListCommand with List.
+//   8. P5-29 internal error through the seam: with SkillListCommand.ListingWorkProbe throwing a non-refusal exception
+//      (in process), the tool answers isError with exactly the CLI's skill_list_internal_error line (equal to the
+//      in-process CLI Run line) for the default and an explicit skills directory, the server's stderr carries the
+//      IntentPlan diagnostic once (equal to the in-process CLI's), the defect message never reaches the text, and
+//      usage-equivalent arguments stay -32602 without reaching the probe. The seam is null before and after; with it
+//      reset the next calls answer the CLI listing and refusal bytes. The tool source never names ListingWorkProbe.
 internal static class SkillListToolTests
 {
     const string ToolName = "skill_list";
@@ -239,6 +245,60 @@ internal static class SkillListToolTests
             var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
             var methods = PlanLayoutsWriteLinkTests.MethodsOf(mcpDll, "Bim.Cli", "SkillListCommand");
             Check(methods is not null && methods.Contains("List"), "the Release Bim.Mcp.dll defines Bim.Cli.SkillListCommand with List [" + string.Join(", ", methods ?? []) + "]");
+        }
+
+        // ---- 8. P5-29 typed internal error through the ListingWorkProbe seam ----
+        {
+            Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null, "P5-29: the SkillListCommand.ListingWorkProbe seam is null in production");
+            var toolPath = Path.Combine(root, "interfaces", "mcp", "SkillListTool.cs");
+            Check(!System.Text.RegularExpressions.Regex.IsMatch(File.Exists(toolPath) ? File.ReadAllText(toolPath) : "", @"\bListingWorkProbe\b"), "P5-29: the tool source never names ListingWorkProbe");
+            var listing = Cli("--skills", generated);
+            var refusal = Cli("--skills", absent);
+            var probes = 0;
+            foreach (var failure in new Exception[] { new InvalidOperationException("boom skill_list P5-29"), new IOException("disk skill_list P5-29") })
+            {
+                var diagnostic = "skill-list internal error: " + failure.GetType().FullName + ": " + failure.Message;
+                Bim.Cli.SkillListCommand.ListingWorkProbe = () => { probes++; throw failure; };
+                try
+                {
+                    foreach (var (label, arguments, cliArguments) in new (string, JsonObject, string[])[]
+                    {
+                        ("default directory", A(), ["skill-list"]),
+                        ("explicit skills", A(("skills", generated)), ["skill-list", "--skills", generated]),
+                        ("missing directory", A(("skills", absent)), ["skill-list", "--skills", absent]),
+                    })
+                    {
+                        var errors = new StringWriter();
+                        var savedError = Console.Error;
+                        JsonObject response;
+                        var before = probes;
+                        Console.SetError(errors);
+                        try { response = call(Line(arguments)); }
+                        finally { Console.SetError(savedError); }
+                        var toolProbes = probes - before;
+                        var cli = InProcessCli(cliArguments);
+                        Check(IsResult(response) && IsError(response) && Text(response) == InternalLine && toolProbes == 1,
+                            "P5-29 " + failure.GetType().Name + " " + label + ": isError with the typed skill_list_internal_error line | " + Short(response.ToJsonString()));
+                        Check(!Text(response).Contains("P5-29", StringComparison.Ordinal), "P5-29 " + failure.GetType().Name + " " + label + ": the defect message is not in the tool text");
+                        Check(errors.ToString() == diagnostic + Environment.NewLine, "P5-29 " + failure.GetType().Name + " " + label + ": the IntentPlan diagnostic is on the server's stderr once | " + errors);
+                        Check(cli.Exit == 1 && cli.Line == Text(response) && cli.Error == errors.ToString(),
+                            "P5-29 " + failure.GetType().Name + " " + label + ": the in-process CLI Run prints the same line and diagnostic, exit 1 | " + cli.Line + " / " + cli.Error);
+                    }
+                    foreach (var arguments in new[] { A(("skills", " ")), A(("skills", "--x")), A(("other", "x")) })
+                    {
+                        var before = probes;
+                        var response = call(Line(arguments));
+                        Check(ErrorCode(response) == -32602 && probes == before, "P5-29: usage-equivalent " + arguments.ToJsonString() + " stays -32602 and never reaches the probe | " + Short(response.ToJsonString()));
+                    }
+                }
+                finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; }
+            }
+            Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null, "P5-29: the seam is null again after the forced runs");
+            var again = call(Line(A(("skills", generated))));
+            var againRefusal = call(Line(A(("skills", absent))));
+            Check(listing.Exit == 0 && IsResult(again) && !IsError(again) && Text(again) == listing.Out, "P5-29: with the seam reset the next call answers the CLI listing bytes | " + Short(again.ToJsonString()));
+            Check(refusal.Exit == 1 && IsResult(againRefusal) && IsError(againRefusal) && Text(againRefusal) == refusal.Out, "P5-29: with the seam reset a refusal answers the CLI bytes | " + Short(againRefusal.ToJsonString()));
+            Check(!Directory.Exists(absent), "P5-29: the missing directory is not created");
         }
     }
 

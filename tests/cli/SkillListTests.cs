@@ -44,6 +44,17 @@ using Bim.Core;
 //  10. P5-28 twice-read: over one generated package skills directory (a code pack + sidecar), skill-list and
 //      jurisdiction-resolve run twice in process and twice as real processes print byte-identical lines on success and
 //      on a sidecar refusal, while the two in-process JurisdictionRegistry loads behind them are unequal (TwiceRead).
+//  11. P5-29 internal error through the seam: with SkillListCommand.ListingWorkProbe throwing a non-refusal exception
+//      (in process), Run prints exactly {"status":"failed","code":"skill_list_internal_error"}, exit 1, and stderr is the
+//      IntentPlan diagnostic "skill-list internal error: <type>: <message>" once, for the default directory, an explicit
+//      --skills, a missing directory (root_missing otherwise) and a malformed sidecar; List returns the same envelope
+//      (Diagnostic set, never throws); a usage refusal never reaches the probe. With the seam null (before and after)
+//      the in-process Run prints the real process bytes for a listing and a refusal. Static: over interfaces/**/*.cs
+//      (comments and literals blanked) ListingWorkProbe is named exactly twice, both in SkillListCommand.cs: the
+//      initializer-free declaration `internal static Action? ListingWorkProbe { get; set; }` and one
+//      `ListingWorkProbe?.Invoke();` inside Listing's body before its JurisdictionRegistry.Load(, with List calling
+//      Listing inside its try whose catch is IntentPlan.Internal; never assigned; checker self-tests prove each evasion
+//      is caught.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -389,6 +400,216 @@ internal static class SkillListTests
 
         // ---- 10. P5-28 twice-read bytes pin ----
         TwiceRead(scratch, dotnet, cliDll, check);
+
+        // ---- 11. P5-29 internal error forced through the ListingWorkProbe seam ----
+        Seam(root, scratch, dotnet, cliDll, check);
+    }
+
+    // Section 11 (P5-29): see oracle 11 in the header.
+    static void Seam(string root, string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-29 seam: " + name, detail);
+        const string InternalLine = "{\"status\":\"failed\",\"code\":\"skill_list_internal_error\"}";
+        var skills = Path.GetFullPath(Path.Combine(root, "skills"));
+        var absent = Path.Combine(scratch, "p529-absent");
+        var badSidecar = Path.Combine(scratch, "p529-bad-sidecar");
+        CopyDirectory(Path.Combine(skills, Caba), Path.Combine(badSidecar, Caba));
+        File.WriteAllText(Path.Combine(badSidecar, Caba, "jurisdiction.json"), "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+
+        // The verb in process: raw stdout, stderr, exit and any escaping exception; globals restored in the finally.
+        static (int Exit, string Out, string Err, string Thrown) Inline(string[] arguments)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var thrown = "";
+            int exit;
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                try { Bim.Cli.SkillListCommand.Run(arguments); }
+                catch (Exception failure) { thrown = failure.GetType().FullName + ": " + failure.Message; }
+            }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+            }
+            return (exit, capturedOut.ToString(), capturedError.ToString(), thrown);
+        }
+        (int Exit, string Out, string Err) Child(params string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(cliDll);
+            start.ArgumentList.Add("skill-list");
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result);
+        }
+        static string D((int Exit, string Out, string Err, string Thrown) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out) + " stderr " + JsonSerializer.Serialize(r.Err) + (r.Thrown.Length > 0 ? " threw " + r.Thrown : "");
+
+        // Seam null: the in-process verb prints the real process bytes (listing and refusal).
+        void Unchanged(string phase)
+        {
+            Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null, phase + ": the seam is null");
+            foreach (var (label, arguments) in new (string, string[])[] { ("repository listing", ["--skills", skills]), ("root_missing refusal", ["--skills", absent]), ("sidecar refusal", ["--skills", badSidecar]) })
+            {
+                var inline = Inline(["skill-list", .. arguments]);
+                var child = Child(arguments);
+                Check(inline.Exit == child.Exit && inline.Out == child.Out && inline.Err.Length == 0 && child.Err.Length == 0 && inline.Thrown.Length == 0 && inline.Out != InternalLine + Environment.NewLine,
+                    phase + ": " + label + " in process equals the real process bytes", D(inline) + " | process exit " + child.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(child.Out));
+            }
+            Check(!Directory.Exists(absent), phase + ": the missing directory is not created");
+        }
+        Unchanged("before");
+
+        var probes = 0;
+        foreach (var failure in new Exception[] { new InvalidOperationException("boom skill-list P5-29"), new IOException("disk P5-29"), new NullReferenceException("null P5-29") })
+        {
+            var diagnostic = "skill-list internal error: " + failure.GetType().FullName + ": " + failure.Message;
+            probes = 0;
+            Bim.Cli.SkillListCommand.ListingWorkProbe = () => { probes++; throw failure; };
+            try
+            {
+                foreach (var (label, arguments) in new (string, string[])[] { ("default directory", []), ("explicit --skills", ["--skills", skills]), ("missing directory", ["--skills", absent]), ("malformed sidecar", ["--skills", badSidecar]) })
+                {
+                    var before = probes;
+                    var run = Inline(["skill-list", .. arguments]);
+                    Check(run.Exit == 1 && run.Out == InternalLine + Environment.NewLine && run.Err == diagnostic + Environment.NewLine && run.Thrown.Length == 0 && probes == before + 1,
+                        failure.GetType().Name + " " + label + ": the typed skill_list_internal_error line, exit 1, the diagnostic once", D(run) + " probes " + (probes - before).ToString(CultureInfo.InvariantCulture));
+                }
+                Bim.Cli.IntentEnvelope? envelope = null;
+                var escaped = "";
+                try { envelope = Bim.Cli.SkillListCommand.List(skills); }
+                catch (Exception error) { escaped = error.GetType().Name; }
+                Check(escaped.Length == 0 && envelope is { Line: InternalLine, Exit: 1 } && envelope.Diagnostic == diagnostic && !envelope.Succeeded,
+                    failure.GetType().Name + ": List returns the typed envelope with the diagnostic and never throws", (envelope?.ToString() ?? "null") + " " + escaped);
+                var usageBefore = probes;
+                var usage = Inline(["skill-list", "--bogus"]);
+                Check(usage.Exit == 1 && usage.Out == JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }) + Environment.NewLine && usage.Err.Length == 0 && probes == usageBefore,
+                    failure.GetType().Name + ": a usage refusal precedes the probe (never invoked) and is unchanged", D(usage));
+            }
+            finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; }
+        }
+        // A probe that does not throw changes nothing.
+        Bim.Cli.SkillListCommand.ListingWorkProbe = () => probes++;
+        try
+        {
+            probes = 0;
+            var quiet = Inline(["skill-list", "--skills", skills]);
+            var child = Child("--skills", skills);
+            Check(probes == 1 && quiet.Exit == 0 && quiet.Out == child.Out && quiet.Err.Length == 0, "a non-throwing probe runs once and keeps the listing bytes", D(quiet));
+        }
+        finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; }
+        Unchanged("after");
+
+        // Static pin over interfaces/**/*.cs.
+        var interfaces = Path.Combine(root, "interfaces");
+        var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !Path.GetRelativePath(interfaces, path).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part is "bin" or "obj"))
+            .Order(StringComparer.Ordinal).Select(path => (Path.GetRelativePath(root, path).Replace('\\', '/'), File.ReadAllText(path))).ToArray();
+        var problems = SeamProblems(sources);
+        Check(problems.Count == 0, "interfaces/**/*.cs names ListingWorkProbe only in its initializer-free declaration and one invoke inside Listing before JurisdictionRegistry.Load(, List guards Listing, never assigned",
+            string.Join("; ", problems));
+        const string SeamPath = "interfaces/cli/SkillListCommand.cs";
+        const string Decl = "internal static Action? ListingWorkProbe { get; set; }";
+        const string Guard = "public static IntentEnvelope List(string? skillsDirectory) { try { return Listing(skillsDirectory); } catch (Exception error) { return IntentPlan.Internal(\"skill-list\", error); } }";
+        const string Good = "ListingWorkProbe?.Invoke(); if (skillsDirectory is null) { skillsDirectory = \"x\"; } var load = JurisdictionRegistry.Load(skills); return null;";
+        static string Command(string listingBody, string declaration = Decl, string list = Guard, string extra = "") =>
+            "internal static class SkillListCommand { " + declaration + " static IntentEnvelope Execute(string[] args) { return List(null); } " + list
+            + " static IntentEnvelope Listing(string? skillsDirectory) { " + listingBody + " } " + extra + " }";
+        Check(SeamProblems([(SeamPath, Command(Good))]).Count == 0
+            && SeamProblems([(SeamPath, Command("ListingWorkProbe ?. Invoke ( ) ;\n // ListingWorkProbe = null;\n var s = \"ListingWorkProbe = x\"; var load = JurisdictionRegistry . Load (skills); return null;"))]).Count == 0
+            && SeamProblems([(SeamPath, Command(Good)), ("interfaces/cli/JurisdictionResolveCommand.cs", "class J { internal static Action? WorkProbe { get; set; } void X() { WorkProbe?.Invoke(); } }")]).Count == 0,
+            "self-test: the seam checker accepts the real shape at any spacing, ignoring comments, literals and other seams", string.Join("; ", SeamProblems([(SeamPath, Command(Good))])));
+        foreach (var (label, files) in new (string, (string, string)[])[]
+        {
+            ("an initializer", [(SeamPath, Command(Good, "internal static Action? ListingWorkProbe { get; set; } = null;"))]),
+            ("a field declaration", [(SeamPath, Command(Good, "internal static Action? ListingWorkProbe;"))]),
+            ("a public declaration", [(SeamPath, Command(Good, "public static Action? ListingWorkProbe { get; set; }"))]),
+            ("the declaration missing", [(SeamPath, Command(Good, ""))]),
+            ("an assignment in the command", [(SeamPath, Command(Good, Decl, Guard, "static void Set() { ListingWorkProbe = () => throw null!; }"))]),
+            ("an assignment in another interfaces file", [(SeamPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { SkillListCommand.ListingWorkProbe = null; } }")]),
+            ("a += assignment", [(SeamPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { SkillListCommand.ListingWorkProbe += null; } }")]),
+            ("a ??= assignment", [(SeamPath, Command(Good)), ("interfaces/mcp/SkillListTool.cs", "class T { void X() { SkillListCommand.ListingWorkProbe ??= null; } }")]),
+            ("a use in the tool", [(SeamPath, Command(Good)), ("interfaces/mcp/SkillListTool.cs", "class T { void X() { SkillListCommand.ListingWorkProbe?.Invoke(); } }")]),
+            ("the invoke after JurisdictionRegistry.Load(", [(SeamPath, Command("var load = JurisdictionRegistry.Load(skills); ListingWorkProbe?.Invoke(); return null;"))]),
+            ("the invoke only in a comment", [(SeamPath, Command("// ListingWorkProbe?.Invoke();\n var load = JurisdictionRegistry.Load(skills); return null;"))]),
+            ("the invoke missing", [(SeamPath, Command("var load = JurisdictionRegistry.Load(skills); return null;"))]),
+            ("a second invoke", [(SeamPath, Command("ListingWorkProbe?.Invoke(); ListingWorkProbe?.Invoke(); var load = JurisdictionRegistry.Load(skills); return null;"))]),
+            ("the invoke outside Listing (unguarded in List)", [(SeamPath, Command("var load = JurisdictionRegistry.Load(skills); return null;", Decl,
+                "public static IntentEnvelope List(string? skillsDirectory) { ListingWorkProbe?.Invoke(); try { return Listing(skillsDirectory); } catch (Exception error) { return IntentPlan.Internal(\"skill-list\", error); } }"))]),
+            ("the invoke in Execute", [(SeamPath, Command("var load = JurisdictionRegistry.Load(skills); return null;", Decl, Guard, "static void Other() { ListingWorkProbe?.Invoke(); }"))]),
+            ("List not guarding Listing", [(SeamPath, Command(Good, Decl, "public static IntentEnvelope List(string? skillsDirectory) => Listing(skillsDirectory);"))]),
+            ("List guarding with another catch", [(SeamPath, Command(Good, Decl, "public static IntentEnvelope List(string? skillsDirectory) { try { return Listing(skillsDirectory); } catch (IOException error) { return IntentPlan.Internal(\"skill-list\", error); } }"))]),
+            ("the command file missing", [("interfaces/cli/Other.cs", "class O { }")]),
+        })
+            Check(SeamProblems(files).Count > 0, "self-test: the seam checker flags " + label);
+    }
+
+    // P5-29: over (relative path, source) pairs under interfaces/, comments removed and literals blanked
+    // (ApplyIntentTests.CodeOf): ListingWorkProbe (whole word) is named exactly twice, both in
+    // interfaces/cli/SkillListCommand.cs: `internal static Action? ListingWorkProbe { get; set; }` with no initializer and
+    // one `ListingWorkProbe?.Invoke();` inside the brace-matched body of Listing before its JurisdictionRegistry.Load(;
+    // List's body is exactly `try { return Listing(skillsDirectory); } catch (Exception error) { return IntentPlan.Internal(..., error); }`
+    // (whitespace-insensitive); no assignment (=, +=, ??=, ...) anywhere.
+    static List<string> SeamProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        const string Command = "interfaces/cli/SkillListCommand.cs";
+        var problems = new List<string>();
+        var total = 0;
+        var sawCommand = false;
+        foreach (var (name, source) in files)
+        {
+            var code = ApplyIntentTests.CodeOf(source);
+            total += System.Text.RegularExpressions.Regex.Matches(code, @"\bListingWorkProbe\b").Count;
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bListingWorkProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": ListingWorkProbe assigned");
+            if (name != Command) continue;
+            sawCommand = true;
+            var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*\?\s*ListingWorkProbe\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)").Count;
+            if (declarations != 1) problems.Add(name + ": the initializer-free declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+            var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bListingWorkProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;").Count;
+            if (invokes != 1) problems.Add(name + ": " + invokes.ToString(CultureInfo.InvariantCulture) + " ListingWorkProbe?.Invoke() calls");
+            var listing = BodyAfter(code, @"\bstatic\s+IntentEnvelope\s+Listing\s*\(");
+            var invoke = System.Text.RegularExpressions.Regex.Match(listing, @"\bListingWorkProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;");
+            var load = System.Text.RegularExpressions.Regex.Match(listing, @"\bJurisdictionRegistry\s*\.\s*Load\s*\(");
+            if (!invoke.Success || !load.Success || invoke.Index > load.Index) problems.Add(name + ": ListingWorkProbe?.Invoke() not inside Listing before its JurisdictionRegistry.Load(");
+            var list = System.Text.RegularExpressions.Regex.Replace(BodyAfter(code, @"\bpublic\s+static\s+IntentEnvelope\s+List\s*\("), @"\s+", "");
+            if (list != "try{returnListing(skillsDirectory);}catch(Exceptionerror){returnIntentPlan.Internal(\"\",error);}") problems.Add(name + ": List does not run Listing inside its try/catch (Exception) IntentPlan.Internal [" + list + "]");
+        }
+        if (!sawCommand) problems.Add(Command + " not found");
+        if (total != 2) problems.Add("ListingWorkProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+        return problems;
+    }
+
+    // The brace-matched body of the first block opened after the first match of pattern ("" when absent or when an
+    // expression body (=>) or a ';' comes before the brace).
+    static string BodyAfter(string code, string pattern)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(code, pattern);
+        if (!match.Success) return "";
+        var open = code.IndexOf('{', match.Index + match.Length);
+        if (open < 0) return "";
+        var between = code[(match.Index + match.Length)..open];
+        if (between.Contains("=>", StringComparison.Ordinal) || between.Contains(';')) return "";
+        var depth = 0;
+        for (var index = open; index < code.Length; index++)
+        {
+            if (code[index] == '{') depth++;
+            else if (code[index] == '}' && --depth == 0) return code[(open + 1)..index];
+        }
+        return "";
     }
 
     // P5-28 twice-read bytes pin: one generated package (<pkg>/cli = a copy of the CLI beside VERSION, manifest.json and
