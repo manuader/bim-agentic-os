@@ -735,7 +735,7 @@ A relative path argument while the CLI's working directory has been deleted (`Pa
 
 ## revit-command --all uncut-connect read (P1-34)
 
-`interfaces/cli/RevitDeadlineTransport.cs`. With the default transports (CLI and MCP `all:true` real pipes), every page with time left goes through the read-after-connect path: a page with ≥ 5 s left keeps the full 5 s connect and, once connected, reads for min(configured read timeout, time left then); a read cut that way ends `pipe_read_timeout` → `query_all_deadline_exceeded`; under 1 ms left after the connect the request is not written. A 5 s `pipe_connect_timeout` and any other connect failure pass through unchanged; the per-page cut is decided only after the connect. Injected legacy seams (`cutTransport`, `connectTransport` without `connectThenRead`) and `cutReads:false` keep the earlier behaviour. No-deadline runs do not use this transport.
+`interfaces/cli/RevitDeadlineTransport.cs`. With the default transports (CLI and MCP `all:true` real pipes), every page with time left goes through the read-after-connect path: a page with ≥ 5 s left keeps the full 5 s connect and, once connected, reads for min(configured read timeout, time left then); a read cut that way ends `pipe_read_timeout` → `query_all_deadline_exceeded`; under 1 ms left after the connect the request is not written. A 5 s `pipe_connect_timeout` and any other connect failure pass through unchanged; the per-page cut is decided only after the connect. Since P1-36 there are no legacy seams: `cutReads:false` sends every page through the configured transport uncut. No-deadline runs do not use this transport.
 
 ## generate-prototypes cleanup failure (P7-27)
 
@@ -780,3 +780,15 @@ An INSERT or MINSERT whose extrusion normal has a horizontal component above 1e-
 ## generate-prototypes stdout write failure (P7-29)
 
 `interfaces/cli/GenerateWrite.cs` `Run` catch-all sets `Environment.ExitCode` to the internal error's exit (1) before printing the typed line inside a try/catch, so a stdout that rejects, throws or is disposed (also after a failed success-line write) leaves exit 1 and nothing escapes `Run`; the diagnostic write stays guarded (P7-28); normal bytes and order unchanged. The guarded block's own diagnostic write (`GenerateCommand.InternalRefusal`) throwing is contained (pinned). The P4-27 Run pin carries a second documented delta. Evidence: unit-tested (`tests/cli/GeneratePrototypesTests.cs` section 10, CI red 44698735317, green 44701423354). A throwing stdout in `Fail` (typed refusals) still escapes → P7-30.
+
+## revit-command --all single page seam (P1-36)
+
+`interfaces/cli/RevitDeadlineTransport.cs` has one page path. Every real-pipe page (`cutReads` true: CLI `--all --deadline-seconds`, MCP `all:true`) goes through the single seam `connectThenRead(min(5 s, time left), ReadAfter)`, by default `RevitCommandService.PipeTransportWithReadAfterConnect` (read = min(configured read timeout, time left once connected)); a cut read's `pipe_read_timeout` or a cut connect's `pipe_connect_timeout` becomes `query_all_deadline_exceeded`. `cutReads:false` sends every page through the configured transport and never cuts. The constructor parameters `cutTransport`/`connectTransport`, the `measured` flag and the `PipeTransportWithReadTimeout` default are removed; every P1-21..P1-34 code, detail and byte is unchanged. `McpServer.RevitCallAll`'s comment states the read is measured after the connect on every real-pipe page. Pinned statically (comment-stripped, mutation self-test) in `tests/cli/RevitCommandDeadlineTests.cs` 2g.
+
+## jurisdiction-resolve --lock and MCP tools twice-read (P5-30)
+
+`jurisdiction-resolve --code <id> --lock <lock>` over the same lock and skills directory prints byte-identical lines on repeated runs, in process and as a real process (success, `skill_lock_drift`, sidecar `json_invalid`), and the MCP `skill_list` and `jurisdiction_resolve` tools (with and without `lock_path`) return text byte-equal to the packaged CLI stdout line on repeated calls in one server, with `isError` equal to CLI exit 1. Output never depends on registry identity: two `LoadLocked` results of the same inputs are unequal registries by design (P5-27). Tests: `tests/cli/SkillListTests.cs` section 12, `tests/mcp/TwiceReadToolTests.cs`.
+
+## Packaged MCP generate_prototypes (P7-24)
+
+From a `scripts/package.ps1` release outside any repository, `mcp/Bim.Mcp.dll` resolves the generate_prototypes code pack package-first (`<package>/skills`, via `SkillPackLookup` from `AppContext.BaseDirectory`, never cwd or environment) and its tool text is byte-equal (UTF-8, no BOM) to the packaged `cli/Bim.Cli.dll generate-prototypes` output file. With the packaged pack removed (package markers kept) both give `{"status":"failed","code":"generate_prototypes_pack_unavailable","detail":"input_not_found"}` (CLI exit 1, no file; MCP `isError`). Test: `tests/packaging/test-package.ps1` P7-24 section (Linux and Windows CI).
