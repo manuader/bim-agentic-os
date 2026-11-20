@@ -320,10 +320,12 @@ internal static partial class GenerateTypologyCommand
     internal static Action? UnguardedWorkProbe { get; set; }
 
     // P3-19: the catch-all's internal error: IntentPlan's stderr detail, then the Refusal Run prints as
-    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes).
+    // {"status":"failed","code":InternalError}, exit 1 (IntentPlan.Internal's bytes). P3-30: the diagnostic is written
+    // guarded, so a stderr that throws (any exception) drops only that line and the typed Refusal(InternalError) is still
+    // returned (no second internal error about the stderr exception), on the CLI and on the MCP Document path.
     static Refusal InternalRefusal(Exception error)
     {
-        Console.Error.WriteLine(IntentPlan.InternalDiagnostic("generate-typology", error));
+        try { Console.Error.WriteLine(IntentPlan.InternalDiagnostic("generate-typology", error)); } catch (Exception) { }
         return new Refusal(InternalError);
     }
 

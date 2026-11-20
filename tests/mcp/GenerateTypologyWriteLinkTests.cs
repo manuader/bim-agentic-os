@@ -106,6 +106,35 @@ internal static class GenerateTypologyWriteLinkTests
     const int RunAfterP328Length = 1326;
     const string RunAfterP328Sha256 = "ddc03df447a1926ca1c1ba2a816c567f58d513f42d3cf64fb2982f7227fbdcb5";
 
+    // P3-30 changed Run again: its catch (Refusal) (three comment lines, then a block that sets the exit code and calls Fail,
+    // unchanged and pinned in Moved, guarded) and its catch-all (two more comment lines after the P3-28 ones, and the exit
+    // code set before the typed line, which is printed guarded). This second documented delta is reversed first (fail closed
+    // as above); the result must be the P3-28 Run pinned just above, and reversing RunDeltaP328 on that gives the pre-split
+    // Run. The current block is pinned too ("Run after P3-30").
+    static readonly (string New, string Old)[] RunDeltaP330 =
+    {
+        ("        // P3-30: a typed refusal sets the exit code first and Fail runs guarded, so a stdout that throws (any exception) while\n"
+            + "        // Fail writes the typed line drops only that line: exit 1, nothing escapes Run (stderr unchanged). A pipeline refusal\n"
+            + "        // (Execute's RefusedLine, not a Refusal) whose stdout write throws reaches the catch-all below: the internal error.\n"
+            + "        catch (Refusal refusal)\n"
+            + "        {\n"
+            + "            Environment.ExitCode = 1;\n"
+            + "            try { Fail(refusal.Code, refusal.Detail, refusal.Skill); } catch (Exception) { }\n"
+            + "        }\n",
+            "        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }\n"),
+        ("        // P3-30: the exit code is set first and the typed line is printed guarded too, so a stdout that throws (any\n"
+            + "        // exception) drops only that line: exit 1, nothing escapes Run.\n",
+            ""),
+        ("            Environment.ExitCode = internalError.Exit;\n"
+            + "            try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { }\n",
+            "            (internalError with { Diagnostic = null }).Print();\n"),
+    };
+    const int RunAfterP330Length = 2077;
+    const string RunAfterP330Sha256 = "ebb2e7f9245cc2bc9a1b790278306a9eb5457c27d41eaa2bf205e08752409cc6";
+
+    // The current Run with every documented delta reversed (P3-30, then P3-28), or null when either reversal fails.
+    internal static string? ReverseRun(string block) => ReverseDelta(block, RunDeltaP330) is { } afterP328 ? ReverseDelta(afterP328, RunDeltaP328) : null;
+
     // The block with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
     internal static string? ReverseDelta(string block, IReadOnlyList<(string New, string Old)> delta)
     {
@@ -276,17 +305,17 @@ internal static class GenerateTypologyWriteLinkTests
         foreach (var (name, start, end, length, sha256) in Moved)
         {
             var current = Block(writeText, start, end);
-            // P3-26: Execute is compared after reversing its documented delta (ExecuteDeltaP326); P3-28: Run after reversing
-            // RunDeltaP328.
+            // P3-26: Execute is compared after reversing its documented delta (ExecuteDeltaP326); P3-28 / P3-30: Run after
+            // reversing RunDeltaP330, then RunDeltaP328.
             var block = current is null ? null : name switch
             {
                 "Execute" => ReverseDelta(current, ExecuteDeltaP326),
-                "Run" => ReverseDelta(current, RunDeltaP328),
+                "Run" => ReverseRun(current),
                 _ => current,
             };
             Check(block is not null && block.Length == length && Sha256(block) == sha256,
                 "GenerateTypologyWrite.cs holds " + name + " moved verbatim"
-                + (name == "Execute" ? " (the documented P3-26 delta reversed)" : name == "Run" ? " (the documented P3-28 delta reversed)" : "")
+                + (name == "Execute" ? " (the documented P3-26 delta reversed)" : name == "Run" ? " (the documented P3-30 and P3-28 deltas reversed)" : "")
                 + " (" + (block?.Length ?? -1) + " chars, sha256 " + (block is null ? "-" : Sha256(block)) + ")");
             Check(!sharedText.Contains(start, StringComparison.Ordinal), "GenerateTypologyCommand.cs no longer holds " + name);
         }
@@ -311,26 +340,36 @@ internal static class GenerateTypologyWriteLinkTests
             }
             Check(Pinned(ReverseDelta(executeNow, ExecuteDeltaP326)), "delta self-test: the unchanged block reverses to the pre-split Execute pin (positive control)");
         }
-        // P3-28: the current Run block is pinned, and the delta reversal fails closed (self-tests on the real block).
+        // P3-28 / P3-30: the current Run block is pinned, the P3-30 reversal gives the P3-28 pin, and each delta reversal fails
+        // closed (self-tests on the real block).
         var runPin = Moved.Single(m => m.Name == "Run");
         var runNow = Block(writeText, runPin.Start, runPin.End);
-        Check(runNow is not null && runNow.Length == RunAfterP328Length && Sha256(runNow) == RunAfterP328Sha256,
-            "GenerateTypologyWrite.cs holds Run after P3-28 (" + (runNow?.Length ?? -1) + " chars, sha256 " + (runNow is null ? "-" : Sha256(runNow)) + ")");
-        if (runNow is not null)
+        Check(runNow is not null && runNow.Length == RunAfterP330Length && Sha256(runNow) == RunAfterP330Sha256,
+            "GenerateTypologyWrite.cs holds Run after P3-30 (" + (runNow?.Length ?? -1) + " chars, sha256 " + (runNow is null ? "-" : Sha256(runNow)) + ")");
+        var runP328 = runNow is null ? null : ReverseDelta(runNow, RunDeltaP330);
+        Check(runP328 is not null && runP328.Length == RunAfterP328Length && Sha256(runP328) == RunAfterP328Sha256,
+            "GenerateTypologyWrite.cs Run with the documented P3-30 delta reversed is Run after P3-28 (" + (runP328?.Length ?? -1) + " chars, sha256 " + (runP328 is null ? "-" : Sha256(runP328)) + ")");
+        if (runNow is not null && runP328 is not null)
         {
             bool RunPinned(string? text) => text is not null && text.Length == runPin.Length && Sha256(text) == runPin.Sha256;
             const string RunOutside = "        try { Execute(args); }\n";
             Check(runNow.Contains(RunOutside, StringComparison.Ordinal)
-                && !RunPinned(ReverseDelta(runNow.Replace(RunOutside, "        try { Execute(argz); }\n", StringComparison.Ordinal), RunDeltaP328)),
-                "delta self-test: a one-character change outside the P3-28 delta no longer reverses to the pre-split Run pin");
-            foreach (var (index, pair) in RunDeltaP328.Select((p, i) => (i, p)))
+                && !RunPinned(ReverseRun(runNow.Replace(RunOutside, "        try { Execute(argz); }\n", StringComparison.Ordinal))),
+                "delta self-test: a one-character change outside the P3-28 / P3-30 deltas no longer reverses to the pre-split Run pin");
+            foreach (var (label, stage, delta) in new (string, string, (string New, string Old)[])[] { ("P3-30", runNow, RunDeltaP330), ("P3-28", runP328, RunDeltaP328) })
             {
-                Check(runNow.Contains(pair.New, StringComparison.Ordinal) && ReverseDelta(runNow.Replace(pair.New, "", StringComparison.Ordinal), RunDeltaP328) is null,
-                    "delta self-test: P3-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " missing fails closed (null)");
-                Check(ReverseDelta(runNow + pair.New, RunDeltaP328) is null,
-                    "delta self-test: P3-28 delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
+                foreach (var (index, pair) in delta.Select((p, i) => (i, p)))
+                {
+                    Check(stage.Contains(pair.New, StringComparison.Ordinal) && ReverseDelta(stage.Replace(pair.New, "", StringComparison.Ordinal), delta) is null,
+                        "delta self-test: " + label + " delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " missing fails closed (null)");
+                    Check(ReverseDelta(stage + pair.New, delta) is null,
+                        "delta self-test: " + label + " delta text " + index.ToString(System.Globalization.CultureInfo.InvariantCulture) + " appearing twice fails closed (null)");
+                }
             }
-            Check(RunPinned(ReverseDelta(runNow, RunDeltaP328)), "delta self-test: the unchanged block reverses to the pre-split Run pin (positive control)");
+            Check(ReverseRun(runNow.Replace(RunDeltaP330[0].New, "", StringComparison.Ordinal)) is null && ReverseRun(runNow.Replace(RunDeltaP330[2].New, "", StringComparison.Ordinal)) is null
+                && ReverseRun(runP328) is null,
+                "delta self-test: the whole-Run reversal fails closed when a P3-30 delta text is missing or P3-30 is not applied");
+            Check(RunPinned(ReverseDelta(runP328, RunDeltaP328)) && RunPinned(ReverseRun(runNow)), "delta self-test: the unchanged block reverses to the pre-split Run pin (positive control)");
         }
         var write = Compact(DocUpdateLinkTests.CodeOf(writeText));
         var sharedCode = Compact(DocUpdateLinkTests.CodeOf(sharedText));

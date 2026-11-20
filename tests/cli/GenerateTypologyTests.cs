@@ -919,13 +919,17 @@ internal static class GenerateTypologyTests
             // Static: Run's body, comments stripped, layout-independent (P4-26: Run lives in the CLI-only write part).
             var source = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyWrite.cs")), blankStrings: false);
             Check(System.Text.RegularExpressions.Regex.IsMatch(source,
-                    @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*,\s*refusal\s*\.\s*Skill\s*\)\s*;\s*\}\s*"
-                    // P3-28: the catch-all writes the diagnostic guarded (a throwing stderr drops only it), then prints the typed line.
+                    // P3-30: catch (Refusal) sets the exit code, then runs Fail guarded (a throwing stdout drops only the typed line).
+                    @"public\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{\s*try\s*\{\s*Execute\s*\(\s*args\s*\)\s*;\s*\}\s*catch\s*\(\s*Refusal\s+refusal\s*\)\s*\{\s*Environment\s*\.\s*ExitCode\s*=\s*1\s*;\s*"
+                    + @"try\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*,\s*refusal\s*\.\s*Skill\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*"
+                    // P3-28: the catch-all writes the diagnostic guarded (a throwing stderr drops only it), then prints the typed line;
+                    // P3-30: with the exit code set first, and the typed line printed guarded.
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+internalError\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-typology""\s*,\s*error\s*\)\s*;\s*"
                     + @"try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*internalError\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*"
-                    + @"\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
-                "GenerateTypologyCommand.Run is try Execute / catch (Refusal) Fail / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-typology\", error); "
-                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } (internalError with { Diagnostic = null }).Print(); }");
+                    + @"Environment\s*\.\s*ExitCode\s*=\s*internalError\s*\.\s*Exit\s*;\s*"
+                    + @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*\}"),
+                "GenerateTypologyCommand.Run is try Execute / catch (Refusal) { Environment.ExitCode = 1; try { Fail(...); } catch (Exception) { } } / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-typology\", error); "
+                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } Environment.ExitCode = internalError.Exit; try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { } }");
         }
         finally
         {

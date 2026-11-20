@@ -18,7 +18,14 @@ internal static partial class GenerateTypologyCommand
     public static void Run(string[] args)
     {
         try { Execute(args); }
-        catch (Refusal refusal) { Fail(refusal.Code, refusal.Detail, refusal.Skill); }
+        // P3-30: a typed refusal sets the exit code first and Fail runs guarded, so a stdout that throws (any exception) while
+        // Fail writes the typed line drops only that line: exit 1, nothing escapes Run (stderr unchanged). A pipeline refusal
+        // (Execute's RefusedLine, not a Refusal) whose stdout write throws reaches the catch-all below: the internal error.
+        catch (Refusal refusal)
+        {
+            Environment.ExitCode = 1;
+            try { Fail(refusal.Code, refusal.Detail, refusal.Skill); } catch (Exception) { }
+        }
         // P3-24: any other exception in Execute (for example in Generate's parse / pack-load stretch, outside its guarded
         // pipeline block; forced in tests through the P3-23 seam) prints the typed {"status":"failed","code":InternalError}
         // line with IntentPlan's stderr diagnostic once, exit 1, instead of escaping to Program's generic catch. Before the
@@ -26,11 +33,14 @@ internal static partial class GenerateTypologyCommand
         // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as Refusal(InternalError) with their
         // diagnostic written once. P3-28: the diagnostic is written on its own, guarded, so a stderr that throws (any
         // exception) drops only that line: the typed line still reaches stdout, exit 1, nothing escapes.
+        // P3-30: the exit code is set first and the typed line is printed guarded too, so a stdout that throws (any
+        // exception) drops only that line: exit 1, nothing escapes Run.
         catch (Exception error)
         {
             var internalError = IntentPlan.Internal("generate-typology", error);
             try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { }
-            (internalError with { Diagnostic = null }).Print();
+            Environment.ExitCode = internalError.Exit;
+            try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { }
         }
     }
 
