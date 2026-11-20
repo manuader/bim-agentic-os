@@ -1879,3 +1879,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay246
 - 2026-11-20T00:52:40Z lock taken (session_014pxpsBHiNBiMs6exw8HAd relay246; was FREE, relay245 released 2026-11-20T00:51:04Z)
+- 2026-11-20T00:53:22Z picked P5-29 (phase 5), P1-35 (phase 1), P7-28 (phase 7) (relay243) — oldest-touched; disjoint files (SkillListCommand.cs + SkillList tests only by P5-29; RevitCommandsService.cs/RevitCommandDeadlineTests.cs only by P1-35; GenerateWrite.cs/GenerateWriteLinkTests.cs/GeneratePrototypesTests.cs only by P7-28). Workers spawned.
