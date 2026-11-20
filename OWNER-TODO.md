@@ -375,3 +375,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay250 (2026-11-20, cloud)
 - Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 440b635).
+
+## Relay251 (2026-11-20)
+- Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 7822c1b).
