@@ -1546,6 +1546,7 @@ try {
 
     // ---- P5-21 skill-list [--skills dir] (tests/cli/SkillListTests.cs) ----
     SkillListTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail));
+    DeletedCwdPathTests.Run(root,work,dotnet,cliDll,(condition,name,detail)=>Check(condition,name,detail),(name,why)=>Skip(name,why)); // P10-30 CLI path checks under a deleted cwd (tests/cli/DeletedCwdPathTests.cs)
 
     Console.WriteLine(JsonSerializer.Serialize(new {passed,failed,skipped,cli_inputs=failed==0}));
     if(failed>0) Environment.ExitCode=1;
