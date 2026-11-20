@@ -800,3 +800,15 @@ An INSERT or MINSERT whose extrusion normal has a horizontal component above 1e-
 ## Packaged MCP generate_prototypes (P7-24)
 
 From a `scripts/package.ps1` release outside any repository, `mcp/Bim.Mcp.dll` resolves the generate_prototypes code pack package-first (`<package>/skills`, via `SkillPackLookup` from `AppContext.BaseDirectory`, never cwd or environment) and its tool text is byte-equal (UTF-8, no BOM) to the packaged `cli/Bim.Cli.dll generate-prototypes` output file. With the packaged pack removed (package markers kept) both give `{"status":"failed","code":"generate_prototypes_pack_unavailable","detail":"input_not_found"}` (CLI exit 1, no file; MCP `isError`). Test: `tests/packaging/test-package.ps1` P7-24 section (Linux and Windows CI).
+
+## MCP repeated request and params members (P10-33)
+
+`interfaces/mcp/McpServer.cs` `Dispatch`: right after the request is known to be an object, any member given more than once (decoded names, ordinal, so a `\u` escape counts; any name) refuses JSON-RPC -32600 `invalid_request: repeated member <name>`; the id is echoed only when `id` appears exactly once with a string, number or null value, otherwise null (a notification with a repeated member gets this error with id null). `CallTool`: a `params` member given more than once refuses -32602 `invalid_params: repeated params member <name>` before the name check; an `arguments` name that is not valid UTF-16 (lone surrogate, once or repeated) refuses -32602 `invalid_params: argument name is not valid text` with the request id, inside the P10-31 loop. Well-formed request bytes are unchanged. A lone-surrogate member name outside `arguments` is not compared (still internal_error) → P10-34.
+
+## Type3 pending warning through a form matrix and a rise overflow (P6-31)
+
+A show inside a Form XObject whose `/Matrix` makes the text height non-finite gives operand-error `<op> gives a non-finite text height` and leaves the Type3 glyph-list warning pending; the next emitting show, inside the form or after it on the page, warns with only its own names. A `Ts` rise that overflows the text position is treated as a non-finite text position (operand-error `<op> gives a non-finite text position`), warning pending. Test-only; `PdfContent.cs` unchanged.
+
+## generate-prototypes typed-refusal stdout failure (P7-30)
+
+`interfaces/cli/GenerateWrite.cs` `Run` `catch (Refusal)` sets `Environment.ExitCode = 1` and then calls `Fail` inside a try/catch, so a stdout that rejects, throws or is disposed while a typed refusal (usage, output_*, input_*, pack, guarded-block internal error) is written leaves exit 1 and nothing escapes `Run`; `Fail` itself is unchanged. A pipeline refusal (`RefusedLine` in `Execute`) whose stdout write throws is reported as `generate_prototypes_internal_error` through the catch-all (pinned).
