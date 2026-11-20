@@ -16,10 +16,13 @@ using Bim.Mcp;
 //      orders ran the tool (the last value wins), except jurisdiction_resolve and skill_list whose tool-local check
 //      answered their own usage message.
 //   2. After the fix every order (and a name given three times, and an undeclared name given twice) is JSON-RPC -32602
-//      with exactly "invalid_params: repeated argument <name>" and no result, and no Revit transport send happens.
+//      with exactly "invalid_params: repeated argument <name>" and no result, and no Revit transport send happens; so is a
+//      second occurrence whose name spells its first character as a \u00XX escape (either order), for every declared name.
+//      The probed tools are exactly the pinned tools/list names in order.
 //   3. Non-duplicate calls are untouched: a well-typed revit_* call reaches the transport, and a repeated member nested in
-//      an argument value (document) is not a repeated argument (only the top-level arguments object is checked).
-//   4. Static: McpServer.CallTool holds the one repeated-name check before the unexpected-argument check and the tool run;
+//      an argument value (document, same value twice) is not a repeated argument: the same result and one transport send
+//      as the plain call (only the top-level arguments object is checked).
+//   4. Static (CallTool's body, up to the next method Matches): McpServer.CallTool holds the one repeated-name check before the unexpected-argument check and the tool run;
 //      JurisdictionResolveTool.cs and SkillListTool.cs no longer keep a tool-local duplicate-name check.
 internal static class RepeatedArgumentToolTests
 {
@@ -66,12 +69,11 @@ internal static class RepeatedArgumentToolTests
             var perTool = new List<string>();
             foreach (var (parameter, type) in properties)
             {
-                string Arguments(params string[] values)
-                {
-                    var members = properties.Where(p => p.Name != parameter && required.Contains(p.Name)).Select(p => JsonSerializer.Serialize(p.Name) + ":" + Valid(p.Type))
-                        .Concat(values.Select(v => JsonSerializer.Serialize(parameter) + ":" + v));
-                    return "{" + string.Join(",", members) + "}";
-                }
+                string Members(IEnumerable<string> repeated) => "{" + string.Join(",",
+                    properties.Where(p => p.Name != parameter && required.Contains(p.Name)).Select(p => JsonSerializer.Serialize(p.Name) + ":" + Valid(p.Type)).Concat(repeated)) + "}";
+                string Arguments(params string[] values) => Members(values.Select(v => JsonSerializer.Serialize(parameter) + ":" + v));
+                // The same name with its first character spelled as a \u00XX escape (JSON-equal, textually different).
+                var escapedKey = "\"\\u" + ((int)parameter[0]).ToString("x4", CultureInfo.InvariantCulture) + parameter[1..] + "\"";
                 var expected = "-32602:" + MessagePrefix + parameter;
                 var orders = new (string Label, string Text)[]
                 {
@@ -79,6 +81,8 @@ internal static class RepeatedArgumentToolTests
                     ("valid,wrong", Arguments(Valid(type), Wrong(type))),
                     ("valid,valid", Arguments(Valid(type), Valid(type))),
                     ("valid x3", Arguments(Valid(type), Valid(type), Valid(type))),
+                    ("valid,escaped valid", Members([JsonSerializer.Serialize(parameter) + ":" + Valid(type), escapedKey + ":" + Valid(type)])),
+                    ("escaped valid,valid", Members([escapedKey + ":" + Valid(type), JsonSerializer.Serialize(parameter) + ":" + Valid(type)])),
                 };
                 var outcomes = new List<string>();
                 foreach (var (label, text) in orders)
@@ -87,7 +91,7 @@ internal static class RepeatedArgumentToolTests
                     var outcome = Outcome(response);
                     cases++;
                     if (outcome != expected || response.ContainsKey("result")) bad.Add(name + "." + parameter + " " + label);
-                    if (label != "valid x3") outcomes.Add(outcome == expected ? "R" : outcome == "ran" ? "ran" : outcome.Replace("-32602:invalid_params: ", "", StringComparison.Ordinal));
+                    if (label is "wrong,valid" or "valid,wrong" or "valid,valid") outcomes.Add(outcome == expected ? "R" : outcome == "ran" ? "ran" : outcome.Replace("-32602:invalid_params: ", "", StringComparison.Ordinal));
                 }
                 perTool.Add(parameter + "=" + string.Join("|", outcomes));
             }
@@ -99,7 +103,11 @@ internal static class RepeatedArgumentToolTests
         }
         var summary = string.Join(" ", measured);
         if (summary.Length > 12000) summary = summary[..12000] + "...";
-        Check(listed.Count > 17 && bad.Count == 0,
+        string[] expectedTools = ["diff", "validate", "room", "plan", "mirror_drift", "mirror_drift_select", "mirror_drift_adopt", "skills_lock_verify", "audit_verify", "diff_intent",
+            "generate_typology", "doc_update", "plan_layouts", "doc_realized", "generate_prototypes", "jurisdiction_resolve", "skill_list", .. RevitCommandCatalogue.All.Select(c => c.ToolName)];
+        var listedNames = listed.Select(t => t!["name"]!.GetValue<string>()).ToArray();
+        Check(listedNames.SequenceEqual(expectedTools), "the probed tools are exactly the pinned tools/list, in order | " + string.Join(",", listedNames));
+        Check(bad.Count == 0,
             "every tool in tools/list refuses a repeated argument name with -32602 '" + MessagePrefix + "<name>' in every order (" + cases.ToString(CultureInfo.InvariantCulture)
             + " cases; R = that refusal; orders wrong,valid|valid,wrong|valid,valid) | failing " + bad.Count.ToString(CultureInfo.InvariantCulture) + ": "
             + string.Join(", ", bad.Take(12)) + " | measured: " + summary);
@@ -112,9 +120,14 @@ internal static class RepeatedArgumentToolTests
             var before = sends;
             var plain = Call(query, "{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-31\",\"document\":" + document + ",\"args\":{}}");
             Check(plain.ContainsKey("result") && sends == before + 1, "a well-typed " + query + " call without a repeated name still reaches the transport | " + plain.ToJsonString());
-            var nested = Call(query, "{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-31\",\"document\":{\"path\":\"a\",\"path\":\"b\"},\"args\":{}}");
-            Check(!(nested["error"]?["message"]?.GetValue<string>() ?? "").StartsWith(MessagePrefix, StringComparison.Ordinal),
-                "a repeated member nested in an argument value is not a repeated argument | " + nested.ToJsonString());
+            // The same document with its path member given twice (same value): passed through to the tool unchanged, so the
+            // response (result, text, isError) and the transport send equal the plain call's.
+            var nestedDocument = "{\"path\":" + JsonSerializer.Serialize(absent) + ",\"path\":" + JsonSerializer.Serialize(absent) + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"}";
+            var beforeNested = sends;
+            var nested = Call(query, "{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-31\",\"document\":" + nestedDocument + ",\"args\":{}}");
+            Check(nested.ContainsKey("result") && !nested.ContainsKey("error") && nested["result"]!.ToJsonString() == plain["result"]!.ToJsonString() && sends == beforeNested + 1,
+                "a repeated member nested in an argument value is not a repeated argument: same result and one transport send as the plain call | sends "
+                + (sends - beforeNested).ToString(CultureInfo.InvariantCulture) + " | " + nested.ToJsonString() + " | plain " + plain.ToJsonString());
         }
 
         // ---- 4. static ----
@@ -122,7 +135,8 @@ internal static class RepeatedArgumentToolTests
             static string CodeOf(string text) => DocUpdateLinkTests.CodeOf(text);
             var server_ = CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")));
             var start = server_.IndexOf("string CallTool(", StringComparison.Ordinal);
-            var body = start < 0 ? "" : server_[start..];
+            var end = start < 0 ? -1 : server_.IndexOf("static bool Matches(", start, StringComparison.Ordinal);
+            var body = start < 0 || end < 0 ? "" : server_[start..end];
             var repeated = body.IndexOf("repeated argument", StringComparison.Ordinal);
             var unexpected = body.IndexOf("unexpected argument", StringComparison.Ordinal);
             var execute = body.IndexOf("tool.Execute(", StringComparison.Ordinal);
