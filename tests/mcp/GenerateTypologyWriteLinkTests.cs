@@ -27,7 +27,7 @@ using System.Text.RegularExpressions;
 // GltfExporter.WriteNew callers checked below is empty (tests/mcp/GenerateWriteLinkTests.cs).
 internal static class GenerateTypologyWriteLinkTests
 {
-    static readonly Regex ForbiddenUse = new(@"\bGenerateTypologyCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteProbe)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateTypologyCommand\b",
+    static readonly Regex ForbiddenUse = new(@"\bGenerateTypologyCommand\s*\.\s*(?:Run|Execute|Fail|PostWriteProbe|PostWriteRemovalProbe|PartialOutputLeft)\b|\busing\s+static\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?GenerateTypologyCommand\b",
         RegexOptions.CultureInvariant);
 
     // SHA-256 and length of the pre-split text (LF line ends) of Run, Execute, the PostWriteProbe seam (from its comment's
@@ -48,7 +48,8 @@ internal static class GenerateTypologyWriteLinkTests
         .Where(c => IsWrite(c.Include) || IsWrite(c.Link) || c.Files.Any(IsWrite))
         .Select(c => c.Include + (c.Link is null ? "" : " (Link " + c.Link + ")")).ToArray();
 
-    // The uses of GenerateTypologyCommand.Run / .Execute / .Fail / .PostWriteProbe (or a using static of the class) in code.
+    // The uses of GenerateTypologyCommand.Run / .Execute / .Fail / .PostWriteProbe / .PostWriteRemovalProbe / .PartialOutputLeft
+    // (or a using static of the class) in code (P3-28 added the last two).
     internal static string[] WriteUses(string source) =>
         ForbiddenUse.Matches(DocUpdateLinkTests.CodeOf(source)).Select(m => Regex.Replace(m.Value, @"\s+", " ")).ToArray();
 
@@ -219,7 +220,7 @@ internal static class GenerateTypologyWriteLinkTests
             .Select(path => Path.GetFullPath(path)).Where(path => !path.StartsWith(testsDir, comparison) && File.Exists(path)).Distinct().ToArray();
         var users = compiledSources.Select(path => (Name: Path.GetFileName(path), Found: WriteUses(File.ReadAllText(path)))).Where(u => u.Found.Length > 0)
             .Select(u => u.Name + " " + string.Join(" ", u.Found)).ToArray();
-        Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe [" + string.Join(", ", users) + "]");
+        Check(users.Length == 0, "Bim.Mcp.csproj: no compiled source uses GenerateTypologyCommand.Run / Execute / Fail / PostWriteProbe / PostWriteRemovalProbe / PartialOutputLeft [" + string.Join(", ", users) + "]");
         var remaining = compiledSources.Where(path => Regex.IsMatch(DocUpdateLinkTests.CodeOf(File.ReadAllText(path)), @"\bGltfExporter\s*\.\s*WriteNew\s*\("))
             .Select(path => Path.GetFileName(path)).Order(StringComparer.Ordinal).ToArray();
         // After P4-27 (generate-prototypes moved its write path into GenerateWrite.cs) no server-compiled writer is left.
