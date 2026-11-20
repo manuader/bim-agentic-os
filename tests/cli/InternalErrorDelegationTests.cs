@@ -319,6 +319,10 @@ internal static class InternalErrorDelegationTests
                 ("a '\"' char literal, then an assignment", good + "static void T() { var c = '\"'; GuardedWorkProbe = null; }\n", false),
                 ("the name inside a string literal", good + "const string S = \"GuardedWorkProbe = null;\";\n", false),
                 ("assignments only inside comments", good + "// GuardedWorkProbe = () => { };\n/* GuardedWorkProbe += x; */\n", true),
+                // P3-27 review: CodeOf mis-lexes a raw """ string holding '"' and '//', and an @$ string ending in a
+                // backslash followed by "//", so the rest of the line reads as a comment (0 mentions blanked and kept).
+                ("an assignment after a raw string holding '\"' and '//'", good + "static void T() { var s = \"\"\" a \" // \"\"\"; GuardedWorkProbe = null; }\n", false),
+                ("an assignment after @$\"\\\" + \"//\"", good + "static void T() { var s = @$\"\\\" + \"//\"; GuardedWorkProbe = null; }\n", false),
             };
             foreach (var (name, source, clean) in cases)
             {
@@ -379,7 +383,16 @@ internal static class InternalErrorDelegationTests
                     ("the read missing", declaration + "\n", false),
                     ("an assignment in an interpolation hole (planted evasion)", good + "static void T() { var s = $\"{" + seam + " = null}\"; }\n", false),
                     ("an assignment inside a raw string literal", good + "static void T() { var s = \"\"\"\n" + seam + " = null;\n\"\"\"; }\n", false),
+                    ("an assignment after a raw string holding '\"' and '//' (lexer gap)", good + "static void T() { var s = \"\"\" a \" // \"\"\"; " + seam + " = null; }\n", false),
+                    ("an assignment after @$\"\\\" + \"//\" (lexer gap)", good + "static void T() { var s = @$\"\\\" + \"//\"; " + seam + " = null; }\n", false),
                 };
+                if (type == "Action")
+                    cases = cases.Concat(new (string Name, string Source, bool Clean)[]
+                    {
+                        ("a planted +=", good + "static void T() { " + seam + " += () => { }; }\n", false),
+                        ("a planted parenthesized assignment", good + "static void T() { (" + seam + ") = null; }\n", false),
+                        ("the name inside a string literal", good + "const string S = \"" + seam + " = null;\";\n", false),
+                    }).ToArray();
                 foreach (var (name, source, clean) in cases)
                 {
                     var uses = SeamHygiene(source, seam, type);
