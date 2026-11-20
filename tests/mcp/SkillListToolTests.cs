@@ -32,7 +32,7 @@ using Bim.Core;
 //      CLI SkillListCommand.cs and the tool; the Release Bim.Mcp.dll defines Bim.Cli.SkillListCommand with List.
 //   8. P5-29 internal error through the seam: with SkillListCommand.ListingWorkProbe throwing a non-refusal exception
 //      (in process), the tool answers isError with exactly the CLI's skill_list_internal_error line (equal to the
-//      in-process CLI Run line) for the default and an explicit skills directory, the server's stderr carries the
+//      in-process CLI Run line) for the default, an explicit and a missing skills directory, the server's stderr carries the
 //      IntentPlan diagnostic once (equal to the in-process CLI's), the defect message never reaches the text, and
 //      usage-equivalent arguments stay -32602 without reaching the probe. The seam is null before and after; with it
 //      reset the next calls answer the CLI listing and refusal bytes. The tool source never names ListingWorkProbe.
