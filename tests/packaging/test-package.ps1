@@ -1152,6 +1152,7 @@ try {
                         try { if ($Stdin) { $process.StandardInput.Write($Stdin) }; $process.StandardInput.Close() } catch [IO.IOException] { }
                         if (!$process.WaitForExit(180000)) {
                             try { $process.Kill($true) } catch { }
+                            try { [void]$process.WaitForExit(5000) } catch { }
                             return [pscustomobject]@{ Code = -1; Out = '<timed out>'; Err = '' }
                         }
                         $process.WaitForExit()
@@ -1166,6 +1167,11 @@ try {
                         $document = [Text.Json.JsonDocument]::Parse($run.Out.Split("`n")[0])
                         try {
                             $result = $document.RootElement.GetProperty('result')
+                            # A well-formed exchange: exit 0 after stdin closes, nothing on stderr, exactly one non-empty stdout line, id 24.
+                            $lines = @($run.Out.Split("`n") | Where-Object { $_.Trim().Length -gt 0 })
+                            $idElement = $document.RootElement.GetProperty('id')
+                            $clean = $run.Code -eq 0 -and $run.Err.Length -eq 0 -and $lines.Count -eq 1 -and $idElement.ValueKind -eq [Text.Json.JsonValueKind]::Number -and $idElement.GetInt32() -eq 24
+                            if (!$clean) { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$raw (not a clean exchange: exit 0, empty stderr, one stdout line, id 24 expected; $($lines.Count) line(s))" } }
                             return [pscustomobject]@{ Ok = $true; IsError = $result.GetProperty('isError').GetBoolean(); Text = $result.GetProperty('content').get_Item(0).GetProperty('text').GetString(); Raw = $raw }
                         } finally { $document.Dispose() }
                     } catch { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$raw (unparsed: $($_.Exception.Message))" } }
@@ -1189,7 +1195,7 @@ try {
                     Write-PackageText $request $case.Json
                     $cliOut = Join-Path $p724Io "cli-$p724Index.json"
                     $cli = Invoke-P724Process @($p724Cli, 'generate-prototypes', $request, $cliOut) ''
-                    $cliOk = $cli.Code -eq 0 -and (Test-Path -LiteralPath $cliOut -PathType Leaf) -and $cli.Out -match '"status":"succeeded"' -and $cli.Out -match '"pipeline_status":"(ranked|infeasible)"'
+                    $cliOk = $cli.Code -eq 0 -and (Test-Path -LiteralPath $cliOut -PathType Leaf) -and $cli.Out -cmatch '"status":"succeeded"' -and $cli.Out -cmatch '"pipeline_status":"(ranked|infeasible)"'
                     if ($cliOk) { $p724Statuses.Add($Matches[1]); Write-Host "P7-24 $($case.Name): pipeline_status $($Matches[1])" }
                     Assert $cliOk "P7-24 $($case.Name): the packaged CLI generate-prototypes outside any repository succeeds (ranked or infeasible): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
                     $mcp = Invoke-P724Mcp $p724Mcp $request
@@ -1207,7 +1213,7 @@ try {
                 $cli = Invoke-P724Process @($p724Cli, 'generate-prototypes', $request, $cliOut) ''
                 $expected = '{"status":"failed","code":"generate_prototypes_pack_unavailable","detail":"input_not_found"}'
                 $cliLine = $cli.Out.TrimEnd("`r", "`n")
-                Assert ($cli.Code -eq 1 -and $cliLine -ceq $expected -and !(Test-Path -LiteralPath $cliOut)) "P7-24: a missing packaged code pack makes the packaged CLI print $expected (exit 1, no output file): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
+                Assert ($cli.Code -eq 1 -and $cliLine -ceq $expected -and $cli.Err.Length -eq 0 -and !(Test-Path -LiteralPath $cliOut)) "P7-24: a missing packaged code pack makes the packaged CLI print $expected (exit 1, empty stderr, no output file): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
                 $mcp = Invoke-P724Mcp $p724Mcp $request
                 Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cliLine) "P7-24: a missing packaged code pack makes the packaged mcp/Bim.Mcp.dll generate_prototypes return the typed pack_unavailable line (isError), equal to the packaged CLI stdout line: mcp $($mcp.Raw)"
             } finally { if (Test-Path -LiteralPath $p724Case) { Remove-Item -LiteralPath $p724Case -Recurse -Force -ErrorAction SilentlyContinue } }
