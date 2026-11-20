@@ -9,10 +9,12 @@ using System.Xml.Linq;
 //   1. Bim.Mcp.dll holds zero MemberRefs whose parent is the TypeRef Bim.Gltf.GltfExporter; Bim.Cli.dll holds >= 1 (control).
 //   2. Bim.Mcp.dll holds no AssemblyRef named Bim.Gltf, no TypeRef in namespace Bim.Gltf or resolved through that
 //      AssemblyRef, and no MemberRef on such a TypeRef; Bim.Cli.dll holds the AssemblyRef and TypeRefs (control).
-//   3. So the ProjectReference to adapters/gltf/Bim.Gltf/Bim.Gltf.csproj was unused: it is removed from
-//      interfaces/mcp/Bim.Mcp.csproj (any '\' or '/', any case), and the Release Bim.Mcp.deps.json no longer names
-//      Bim.Gltf while Bim.Cli.deps.json still does (control). That the linked sources compile without it is shown by the
-//      verify.ps1 Release --warnaserror build of interfaces/mcp itself.
+//   3. So no code needs the ProjectReference to adapters/gltf/Bim.Gltf/Bim.Gltf.csproj in interfaces/mcp/Bim.Mcp.csproj.
+//      It is KEPT, for a measured packaging reason: removing it (relay247 run 44673074883, every other gate and the
+//      Release --warnaserror build of interfaces/mcp green without it) drops mcp/Bim.Gltf.dll from the package, and the
+//      P10-18 package layout pin (tests/cli/PackageLayoutPackTests.cs, requiredFirstParty) requires mcp/Bim.Gltf.dll.
+//      Asserted: the reference is present only while that pin names mcp/Bim.Gltf.dll (dropping both is one follow-up),
+//      and the Release Bim.Mcp.deps.json names Bim.Gltf exactly when the csproj references it (Bim.Cli.deps.json control).
 //   4. A self-test of the ProjectReference reader on synthetic csproj texts.
 // tools/list and every MCP tool's bytes are pinned by the existing sections (tests/mcp/Program.cs and the *ToolTests.cs
 // files), unchanged.
@@ -100,17 +102,24 @@ internal static class GltfReferenceTests
         Check(mcp.AssemblyRefs.Length == 0 && mcp.TypeRefs.Length == 0 && mcp.MemberRefs.Length == 0,
             "the Release Bim.Mcp.dll holds no AssemblyRef, TypeRef or MemberRef into Bim.Gltf [" + Show(mcp) + "]");
 
-        // ---- 3. the unused ProjectReference is gone ----
+        // ---- 3. the code-unused ProjectReference is kept only for the package layout pin ----
         var project = Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj");
         var gltfRefs = GltfProjectReferences(File.ReadAllText(project));
-        Check(gltfRefs.Length == 0, "Bim.Mcp.csproj has no ProjectReference to Bim.Gltf.csproj (unused: " + Show(mcp) + ") [" + string.Join(", ", gltfRefs) + "]");
+        var layoutPin = Path.Combine(root, "tests", "cli", "PackageLayoutPackTests.cs");
+        var pinned = File.Exists(layoutPin) && File.ReadAllText(layoutPin).Contains("\"mcp/Bim.Gltf.dll\"", StringComparison.Ordinal);
+        Console.WriteLine("NOTE P4-28 Bim.Mcp.csproj ProjectReference to Bim.Gltf.csproj: [" + string.Join(", ", gltfRefs) + "]; unused by the binary ("
+            + Show(mcp) + "); kept because the P10-18 package layout pin requires mcp/Bim.Gltf.dll: " + pinned);
+        Check(gltfRefs.Length <= 1 && (gltfRefs.Length == 0 || pinned),
+            "Bim.Mcp.csproj references Bim.Gltf.csproj at most once, and only while tests/cli/PackageLayoutPackTests.cs pins mcp/Bim.Gltf.dll in the package ["
+            + string.Join(", ", gltfRefs) + "; pinned " + pinned + "]");
         var mcpDeps = Path.Combine(Path.GetDirectoryName(mcpDll)!, "Bim.Mcp.deps.json");
         var cliDeps = Path.Combine(Path.GetDirectoryName(cliDll)!, "Bim.Cli.deps.json");
         var mcpLibraries = File.Exists(mcpDeps) ? DepsLibraries(mcpDeps) : null;
         var cliLibraries = File.Exists(cliDeps) ? DepsLibraries(cliDeps) : null;
         Check(cliLibraries is not null && cliLibraries.Contains("Bim.Gltf"), "the Release Bim.Cli.deps.json names Bim.Gltf (reader control) [" + string.Join(", ", cliLibraries ?? Array.Empty<string>()) + "]");
-        Check(mcpLibraries is not null && !mcpLibraries.Contains("Bim.Gltf") && mcpLibraries.Contains("Bim.Core") && mcpLibraries.Contains("Bim.Generative"),
-            "the Release Bim.Mcp.deps.json names Bim.Core and Bim.Generative and not Bim.Gltf [" + string.Join(", ", mcpLibraries ?? Array.Empty<string>()) + "]");
+        Check(mcpLibraries is not null && mcpLibraries.Contains("Bim.Gltf") == (gltfRefs.Length == 1) && mcpLibraries.Contains("Bim.Core") && mcpLibraries.Contains("Bim.Generative"),
+            "the Release Bim.Mcp.deps.json names Bim.Core and Bim.Generative, and Bim.Gltf exactly when Bim.Mcp.csproj references it ["
+            + string.Join(", ", mcpLibraries ?? Array.Empty<string>()) + "]");
 
         // ---- 4. self-test of the ProjectReference reader ----
         Check(GltfProjectReferences("""<Project><ItemGroup><ProjectReference Include="../../adapters/gltf/Bim.Gltf/Bim.Gltf.csproj" /></ItemGroup></Project>""").Length == 1
