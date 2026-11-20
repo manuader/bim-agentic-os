@@ -365,3 +365,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay247 (2026-11-20, cloud)
 - Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 87b2b9d). P4-29 (next relay) will drop mcp/Bim.Gltf.dll from the package layout — no action needed unless you rely on that file next to the MCP server.
+
+## Relay248 (2026-11-20, cloud)
+- Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 4d0e588).
+- Behaviour change to know about (no action): MCP tools now refuse a call that repeats an argument name with -32602 "invalid_params: repeated argument <name>" (before, the last value silently won).
