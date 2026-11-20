@@ -329,10 +329,11 @@ internal static class MinsertEzdxfTests
     private static readonly JsonSerializerOptions CliJson = new() { Converters = { new JsonStringEnumConverter() } };
 
     // First 16 hex digits of the SHA-256 of the cad-brief document of Drawing() (with / without the flag), and the
-    // in-process uncertainty codes; measured in CI by the P6-32 probe run.
-    private const string PinnedWithFlag = "PROBE";
-    private const string PinnedWithout = "PROBE";
-    private const string PinnedCodesWithFlag = "PROBE";
+    // in-process uncertainty codes; measured in CI by the P6-32 probe run 44825236825 (identical on Linux and Windows).
+    private const string PinnedWithFlag = "8411ECC467B1097C";
+    private const string PinnedWithout = "A8F37BBE600200F5";
+    private const string PinnedCodesWithFlag = "area-from-regionx4,area-missingx3,unlabelled-regionx18";
+    private const string PinnedCodesWithout = "area-missingx7";
 
     private static string Hash16(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes))[..16];
 
@@ -376,7 +377,7 @@ internal static class MinsertEzdxfTests
                 || u.Message.Contains("extrusion", StringComparison.Ordinal) || u.Sources.Any(s => s.Handle is "T1" or "T2" or "T3" || s.InsertPath.Any(p => p.StartsWith('T'))));
             var codes = string.Join(",", draft.Uncertainties.GroupBy(u => u.Code).Select(g => g.Key + "x" + g.Count().ToString(CultureInfo.InvariantCulture)));
             var plainCodes = string.Join(",", plain.Uncertainties.GroupBy(u => u.Code).Select(g => g.Key + "x" + g.Count().ToString(CultureInfo.InvariantCulture)));
-            c(drawing.Warnings.Count == 3 && drawing.Warnings.All(w => w.Code == "ocs-non-planar") && !Mentions(draft) && !Mentions(plain) && codes == PinnedCodesWithFlag,
+            c(drawing.Warnings.Count == 3 && drawing.Warnings.All(w => w.Code == "ocs-non-planar") && !Mentions(draft) && !Mentions(plain) && codes == PinnedCodesWithFlag && plainCodes == PinnedCodesWithout,
                 "limit: the three ocs-non-planar reader warnings of the dropped T1/T2/T3 are not in the brief uncertainty list (codes pinned)",
                 "reader " + dropped + " codes with flag " + codes + " without " + plainCodes);
 
