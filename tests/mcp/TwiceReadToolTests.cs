@@ -131,8 +131,18 @@ internal static class TwiceReadToolTests
             + ",\"packs\":[{\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false,"
             + "\"source_confidence\":{\"rules\":0,\"cited\":0,\"owner-confirmed\":0,\"to-verify\":0,\"lowest\":\"none\"}}]}";
         const string ResolveLine = "{\"status\":\"succeeded\",\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"version\":\"1.2.3\",\"stub\":false}";
-        string JsonInvalidPrefix() => "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.JsonInvalid + "\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"";
-        string DriftPrefix() => "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockDrift + "\",\"subject\":\"" + Pack + "\",\"detail\":\"";
+        // Refusal lines pinned literally (red phase: not yet observed).
+        const string JsonInvalidLine = "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.JsonInvalid + "\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"<p530m json_invalid detail not yet observed>\"}";
+        const string DriftLine = "<p530m drift line not yet observed>";
+        // Red-phase scaffolding only: the json_invalid lines (unlocked and locked) of a malformed copy, shown in the drift failure.
+        string Observed()
+        {
+            var probe = Path.Combine(work, "twice-read-mcp", "probe-skills");
+            CopyDirectory(skills, probe);
+            File.WriteAllText(Path.Combine(probe, Pack, "jurisdiction.json"), "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+            static string L(JurisdictionLoad load) => load.Refusal is { } r ? JsonSerializer.Serialize(new { status = "failed", code = r.Code, subject = r.Subject, detail = r.Detail }) : "<no refusal>";
+            return "observed unlocked " + L(JurisdictionRegistry.Load(probe)) + " locked " + L(JurisdictionRegistry.LoadLocked(probe, SkillLocking.Pin(probe, new[] { Pack })));
+        }
 
         void Phase(string phase, string lockFile, Func<string, bool>[] expected)
         {
@@ -146,8 +156,11 @@ internal static class TwiceReadToolTests
             };
             var cli = cases.Select(c => Cli(c.CliArguments)).ToArray();
             for (var index = 0; index < cases.Length; index++)
-                Check(cli[index].Exit is 0 or 1 && expected[index](cli[index].Out) && (cli[index].Exit == 0) == cli[index].Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal),
-                    phase + ": " + cases[index].Label + ": the packaged CLI line is the expected one | exit " + cli[index].Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(cli[index].Out));
+            {
+                var expectedLine = cli[index].Exit is 0 or 1 && expected[index](cli[index].Out) && (cli[index].Exit == 0) == cli[index].Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal);
+                Check(expectedLine,
+                    phase + ": " + cases[index].Label + ": the packaged CLI line is the expected one | exit " + cli[index].Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(cli[index].Out) + (expectedLine ? "" : " | " + Observed()));
+            }
             // 1. in process, two calls each on the one harness server.
             for (var index = 0; index < cases.Length; index++)
             {
@@ -160,15 +173,17 @@ internal static class TwiceReadToolTests
             Check(AppContext.BaseDirectory == originalBase, phase + ": AppContext.BaseDirectory is restored after the in-process calls");
             // 2. one real packaged server, two calls each.
             var stdin = new StringBuilder();
-            foreach (var c in cases) for (var turn = 0; turn < 2; turn++) stdin.Append(Line(c.Tool, c.Arguments.DeepClone().AsObject())).Append('\n');
+            var requestIds = new List<int>();
+            foreach (var c in cases) for (var turn = 0; turn < 2; turn++) { stdin.Append(Line(c.Tool, c.Arguments.DeepClone().AsObject())).Append('\n'); requestIds.Add(id); }
             var lines = McpProcess(stdin.ToString()).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r')).ToArray();
             Check(lines.Length == cases.Length * 2, phase + ": the packaged Bim.Mcp.dll answers six lines | " + Short(string.Join(" / ", lines)));
             for (var at = 0; at < lines.Length && at < cases.Length * 2; at++)
             {
                 var index = at / 2;
                 var response = JsonNode.Parse(lines[at])!.AsObject();
-                Check(IsResult(response) && Text(response) == cli[index].Out && IsError(response) == (cli[index].Exit != 0),
-                    phase + ": " + cases[index].Label + " packaged-server call #" + (at % 2 + 1).ToString(CultureInfo.InvariantCulture) + " text byte-equal to the CLI line, isError = (exit 1) | "
+                Check(response["id"] is JsonValue responseId && responseId.TryGetValue<int>(out var answered) && answered == requestIds[at]
+                    && IsResult(response) && Text(response) == cli[index].Out && IsError(response) == (cli[index].Exit != 0),
+                    phase + ": " + cases[index].Label + " packaged-server call #" + (at % 2 + 1).ToString(CultureInfo.InvariantCulture) + " answers its request id " + requestIds[at].ToString(CultureInfo.InvariantCulture) + " with text byte-equal to the CLI line, isError = (exit 1) | "
                     + Short(lines[at]) + " | cli " + Short(cli[index].Out));
             }
             Check(TreeDigest(skills) == digest && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes), phase + ": the skills tree and the lock are unchanged");
@@ -177,13 +192,12 @@ internal static class TwiceReadToolTests
         Phase("success", lockPath, [line => line == listLine, line => line == ResolveLine, line => line == ResolveLine]);
 
         File.WriteAllText(sidecar, Sidecar("edited after pinning"), new UTF8Encoding(false));
-        Phase("sidecar drift", lockPath, [line => line == listLine, line => line == ResolveLine, line => line.StartsWith(DriftPrefix(), StringComparison.Ordinal)]);
+        Phase("sidecar drift", lockPath, [line => line == listLine, line => line == ResolveLine, line => line == DriftLine]);
 
         File.WriteAllText(sidecar, "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
         var repinned = Path.Combine(work, "twice-read-mcp", "p530m.repinned.skills.lock.json");
         File.WriteAllBytes(repinned, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { Pack })));
-        Phase("sidecar json_invalid", repinned, [line => line.StartsWith(JsonInvalidPrefix(), StringComparison.Ordinal), line => line.StartsWith(JsonInvalidPrefix(), StringComparison.Ordinal),
-            line => line.StartsWith(JsonInvalidPrefix(), StringComparison.Ordinal)]);
+        Phase("sidecar json_invalid", repinned, [line => line == JsonInvalidLine, line => line == JsonInvalidLine, line => line == JsonInvalidLine]);
     }
 
     static void CopyDirectory(string source, string target)

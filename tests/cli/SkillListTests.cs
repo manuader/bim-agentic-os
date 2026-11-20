@@ -928,8 +928,10 @@ internal static class SkillListTests
         Check(first != second && !first.Equals(second), "success: the two LoadLocked results are unequal (JurisdictionLoad follows registry identity)", first + " / " + second);
         const string SuccessLine = "{\"status\":\"succeeded\",\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"version\":\"1.2.3\",\"stub\":false}";
         var unoverridden = Inline(new[] { "jurisdiction-resolve", "--code", Code, "--lock", lockPath }, null);
-        Check(unoverridden.Exit == 1 && unoverridden.Out != SuccessLine + Environment.NewLine && unoverridden.Err.Length == 0,
-            "negative control: in process with the original base directory, jurisdiction-resolve --code " + Code + " --lock refuses (the override is load-bearing)", D(unoverridden));
+        // The repository skills hold no xx.p530.pack directory, so the lock's pinned pack is skill_lock_missing on the pack.
+        Check(unoverridden.Exit == 1 && unoverridden.Err.Length == 0
+            && unoverridden.Out.StartsWith("{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockMissing + "\",\"subject\":\"" + Pack + "\",\"detail\":\"", StringComparison.Ordinal),
+            "negative control: in process with the original base directory, jurisdiction-resolve --code " + Code + " --lock is skill_lock_missing on " + Pack + " (the override is load-bearing)", D(unoverridden));
         Phase("success", lockPath, 0, SuccessLine);
 
         // ---- sidecar drift: the valid sidecar edited after pinning ----
