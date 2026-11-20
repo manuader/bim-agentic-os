@@ -34,7 +34,7 @@ internal static class SkillListTool
             if (string.IsNullOrWhiteSpace(skills) || skills.StartsWith("--", StringComparison.Ordinal)) throw new McpInvalidParamsException(UsageMessage);
         }
         var envelope = SkillListCommand.List(skills);
-        if (envelope.Diagnostic is { } detail) Console.Error.WriteLine(detail);
+        SkillListCommand.WriteDiagnostic(envelope); // P5-31: stderr written guarded by the verb (a throwing Console.Error is ignored)
         return (envelope.Line, !envelope.Succeeded);
     }
 
