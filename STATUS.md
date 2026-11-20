@@ -1,5 +1,5 @@
-Relay249 (Claude, cloud scheduled) closed 2026-11-20T13:30:38Z; LOCK FREE. Merged P1-36 (deadline transport legacy seams retired: one page path through connectThenRead, every P1-21..P1-34 pin unchanged), P5-30 (jurisdiction-resolve --lock and MCP skill_list/jurisdiction_resolve twice-read byte-identical; test-only), P7-24 (packaged mcp/Bim.Mcp.dll generate_prototypes package-first, byte-equal to the packaged CLI; test-only); reviews 0 blockers, should-fixes closed; 0 failed attempts.
-Progress: 282/301 done (93.7 %; new P1-38, P5-32, P7-31). main = 8b26452 (CI 44741082959 green 9/9).
-Phases (board tasks done): P1 36/38 (~95 %) · P2 33/35 (~94 %) · P3 27/29 (~93 %) · P4 28/29 (~97 %) · P5 30/32 (~94 %) · P6 30/32 (~94 %) · P7 29/31 (~94 %) · P8 8/9 (~89 %) · P9 8/9 (~89 %) · P10 31/33 (~94 %).
+Relay250 (Claude, cloud scheduled) closed 2026-11-20T15:38:39Z; LOCK FREE. Merged P2-35 (macOS queued bytes follow the client's send buffer, not the fake's receive buffer; test-only), P3-28 (generate-typology Run catch-all contains a throwing stderr: typed line, exit 1), P4-29 (Bim.Mcp drops the unused Bim.Gltf ProjectReference; package no longer ships mcp/Bim.Gltf.dll); reviews 0 blockers, should-fixes closed; 0 failed attempts.
+Progress: 285/304 done (93.8 %; new P2-36, P3-30, P4-30). main = 440b635 (CI 44761832082 green 9/9).
+Phases (board tasks done): P1 36/38 (~95 %) · P2 34/36 (~94 %) · P3 28/30 (~93 %) · P4 29/30 (~97 %) · P5 30/32 (~94 %) · P6 30/32 (~94 %) · P7 29/31 (~94 %) · P8 8/9 (~89 %) · P9 8/9 (~89 %) · P10 31/33 (~94 %).
 Owner: decide ADR0011 (P9-03) and ADR0010 (P2-11); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; git pull.
-Next: P2-35, P3-28, P3-29, P4-29 (relay247); then P10-32, P10-33, P6-31, P6-32, P7-30 (relay248); then P1-37, P1-38, P5-31, P5-32, P7-31.
+Next: P10-32, P10-33, P6-31, P6-32, P7-30 (relay248); then P1-37, P1-38, P5-31, P5-32, P7-31 (relay249); then P2-36, P3-29, P3-30, P4-30.
