@@ -55,6 +55,22 @@ using Bim.Core;
 //      `ListingWorkProbe?.Invoke();` inside Listing's body before its JurisdictionRegistry.Load(, with List calling
 //      Listing inside its try whose catch is IntentPlan.Internal; never assigned; checker self-tests prove each evasion
 //      is caught.
+//  13. P5-31 post-load seam and a throwing stderr: with SkillListCommand.LoadedProbe (a second null-by-default seam,
+//      invoked with the load right after JurisdictionRegistry.Load) throwing, Run prints exactly the typed
+//      skill_list_internal_error line, exit 1, the IntentPlan diagnostic once, for the default directory, --skills, a
+//      missing directory and a malformed sidecar, the probe holding the load of the one read (a registry, the loader's
+//      root_missing, the sidecar json_invalid: so it ran after Load); List returns that envelope; usage never reaches it;
+//      a throwing ListingWorkProbe ends the verb first; a non-throwing post-load probe keeps the process bytes. With a
+//      Console.Error whose every write throws (IOException, ObjectDisposedException, InvalidOperationException) the
+//      internal error (post-load probe, listing probe, NUL path) still prints the typed line, exit 1, one write attempt,
+//      nothing escapes Run; a listing, root_missing, sidecar and usage refusal never write stderr and keep their bytes.
+//      Static: LoadedProbe is named exactly twice under interfaces/ (initializer-free Action<JurisdictionLoad>
+//      declaration, one LoadedProbe?.Invoke(load); right after Listing's `var load = JurisdictionRegistry.Load(skills);`
+//      and before `if (load.Refusal`), never assigned (checker self-tests); Run's body and WriteDiagnostic's body are
+//      pinned, Console.Error appears in the command only in WriteDiagnostic and not in the MCP tool, which calls
+//      SkillListCommand.WriteDiagnostic(envelope) once; documented deltas CommandDeltaP531 and ToolDeltaP531, reversed,
+//      give the pre-P5-31 SkillListCommand.cs and SkillListTool.cs byte for byte (SHA-256, "\n" line endings), so the
+//      P5-21/P5-22/P5-29 code read by the earlier pins is otherwise unchanged.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -406,6 +422,9 @@ internal static class SkillListTests
 
         // ---- 12. P5-30 twice-read bytes under --lock ----
         LockTwiceRead(scratch, dotnet, cliDll, check);
+
+        // ---- 13. P5-31 post-load seam and a throwing stderr ----
+        PostLoad(root, scratch, dotnet, cliDll, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -1090,6 +1109,339 @@ internal static class SkillListTests
             writer.WriteEndObject();
         }
         return (0, Encoding.UTF8.GetString(buffer.ToArray()));
+    }
+
+    // Section 13 (P5-31): see oracle 13 in the header.
+    static void PostLoad(string root, string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-31: " + name, detail);
+        const string InternalLine = "{\"status\":\"failed\",\"code\":\"skill_list_internal_error\"}";
+        var newline = Environment.NewLine;
+        var skills = Path.GetFullPath(Path.Combine(root, "skills"));
+        var absent = Path.Combine(scratch, "p531-absent");
+        var badSidecar = Path.Combine(scratch, "p531-bad-sidecar");
+        var nul = Path.Combine(scratch, "p531\0nul");
+        CopyDirectory(Path.Combine(skills, Caba), Path.Combine(badSidecar, Caba));
+        File.WriteAllText(Path.Combine(badSidecar, Caba, "jurisdiction.json"), "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+        var usageLine = JsonSerializer.Serialize(new { status = "failed", code = UsageCode, detail = Usage }) + newline;
+
+        // The verb in process with stderr = errorWriter (a fresh StringWriter when null): raw stdout, the captured stderr
+        // ("" for a writer passed in), exit and any escaping exception; globals restored in the finally.
+        static (int Exit, string Out, string Err, string Thrown) Inline(string[] arguments, TextWriter? errorWriter = null)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var thrown = "";
+            int exit;
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(errorWriter ?? capturedError);
+                try { Bim.Cli.SkillListCommand.Run(arguments); }
+                catch (Exception failure) { thrown = failure.GetType().FullName + ": " + failure.Message; }
+            }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+            }
+            return (exit, capturedOut.ToString(), capturedError.ToString(), thrown);
+        }
+        (int Exit, string Out, string Err) Child(params string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(cliDll);
+            start.ArgumentList.Add("skill-list");
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result);
+        }
+        static string D((int Exit, string Out, string Err, string Thrown) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out) + " stderr " + JsonSerializer.Serialize(r.Err) + (r.Thrown.Length > 0 ? " threw " + r.Thrown : "");
+        static string Loads(List<JurisdictionLoad> loads) => string.Join(" | ", loads.Select(load =>
+            "registry " + (load.Registry is not null) + " refusal " + (load.Refusal?.Code ?? "-") + " loader " + (load.LoaderError?.Code ?? "-")));
+
+        Check(Bim.Cli.SkillListCommand.LoadedProbe is null && Bim.Cli.SkillListCommand.ListingWorkProbe is null, "both seams are null in production");
+        var listingChild = Child("--skills", skills);
+        var missingChild = Child("--skills", absent);
+        var sidecarChild = Child("--skills", badSidecar);
+        Check(listingChild.Exit == 0 && missingChild.Exit == 1 && sidecarChild.Exit == 1 && listingChild.Err.Length == 0 && missingChild.Err.Length == 0 && sidecarChild.Err.Length == 0,
+            "fixture: real processes list the repository and refuse the missing directory and the malformed sidecar, stderr empty",
+            listingChild.Exit.ToString(CultureInfo.InvariantCulture) + missingChild.Out + sidecarChild.Out);
+
+        // 13a. A probe thrown after JurisdictionRegistry.Load: the typed line, exit 1, the diagnostic once; the probe holds
+        // the load of the one read (so it ran after Load): a registry, the loader's root_missing, the sidecar refusal.
+        var seen = new List<JurisdictionLoad>();
+        var cases = new (string Label, string[] Arguments, Func<JurisdictionLoad, bool> Load)[]
+        {
+            ("default directory", [], load => load.Registry is not null && load.Refusal is null),
+            ("explicit --skills", ["--skills", skills], load => load.Registry is not null && load.Refusal is null),
+            ("missing directory", ["--skills", absent], load => load.Registry is null && load.LoaderError?.Code == SkillCodes.RootMissing),
+            ("malformed sidecar", ["--skills", badSidecar], load => load.Registry is null && load.LoaderError is null && load.Refusal?.Code == JurisdictionCodes.JsonInvalid),
+        };
+        foreach (var failure in new Exception[] { new InvalidOperationException("boom skill-list P5-31"), new IOException("disk P5-31"), new NullReferenceException("null P5-31") })
+        {
+            var name = failure.GetType().Name;
+            var diagnostic = "skill-list internal error: " + failure.GetType().FullName + ": " + failure.Message;
+            Bim.Cli.SkillListCommand.LoadedProbe = load => { seen.Add(load); throw failure; };
+            try
+            {
+                foreach (var (label, arguments, expected) in cases)
+                {
+                    seen.Clear();
+                    var run = Inline(["skill-list", .. arguments]);
+                    Check(run.Exit == 1 && run.Out == InternalLine + newline && run.Err == diagnostic + newline && run.Thrown.Length == 0,
+                        name + " after the load, " + label + ": the typed skill_list_internal_error line, exit 1, the diagnostic once", D(run));
+                    Check(seen.Count == 1 && expected(seen[0]), name + " after the load, " + label + ": the probe ran once with the load of the read", Loads(seen));
+                }
+                seen.Clear();
+                Bim.Cli.IntentEnvelope? envelope = null;
+                var escaped = "";
+                try { envelope = Bim.Cli.SkillListCommand.List(absent); }
+                catch (Exception error) { escaped = error.GetType().Name; }
+                Check(escaped.Length == 0 && envelope is { Line: InternalLine, Exit: 1 } && envelope.Diagnostic == diagnostic && seen.Count == 1,
+                    name + " after the load: List returns the typed envelope with the diagnostic and never throws", (envelope?.ToString() ?? "null") + " " + escaped);
+                seen.Clear();
+                var usage = Inline(["skill-list", "--skills"]);
+                Check(usage.Exit == 1 && usage.Out == usageLine && usage.Err.Length == 0 && seen.Count == 0, name + ": a usage refusal never reaches the post-load probe and is unchanged", D(usage));
+            }
+            finally { Bim.Cli.SkillListCommand.LoadedProbe = null; }
+        }
+
+        // 13b. The listing probe throws first: the post-load probe is never reached.
+        Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new InvalidOperationException("first P5-31");
+        Bim.Cli.SkillListCommand.LoadedProbe = load => seen.Add(load);
+        try
+        {
+            seen.Clear();
+            var first = Inline(["skill-list", "--skills", skills]);
+            Check(first.Exit == 1 && first.Out == InternalLine + newline && first.Err == "skill-list internal error: System.InvalidOperationException: first P5-31" + newline && seen.Count == 0,
+                "a listing probe that throws ends the verb before the load: the post-load probe never runs", D(first) + " loads " + seen.Count.ToString(CultureInfo.InvariantCulture));
+        }
+        finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; Bim.Cli.SkillListCommand.LoadedProbe = null; }
+
+        // 13c. A post-load probe that does not throw changes no byte (listing and refusals equal the real processes).
+        Bim.Cli.SkillListCommand.LoadedProbe = load => seen.Add(load);
+        try
+        {
+            foreach (var (label, arguments, child) in new (string, string[], (int Exit, string Out, string Err))[] { ("listing", ["--skills", skills], listingChild), ("root_missing", ["--skills", absent], missingChild), ("sidecar refusal", ["--skills", badSidecar], sidecarChild) })
+            {
+                seen.Clear();
+                var quiet = Inline(["skill-list", .. arguments]);
+                Check(seen.Count == 1 && quiet.Exit == child.Exit && quiet.Out == child.Out && quiet.Err.Length == 0 && quiet.Thrown.Length == 0,
+                    "a non-throwing post-load probe runs once and keeps the " + label + " bytes", D(quiet) + " | process " + JsonSerializer.Serialize(child.Out));
+            }
+        }
+        finally { Bim.Cli.SkillListCommand.LoadedProbe = null; }
+
+        // 13d. A Console.Error that throws while the diagnostic is written: the typed line still prints, exit 1, nothing
+        // escapes Run, the write is attempted once; success and refusals never touch stderr and keep their bytes.
+        foreach (var rejection in new Exception[] { new IOException("stderr closed P5-31"), new ObjectDisposedException("stderr P5-31"), new InvalidOperationException("stderr rejected P5-31") })
+        {
+            var name = rejection.GetType().Name;
+            foreach (var (label, arguments, arm) in new (string, string[], Action)[]
+            {
+                ("post-load probe", ["--skills", skills], () => Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new InvalidOperationException("post-load P5-31")),
+                ("listing probe", ["--skills", absent], () => Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new IOException("listing P5-31")),
+                ("NUL skills path", ["--skills", nul], () => { }),
+            })
+            {
+                var writer = new RejectingWriter(rejection);
+                arm();
+                (int Exit, string Out, string Err, string Thrown) run;
+                try { run = Inline(["skill-list", .. arguments], writer); }
+                finally { Bim.Cli.SkillListCommand.LoadedProbe = null; Bim.Cli.SkillListCommand.ListingWorkProbe = null; }
+                Check(run.Exit == 1 && run.Out == InternalLine + newline && run.Thrown.Length == 0 && writer.Attempts == 1,
+                    "stderr throws " + name + " (" + label + "): the typed line, exit 1, nothing escapes Run, one write attempt",
+                    D(run) + " attempts " + writer.Attempts.ToString(CultureInfo.InvariantCulture));
+            }
+            foreach (var (label, arguments, expectedOut, expectedExit) in new (string, string[], string, int)[]
+            {
+                ("listing", ["--skills", skills], listingChild.Out, 0), ("root_missing", ["--skills", absent], missingChild.Out, 1),
+                ("sidecar refusal", ["--skills", badSidecar], sidecarChild.Out, 1), ("usage", ["--skills"], usageLine, 1),
+            })
+            {
+                var writer = new RejectingWriter(rejection);
+                var run = Inline(["skill-list", .. arguments], writer);
+                Check(run.Exit == expectedExit && run.Out == expectedOut && run.Thrown.Length == 0 && writer.Attempts == 0,
+                    "stderr throws " + name + " (" + label + "): bytes unchanged, stderr never written", D(run) + " attempts " + writer.Attempts.ToString(CultureInfo.InvariantCulture));
+            }
+        }
+        Check(Bim.Cli.SkillListCommand.LoadedProbe is null && Bim.Cli.SkillListCommand.ListingWorkProbe is null, "both seams are null again");
+        Check(!Directory.Exists(absent), "the missing directory is not created");
+
+        // 13e. Static pins.
+        var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
+        var toolPath = Path.Combine(root, "interfaces", "mcp", "SkillListTool.cs");
+        var commandSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
+        var toolSource = File.Exists(toolPath) ? File.ReadAllText(toolPath).ReplaceLineEndings("\n") : "";
+        var interfaces = Path.Combine(root, "interfaces");
+        var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories)
+            .Where(path => !Path.GetRelativePath(interfaces, path).Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).Any(part => part is "bin" or "obj"))
+            .Order(StringComparer.Ordinal).Select(path => (Path.GetRelativePath(root, path).Replace('\\', '/'), File.ReadAllText(path))).ToArray();
+        var problems = PostLoadProblems(sources);
+        Check(problems.Count == 0, "interfaces/**/*.cs names LoadedProbe only in its initializer-free declaration and one LoadedProbe?.Invoke(load); right after Listing's JurisdictionRegistry.Load( and before its refusal check, never assigned",
+            string.Join("; ", problems));
+        const string CommandPath = "interfaces/cli/SkillListCommand.cs";
+        const string Decl = "internal static Action<JurisdictionLoad>? LoadedProbe { get; set; }";
+        const string Good = "var load = JurisdictionRegistry.Load(skills); LoadedProbe?.Invoke(load); if (load.Refusal is { } refusal) return null; return null;";
+        static string Command(string listingBody, string declaration = Decl, string extra = "") =>
+            "internal static class SkillListCommand { " + declaration + " static IntentEnvelope Listing(string? skillsDirectory) { ListingWorkProbe?.Invoke(); " + listingBody + " } " + extra + " }";
+        Check(PostLoadProblems([(CommandPath, Command(Good))]).Count == 0
+            && PostLoadProblems([(CommandPath, Command("var load = JurisdictionRegistry . Load ( skills ) ;\n // LoadedProbe = null;\n LoadedProbe ?. Invoke ( load ) ; if (load.Refusal is null) return null; var s = \"LoadedProbe = x\"; return null;"))]).Count == 0,
+            "self-test: the post-load checker accepts the real shape at any spacing, ignoring comments and literals", string.Join("; ", PostLoadProblems([(CommandPath, Command(Good))])));
+        foreach (var (label, files) in new (string, (string, string)[])[]
+        {
+            ("an initializer", [(CommandPath, Command(Good, Decl.Replace("set; }", "set; } = null;", StringComparison.Ordinal)))]),
+            ("a field declaration", [(CommandPath, Command(Good, "internal static Action<JurisdictionLoad>? LoadedProbe;"))]),
+            ("a public declaration", [(CommandPath, Command(Good, "public static Action<JurisdictionLoad>? LoadedProbe { get; set; }"))]),
+            ("a parameterless Action", [(CommandPath, Command("var load = JurisdictionRegistry.Load(skills); LoadedProbe?.Invoke(); if (load.Refusal is { } r) return null; return null;", "internal static Action? LoadedProbe { get; set; }"))]),
+            ("the declaration missing", [(CommandPath, Command(Good, ""))]),
+            ("an assignment in the command", [(CommandPath, Command(Good, Decl, "static void Set() { LoadedProbe = _ => throw null!; }"))]),
+            ("an assignment in another interfaces file", [(CommandPath, Command(Good)), ("interfaces/mcp/McpServer.cs", "class S { void X() { SkillListCommand.LoadedProbe = null; } }")]),
+            ("a ??= assignment", [(CommandPath, Command(Good)), ("interfaces/mcp/SkillListTool.cs", "class T { void X() { SkillListCommand.LoadedProbe ??= null; } }")]),
+            ("a use in the tool", [(CommandPath, Command(Good)), ("interfaces/mcp/SkillListTool.cs", "class T { void X(JurisdictionLoad l) { SkillListCommand.LoadedProbe?.Invoke(l); } }")]),
+            ("the invoke before the load", [(CommandPath, Command("LoadedProbe?.Invoke(null!); var load = JurisdictionRegistry.Load(skills); if (load.Refusal is { } r) return null; return null;"))]),
+            ("the invoke after the refusal check", [(CommandPath, Command("var load = JurisdictionRegistry.Load(skills); if (load.Refusal is { } r) return null; LoadedProbe?.Invoke(load); return null;"))]),
+            ("the invoke only in a comment", [(CommandPath, Command("var load = JurisdictionRegistry.Load(skills); // LoadedProbe?.Invoke(load);\n if (load.Refusal is { } r) return null; return null;"))]),
+            ("a second invoke", [(CommandPath, Command("var load = JurisdictionRegistry.Load(skills); LoadedProbe?.Invoke(load); LoadedProbe?.Invoke(load); if (load.Refusal is { } r) return null; return null;"))]),
+            ("the invoke outside Listing", [(CommandPath, Command("var load = JurisdictionRegistry.Load(skills); if (load.Refusal is { } r) return null; return null;", Decl, "static void Other(JurisdictionLoad load) { LoadedProbe?.Invoke(load); }"))]),
+            ("the command file missing", [("interfaces/cli/Other.cs", "class O { }")]),
+        })
+            Check(PostLoadProblems(files).Count > 0, "self-test: the post-load checker flags " + label);
+
+        // Run writes the diagnostic through WriteDiagnostic, then prints the envelope without it; WriteDiagnostic is the one
+        // guarded Console.Error write of the command, and the MCP tool calls it instead of writing stderr itself.
+        var commandCode = ApplyIntentTests.CodeOf(commandSource);
+        var toolCode = ApplyIntentTests.CodeOf(toolSource);
+        static string Squeeze(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", "");
+        var runBody = Squeeze(BodyAfter(commandCode, @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
+        Check(runBody == "IntentEnvelopeenvelope;try{envelope=Execute(args);}catch(Exceptionerror){envelope=IntentPlan.Internal(\"\",error);}WriteDiagnostic(envelope);(envelopewith{Diagnostic=null}).Print();",
+            "Run: the catch-all envelope, then WriteDiagnostic(envelope), then the envelope printed without its diagnostic", runBody);
+        var writeBody = Squeeze(BodyAfter(commandCode, @"\binternal\s+static\s+void\s+WriteDiagnostic\s*\(\s*IntentEnvelope\s+envelope\s*\)"));
+        Check(writeBody == "if(envelope.Diagnosticisnot{}detail)return;try{Console.Error.WriteLine(detail);}catch(Exception){}",
+            "WriteDiagnostic: the diagnostic, if any, written once inside a try whose catch (Exception) ignores a throwing Console.Error", writeBody);
+        static int Matches(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
+        Check(Matches(commandCode, @"\bConsole\s*\.\s*Error\b") == 1 && Matches(commandCode, @"\.\s*Print\s*\(") == 1 && Matches(commandCode, @"\bWriteDiagnostic\s*\(") == 2,
+            "the command writes stderr only in WriteDiagnostic, prints once and calls WriteDiagnostic only from Run");
+        Check(Matches(toolCode, @"\bSkillListCommand\s*\.\s*WriteDiagnostic\s*\(\s*envelope\s*\)\s*;") == 1 && Matches(toolCode, @"\bConsole\b") == 0 && Matches(toolCode, @"\bDiagnostic\b") == 0,
+            "the MCP tool writes the diagnostic only through SkillListCommand.WriteDiagnostic(envelope) (no Console of its own)", toolCode);
+
+        // Documented deltas: each P5-31 change, reversed, gives back the pre-P5-31 file byte for byte (line endings
+        // normalized), so the P5-21/P5-29 code the earlier pins read is otherwise untouched.
+        var before = ReverseDelta(commandSource, CommandDeltaP531);
+        Check(before is not null && Sha256(before) == CommandBeforeP531Sha256 && before.Length == CommandBeforeP531Length,
+            "SkillListCommand.cs with the P5-31 delta reversed is the pre-P5-31 file",
+            before is null ? "a delta text does not occur exactly once" : Sha256(before) + " " + before.Length.ToString(CultureInfo.InvariantCulture));
+        var toolBefore = ReverseDelta(toolSource, ToolDeltaP531);
+        Check(toolBefore is not null && Sha256(toolBefore) == ToolBeforeP531Sha256 && toolBefore.Length == ToolBeforeP531Length,
+            "SkillListTool.cs with the P5-31 delta reversed is the pre-P5-31 file",
+            toolBefore is null ? "a delta text does not occur exactly once" : Sha256(toolBefore) + " " + toolBefore.Length.ToString(CultureInfo.InvariantCulture));
+        Check(ReverseDelta("a b a", [("a", "x")]) is null && ReverseDelta("a b", [("c", "x")]) is null && ReverseDelta("a b", [("b", "x")]) == "a x",
+            "self-test: a delta text missing or occurring twice fails the reversal");
+    }
+
+    // P5-31 documented deltas (new text, pre-P5-31 text), "\n" line endings.
+    static readonly (string New, string Old)[] CommandDeltaP531 =
+    {
+        ("// List(skillsDirectory) is the shared handler (the MCP skill_list tool, P5-22): it never prints and never throws.\n"
+            + "// P5-31: the internal-error diagnostic reaches stderr only through WriteDiagnostic (Run here, the MCP tool there), which\n"
+            + "// ignores a Console.Error that throws while the line is written: the typed line and exit 1 still follow, nothing escapes.\n",
+            "// List(skillsDirectory) is the shared handler (the MCP skill_list tool, P5-22): it never prints and never throws.\n"),
+        ("    internal static Action? ListingWorkProbe { get; set; }\n\n"
+            + "    // P5-31 second test seam (null in production, never assigned under interfaces/): invoked with the load right after the\n"
+            + "    // one JurisdictionRegistry.Load inside Listing, so a defect after the read reaches the same typed internal error.\n"
+            + "    internal static Action<JurisdictionLoad>? LoadedProbe { get; set; }\n",
+            "    internal static Action? ListingWorkProbe { get; set; }\n"),
+        ("        WriteDiagnostic(envelope);\n"
+            + "        (envelope with { Diagnostic = null }).Print();\n"
+            + "    }\n\n"
+            + "    // P5-31: the envelope's internal-error diagnostic, if any, on stderr once; a Console.Error that throws is ignored.\n"
+            + "    internal static void WriteDiagnostic(IntentEnvelope envelope)\n"
+            + "    {\n"
+            + "        if (envelope.Diagnostic is not { } detail) return;\n"
+            + "        try { Console.Error.WriteLine(detail); }\n"
+            + "        catch (Exception) { }\n"
+            + "    }\n",
+            "        envelope.Print();\n    }\n"),
+        ("        var load = JurisdictionRegistry.Load(skills);\n        LoadedProbe?.Invoke(load);\n",
+            "        var load = JurisdictionRegistry.Load(skills);\n"),
+    };
+    const string CommandBeforeP531Sha256 = "198e2b8af928645c8460a3d80cfebf5eb3b20bd957459c9c17e2427055dfbcaf";
+    const int CommandBeforeP531Length = 7050;
+    static readonly (string New, string Old)[] ToolDeltaP531 =
+    {
+        ("        SkillListCommand.WriteDiagnostic(envelope); // P5-31: stderr written guarded by the verb (a throwing Console.Error is ignored)\n",
+            "        if (envelope.Diagnostic is { } detail) Console.Error.WriteLine(detail);\n"),
+    };
+    const string ToolBeforeP531Sha256 = "66285d98bc85e442c9e2a590e6402120e60b7885407c492a77eef14472ee2746";
+    const int ToolBeforeP531Length = 2816;
+
+    static string Sha256(string text) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(text))).ToLowerInvariant();
+
+    // The text with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
+    static string? ReverseDelta(string text, IReadOnlyList<(string New, string Old)> delta)
+    {
+        foreach (var (newText, oldText) in delta)
+        {
+            var at = text.IndexOf(newText, StringComparison.Ordinal);
+            if (at < 0 || text.IndexOf(newText, at + 1, StringComparison.Ordinal) >= 0) return null;
+            text = text[..at] + oldText + text[(at + newText.Length)..];
+        }
+        return text;
+    }
+
+    // P5-31: over (relative path, source) pairs under interfaces/, comments removed and literals blanked
+    // (ApplyIntentTests.CodeOf): LoadedProbe (whole word) is named exactly twice, both in interfaces/cli/SkillListCommand.cs:
+    // `internal static Action<JurisdictionLoad>? LoadedProbe { get; set; }` with no initializer and one
+    // `LoadedProbe?.Invoke(load);` inside the brace-matched body of Listing immediately after
+    // `var load = JurisdictionRegistry.Load(skills);` and immediately before `if (load.Refusal`; no assignment anywhere.
+    static List<string> PostLoadProblems(IEnumerable<(string Name, string Source)> files)
+    {
+        const string Command = "interfaces/cli/SkillListCommand.cs";
+        var problems = new List<string>();
+        var total = 0;
+        var sawCommand = false;
+        foreach (var (name, source) in files)
+        {
+            var code = ApplyIntentTests.CodeOf(source);
+            total += System.Text.RegularExpressions.Regex.Matches(code, @"\bLoadedProbe\b").Count;
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bLoadedProbe\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)")) problems.Add(name + ": LoadedProbe assigned");
+            if (name != Command) continue;
+            sawCommand = true;
+            var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\binternal\s+static\s+Action\s*<\s*JurisdictionLoad\s*>\s*\?\s*LoadedProbe\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)").Count;
+            if (declarations != 1) problems.Add(name + ": the initializer-free declaration found " + declarations.ToString(CultureInfo.InvariantCulture) + " times");
+            var invokes = System.Text.RegularExpressions.Regex.Matches(code, @"\bLoadedProbe\s*\?\s*\.\s*Invoke\s*\(").Count;
+            if (invokes != 1) problems.Add(name + ": " + invokes.ToString(CultureInfo.InvariantCulture) + " LoadedProbe?.Invoke( calls");
+            var listing = BodyAfter(code, @"\bstatic\s+IntentEnvelope\s+Listing\s*\(");
+            if (System.Text.RegularExpressions.Regex.Matches(listing, @"\bvar\s+load\s*=\s*JurisdictionRegistry\s*\.\s*Load\s*\(\s*skills\s*\)\s*;\s*LoadedProbe\s*\?\s*\.\s*Invoke\s*\(\s*load\s*\)\s*;\s*if\s*\(\s*load\s*\.\s*Refusal\b").Count != 1)
+                problems.Add(name + ": LoadedProbe?.Invoke(load); is not inside Listing right after var load = JurisdictionRegistry.Load(skills); and before if (load.Refusal");
+        }
+        if (!sawCommand) problems.Add(Command + " not found");
+        if (total != 2) problems.Add("LoadedProbe named " + total.ToString(CultureInfo.InvariantCulture) + " times (the declaration and one invoke)");
+        return problems;
+    }
+
+    // P5-31: a stderr whose every write throws the given exception (attempts counted); nothing is ever stored.
+    sealed class RejectingWriter(Exception failure) : TextWriter
+    {
+        public int Attempts { get; private set; }
+        public override Encoding Encoding => Encoding.UTF8;
+        public override void Write(char value) { Attempts++; throw failure; }
+        public override void Write(char[] buffer, int index, int count) { Attempts++; throw failure; }
+        public override void Write(string? value) { Attempts++; throw failure; }
+        public override void WriteLine(string? value) { Attempts++; throw failure; }
+        public override void Flush() { }
     }
 
     // SHA-256 over the sorted relative paths, sizes and bytes of every file under a directory.
