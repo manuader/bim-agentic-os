@@ -1889,3 +1889,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay247
 - 2026-11-20T03:52:54Z lock taken (session_014pxpsTc7RvBLJtse3PASag relay247; was FREE, relay246 released 2026-11-20T03:13:20Z)
+- 2026-11-20T03:53:48Z picked P2-34 (phase 2), P3-27 (phase 3), P4-28 (phase 4) (relay244) — oldest-touched; disjoint files (fake-revit-command-pipe.ps1 FakePipeQueue + MirrorDriftLoopChecks P2-33 macOS pin only by P2-34; InternalErrorDelegationTests.cs new section only by P3-27; tests/mcp new file + Bim.Mcp.csproj ProjectReference only by P4-28). Workers spawned.
