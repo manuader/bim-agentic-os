@@ -20,6 +20,9 @@ using System.Text;
 // keyed by dictionary identity); the static check also runs on sources stripped of comments and literals. Known limit
 // of that stripper: an interpolation hole is not parsed, so a quote or a nested literal inside a hole (for example
 // $"{F('"')}..." or $"{(b ? @"q" : "r")}") ends or restarts the literal early; the swallow guard catches a run to EOF.
+// P6-31: a show inside a Form XObject whose /Matrix makes the text height non-finite keeps the warning pending for the
+// next emitting show, inside the form or after it; a Ts rise that overflows the text position is a non-finite text
+// position (operand-error, no text) and likewise keeps it pending; the P6-25 static check reads stripped sources.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -252,12 +255,21 @@ internal static class PdfType3GlyphListTests
                 Texts(infinite) + " " + Warnings(infinite) + " " + Messages(infinite));
 
             // Static check: the font decoder reads affected names through PdfSimpleEncoding.UnsupportedGlyphListName(code)
-            // and the glyph-list filter is applied in exactly one place.
+            // and the glyph-list filter is applied in exactly one place. P6-31: the sources are read through
+            // StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
-            static string Code(string path) => string.Join("\n", File.ReadAllLines(path).Where(line => !line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+            static string Code(string path) => StripCommentsAndLiterals(File.ReadAllText(path));
             var content = Code(Path.Combine(adapter, "PdfContent.cs"));
             var encoding = Code(Path.Combine(adapter, "PdfEncoding.cs"));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
+            foreach (var (source, sourceName, member, last) in new[]
+            {
+                (content, "PdfContent.cs", "FontDecoder(string name", "private void InvokeXObject(string name"),
+                (encoding, "PdfEncoding.cs", "UnsupportedGlyphListName(byte code)", "Lazy<Dictionary<string, string>> Latin = new("),
+            })
+                C(Count(source, "{") == Count(source, "}") && source.TrimEnd().EndsWith('}') && Count(source, member) == 1 && Count(source, last) == 1,
+                    "the P6-25 static check reads stripped " + sourceName + " with balanced braces and its members " + member + " and " + last + " (P6-31 swallow guard)",
+                    I(Count(source, "{")) + "/" + I(Count(source, "}")) + " end " + (source.TrimEnd().Length > 0 ? source.TrimEnd()[^1].ToString() : "empty") + " " + I(Count(source, member)) + " " + I(Count(source, last)));
             C(Count(content, "IsGlyphListName") == 0 && Count(content, ".UnsupportedGlyphListName(") == 1,
                 "the font decoder reads affected names through one PdfSimpleEncoding per-code accessor (P6-25 static check)",
                 Count(content, "IsGlyphListName") + " " + Count(content, ".UnsupportedGlyphListName("));
@@ -373,6 +385,80 @@ internal static class PdfType3GlyphListTests
                 I(Count(encoding, signature)) + " bare " + I(Count(encoding, "IsGlyphListName")) + " " + I(Count(encoding, "PdfGlyphNames.IsGlyphListName(")) + " " + I(bodyStart) + ".." + I(bodyEnd) + " call " + I(call));
         }
         catch (Exception error) { C(false, "p6-27 unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- P6-31: non-finite height through a Form XObject /Matrix, text rise overflow ----------
+        try
+        {
+            const string tail = " is a Type3 font whose /Differences names glyph-list names the reader does not map (";
+            const string affected = "[1 /g1 /afii10017 /Gamma /afii10018 /afii10019]";
+            string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
+            string Message(string names) => "font /F1 (object 5)" + tail + names + "); their codes are read as text bytes";
+            string Paths(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => I(t.Provenance.ObjectNumber) + ":" + I(t.Provenance.OperatorIndex) + "@" + string.Join(">", t.Provenance.XObjectPath)));
+            var e60 = "1" + new string('0', 60);
+            var e63 = "1" + new string('0', 63);
+            var scale = e60 + " 0 0 " + e60 + " 0 0 cm ";
+            // The form (object 8) has no /Resources and so selects /F1 (object 5) through the page resources.
+            (int Number, byte[] Body) Form(bool withMatrix, string content) =>
+                (8, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + (withMatrix ? " /Matrix [1 0 0 " + e60 + " 0 0]" : ""), L(content)));
+            PdfDocument WithForm(string page, (int Number, byte[] Body) form) => PdfToUnicodeTests.Page(page, Type3(affected), null, "/XObject << /X1 8 0 R >>", form);
+
+            // Page CTM 1e180 (three cm of 1e60); the form /Matrix scales y by a further 1e60, so the form's CTM is
+            // [1e180 0 0 1e240]. A Tf size of 1e63 and a Tm of d = 1e10 give a finite position (1e181, 1e241) and a text
+            // height of 1e63 x 1e250, which overflows only because of the /Matrix (without it the height is 1e253).
+            var pageCtm = "q " + string.Concat(Enumerable.Repeat(scale, 3));
+
+            // (1) The next emitting show is inside the form. Form: BT 0, Tf 1, Tm 2, Tj 3, Tf 4, Tm 5, Tj 6, ET 7.
+            // Page: q 0, cm 1-3, Do 4, Q 5, BT 6, Tf 7, Tm 8, Tj 9, ET 10.
+            const string inside = "BT /F1 {0} Tf 1 0 0 10000000000 10 10 Tm (\\004) Tj /F1 10 Tf 1 0 0 1 10 10 Tm (\\002) Tj ET";
+            var pageAfter = pageCtm + "/X1 Do Q BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET";
+            var formInside = WithForm(pageAfter, Form(true, string.Format(CultureInfo.InvariantCulture, inside, e63)));
+            C(Texts(formInside) == "\\u0002|\\u0002" && Paths(formInside) == "8:6@o4:i4|4:9@"
+                && Warnings(formInside) == "operand-error@1:8:3;encoding-glyph-unsupported@1:8:6"
+                && Messages(formInside) == "Tj gives a non-finite text height / " + Message("/afii10017"),
+                "a Tj inside a Form XObject whose /Matrix makes the text height non-finite keeps only operand-error; the next emitting show inside the form warns with only its own names and the later page show is silent (P6-31)",
+                Texts(formInside) + " " + Paths(formInside) + " " + Warnings(formInside) + " " + Messages(formInside));
+            // Control: the same form without /Matrix emits the first Tj (height 1e253) and warns there.
+            var noMatrix = WithForm(pageAfter, Form(false, string.Format(CultureInfo.InvariantCulture, inside, e63)));
+            C(Texts(noMatrix) == "\\u0004|\\u0002|\\u0002" && Paths(noMatrix) == "8:3@o4:i4|8:6@o4:i4|4:9@"
+                && Warnings(noMatrix) == "encoding-glyph-unsupported@1:8:3" && Messages(noMatrix) == Message("/afii10018"),
+                "control: without the /Matrix the same form Tj has a finite height, emits and warns at its own index (P6-31)",
+                Texts(noMatrix) + " " + Paths(noMatrix) + " " + Warnings(noMatrix) + " " + Messages(noMatrix));
+
+            // (2) The next emitting show is after the form, on the page. Form: BT 0, Tf 1, Tm 2, show 3, ET 4 (' : TL 3, ' 4, ET 5).
+            foreach (var (show, op, at) in new[] { ("(\\004) Tj", "Tj", 3), ("[(\\004) -300 (\\004)] TJ", "TJ", 3), ("12 TL (\\004) '", "'", 4) })
+            {
+                var after = WithForm(pageAfter, Form(true, "BT /F1 " + e63 + " Tf 1 0 0 10000000000 10 10 Tm " + show + " ET"));
+                C(Texts(after) == "\\u0002" && Paths(after) == "4:9@"
+                    && Warnings(after) == "operand-error@1:8:" + I(at) + ";encoding-glyph-unsupported@1:4:9"
+                    && Messages(after) == op + " gives a non-finite text height / " + Message("/afii10017"),
+                    "a " + op + " inside a Form XObject whose /Matrix makes the text height non-finite leaves the warning pending; it fires at the next emitting show after the form, on the page (P6-31)",
+                    Texts(after) + " " + Paths(after) + " " + Warnings(after) + " " + Messages(after));
+            }
+
+            // (3) A Ts rise that overflows the text position: documented as a non-finite text position, so the show emits no
+            // text, gives operand-error '<op> gives a non-finite text position' and leaves the warning pending (P6-31).
+            // CTM 1e240 (four cm), Tm d = 1e10 and Ts 1e63: rise x d = 1e73 is finite, times the CTM 1e313 overflows; the
+            // height (10 x 1e250) stays finite. After 0 Ts the next show in the same BT is at a finite position and warns.
+            // Operators: q 0, cm 1-4, BT 5, Tf 6, Tm 7, Ts 8, show 9, Ts 10, Tj 11, ET 12, Q 13 (' : TL 8 shifts by one).
+            string Rise(string rise, string show) => "q " + string.Concat(Enumerable.Repeat(scale, 4)) + "BT /F1 10 Tf 1 0 0 10000000000 50 50 Tm "
+                + show.Replace("RISE", rise + " Ts", StringComparison.Ordinal) + " 0 Ts (\\002) Tj ET Q";
+            foreach (var (show, op) in new[] { ("RISE (\\004) Tj", "Tj"), ("RISE [(\\004) -300 (\\004)] TJ", "TJ"), ("12 TL RISE (\\004) '", "'") })
+            {
+                var shift = op == "'" ? 1 : 0;
+                var risen = Page(Rise(e63, show), Type3(affected));
+                C(Texts(risen) == "\\u0002" && Warnings(risen) == "operand-error@1:4:" + I(9 + shift) + ";encoding-glyph-unsupported@1:4:" + I(11 + shift)
+                    && Messages(risen) == op + " gives a non-finite text position / " + Message("/afii10017"),
+                    "a " + op + " whose Ts rise overflows the text position keeps only operand-error (non-finite text position); the warning fires at the next emitting show with only its own names (P6-31)",
+                    Texts(risen) + " " + Warnings(risen) + " " + Messages(risen));
+            }
+            // Control: a rise of 1e50 gives a finite position (1e300), so the first Tj emits and warns there.
+            var e50 = "1" + new string('0', 50);
+            var lower = Page(Rise(e50, "RISE (\\004) Tj"), Type3(affected));
+            C(Texts(lower) == "\\u0004|\\u0002" && Warnings(lower) == "encoding-glyph-unsupported@1:4:9" && Messages(lower) == Message("/afii10018"),
+                "control: a Ts rise that does not overflow emits the first Tj and warns there (P6-31)", Texts(lower) + " " + Warnings(lower) + " " + Messages(lower));
+        }
+        catch (Exception error) { C(false, "p6-31 unexpected", error.GetType().Name + ": " + error.Message); }
     }
 
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
