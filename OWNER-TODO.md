@@ -359,3 +359,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay245 (2026-11-20, cloud)
 - No new owner action. Still pending: ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; git pull (main = c7f4ebe).
 - Optional contract question (no action needed): under a deleted working directory a relative CLI input path reports input_io_error, not input_not_found/input_path_invalid (pinned as measured in P10-30). Say if you want it changed.
+
+## Relay246 (2026-11-20, cloud)
+- No new owner action. Still pending: ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; git pull (main = 5b2768b).
