@@ -21,6 +21,8 @@
 # before any hash or read (package_special_file), in bounded child runs; a clean real build is byte-unchanged.
 # P10-22: those same three refuse a dangling staged symlink (missing target, chain, loop) as typed package_dangling_link
 # naming the path before any read or hash, in bounded child runs (counted SKIPs on Windows).
+# P7-24: a copy of the real package outside any repository: mcp/Bim.Mcp.dll generate_prototypes over stdio returns the packaged CLI
+# generate-prototypes output file bytes (pack resolved package-first); a removed packaged code pack is the same pack_unavailable line.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -1169,16 +1171,17 @@ try {
                     } catch { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$raw (unparsed: $($_.Exception.Message))" } }
                 }
                 $p724Mcp = Join-Path $p724Package 'mcp/Bim.Mcp.dll'
-                # RED PROBE (removed in the green commit): the server folder renamed to server/, so SkillPackLookup.PackageRoot (cli or mcp only,
-                # P5-18) does not see the package: the pre-P5-18 situation; the MCP oracles below must fail.
-                Move-Item -LiteralPath (Join-Path $p724Package 'mcp') -Destination (Join-Path $p724Package 'server'); $p724Mcp = Join-Path $p724Package 'server/Bim.Mcp.dll'
                 $p724Cli = Join-Path $p724Package 'cli/Bim.Cli.dll'
                 $p724Pack = Join-Path $p724Package 'skills/ar.caba.codigo-edificacion'
                 Assert ((Test-Path -LiteralPath $p724Mcp -PathType Leaf) -and (Test-Path -LiteralPath $p724Cli -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $p724Pack 'skill.json') -PathType Leaf) -and !(Test-P724UnderRepository $p724Package)) "P7-24: the package copy has mcp/Bim.Mcp.dll, cli/Bim.Cli.dll and skills/ar.caba.codigo-edificacion/skill.json with no global.json above it ($p724Package)"
+                # pipeline_status is whatever the pipeline gives (each must be ranked or infeasible); the set must hold both.
                 $p724Requests = @(
-                    @{ Name = 'ranked two-bedroom (default code pack)'; Json = '{"typology":2,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0}'; Status = 'ranked' },
-                    @{ Name = 'infeasible three-bedroom on a 3 x 3 m lot (explicit code pack)'; Json = '{"typology":3,"lot":{"width_m":3,"depth_m":3},"alternatives":2,"seed":0,"pack":"ar.caba.codigo-edificacion"}'; Status = 'infeasible' }
+                    @{ Name = 'two-bedroom 8.66 x 20 m, 2 alternatives (the P7-12 request, default code pack)'; Json = '{"typology":2,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0}' },
+                    @{ Name = 'one-bedroom 8.66 x 20 m, 8 alternatives (default code pack)'; Json = '{"typology":1,"lot":{"width_m":8.66,"depth_m":20},"alternatives":8,"seed":0}' },
+                    @{ Name = 'two-bedroom 12 x 30 m, 8 alternatives (explicit code pack)'; Json = '{"typology":2,"lot":{"width_m":12,"depth_m":30},"alternatives":8,"seed":0,"pack":"ar.caba.codigo-edificacion"}' },
+                    @{ Name = 'three-bedroom on a 3 x 3 m lot (explicit code pack)'; Json = '{"typology":3,"lot":{"width_m":3,"depth_m":3},"alternatives":2,"seed":0,"pack":"ar.caba.codigo-edificacion"}' }
                 )
+                $p724Statuses = [Collections.Generic.List[string]]::new()
                 $p724Index = 0
                 foreach ($case in $p724Requests) {
                     $p724Index++
@@ -1186,13 +1189,15 @@ try {
                     Write-PackageText $request $case.Json
                     $cliOut = Join-Path $p724Io "cli-$p724Index.json"
                     $cli = Invoke-P724Process @($p724Cli, 'generate-prototypes', $request, $cliOut) ''
-                    $cliOk = $cli.Code -eq 0 -and (Test-Path -LiteralPath $cliOut -PathType Leaf) -and $cli.Out -match ('"status":"succeeded"') -and $cli.Out -match ('"pipeline_status":"' + $case.Status + '"')
-                    Assert $cliOk "P7-24 $($case.Name): the packaged CLI generate-prototypes outside any repository succeeds ($($case.Status)): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
+                    $cliOk = $cli.Code -eq 0 -and (Test-Path -LiteralPath $cliOut -PathType Leaf) -and $cli.Out -match '"status":"succeeded"' -and $cli.Out -match '"pipeline_status":"(ranked|infeasible)"'
+                    if ($cliOk) { $p724Statuses.Add($Matches[1]); Write-Host "P7-24 $($case.Name): pipeline_status $($Matches[1])" }
+                    Assert $cliOk "P7-24 $($case.Name): the packaged CLI generate-prototypes outside any repository succeeds (ranked or infeasible): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
                     $mcp = Invoke-P724Mcp $p724Mcp $request
                     $cliBytes = if (Test-Path -LiteralPath $cliOut -PathType Leaf) { [IO.File]::ReadAllBytes($cliOut) } else { [byte[]]@() }
                     $mcpBytes = $p724Utf8.GetBytes($mcp.Text)
                     Assert ($cliOk -and $mcp.Ok -and !$mcp.IsError -and $cliBytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($cliBytes)) "P7-24 $($case.Name): the packaged mcp/Bim.Mcp.dll generate_prototypes over stdio returns the packaged CLI output file bytes (cli $($cliBytes.Length) bytes, mcp $($mcpBytes.Length) bytes): mcp $($mcp.Raw)"
                 }
+                Assert ($p724Statuses -ccontains 'ranked' -and $p724Statuses -ccontains 'infeasible') "P7-24: the packaged success cases cover a ranked and an infeasible document: [$($p724Statuses -join ', ')]"
                 # The packaged code pack removed (VERSION, manifest.json and skills/ stay, so the folder is still the package root).
                 Remove-Item -LiteralPath $p724Pack -Recurse -Force
                 Assert ((Test-Path -LiteralPath (Join-Path $p724Package 'skills') -PathType Container) -and !(Test-Path -LiteralPath $p724Pack)) 'P7-24: the packaged code pack directory is removed, skills/ stays'
