@@ -2256,11 +2256,12 @@ static class MirrorDriftLoopChecks
             // was also 8192 and is only reported in the measured detail); the next
             // piece's Write was pending when the fake closed (27469 bytes never handed).
             // P2-34 probe red (run 44671009756): the fake's FIONREAD (Socket.Available) found 8192 bytes queued in both
-            // runs = InBufferSize, so the receive buffer was full and handed == the bytes read + the bytes queued; the CLI
-            // process's queued count is the same full buffer, less than its unread remainder (its write still pending too).
+            // runs = InBufferSize = the default unix send buffer (8192 each on XNU AF_UNIX, where the writer is limited by
+            // its own send buffer: cause not isolated), and handed == the bytes read + the bytes queued; the CLI process's
+            // queued count is the same 8192, less than its unread remainder (its write still pending too).
             Check(inBuffer > 0 && handed == MidArgsBreakBytes + inBuffer && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
                 && seamQueued == inBuffer && handed == MidArgsBreakBytes + seamQueued && cliQueued == seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued (FIONREAD): the full receive buffer in both runs, less than the CLI's unread remainder", measured);
+                "macos: handed == the bytes the fake read plus its socket's receive buffer (InBufferSize) < wire bytes (still writing); queued (FIONREAD) == InBufferSize (= the default unix send buffer, cause not isolated) in both runs, less than the CLI's unread remainder", measured);
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
