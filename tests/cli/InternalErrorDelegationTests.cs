@@ -286,7 +286,14 @@ internal static class InternalErrorDelegationTests
                 DeleteTree(throwingInputs);
                 if (File.Exists(throwingOutput)) File.Delete(throwingOutput);
             }
-            Check(ReferenceEquals(escaped.Value, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped.Value?.GetType().FullName + ": " + escaped.Value?.Message);
+            // P7-30: generate-prototypes' catch (Refusal) sets the exit code, then runs Fail guarded, so there the stdout failure
+            // is contained (nothing escapes Run, exit 1; tests/cli/GeneratePrototypesTests.cs section 11); the other verbs still
+            // let it escape.
+            if (verb == "generate-prototypes")
+                Check(escaped.Value is null && escaped.Exit == 1, verb + ": the forced run whose stdout write fails is contained by Run (P7-30): nothing escapes, exit 1",
+                    (escaped.Value is { } contained ? "threw " + contained.GetType().FullName + ": " + contained.Message : "threw nothing") + " exit " + escaped.Exit.ToString(CultureInfo.InvariantCulture));
+            else
+                Check(ReferenceEquals(escaped.Value, stdoutFailure), verb + ": the forced run whose stdout write fails throws out of Run", escaped.Value?.GetType().FullName + ": " + escaped.Value?.Message);
             Check(escaped.Err == handWritten.Err, verb + ": the forced run whose Run throws wrote the hand-written internal diagnostic to stderr once (InternalRefusal ran)",
                 "err [" + escaped.Err + "] vs hand-written [" + handWritten.Err + "]");
             Check(probe.GetValue(null) is null, verb + ": GuardedWorkProbe is reset to null after a forced run whose Run throws");
