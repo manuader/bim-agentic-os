@@ -19,12 +19,11 @@ namespace Bim.Mcp;
 // Usage-equivalent arguments are JSON-RPC -32602 (UsageMessage), never a tool result: whatever the verb's own parser
 // refuses as jurisdiction_resolve_usage (no selector, code with country or municipality, only one of country and
 // municipality, a blank or "--"-prefixed value), and a string that is not valid text (a lone surrogate escape, which no
-// CLI argument can carry), and an argument name given twice in the arguments object (the verb refuses a repeated option
-// as usage; checked first, before any value is read). Null, wrongly typed and unknown arguments are -32602 from
-// McpServer.CallTool.
-// Precedence: CallTool's checks, then the duplicate-name and valid-text checks here, then the verb's handler. With the
-// test seam JurisdictionResolveCommand.WorkProbe set (tests only), the handler's internal error precedes its usage
-// refusal, since the probe runs before the verb parses its arguments; the duplicate and valid-text -32602 still come first.
+// CLI argument can carry). Null, wrongly typed, unknown and (P10-31) repeated arguments are -32602 from McpServer.CallTool
+// (a name given twice: "invalid_params: repeated argument <name>", before this tool runs).
+// Precedence: CallTool's checks, then the valid-text check here, then the verb's handler. With the test seam
+// JurisdictionResolveCommand.WorkProbe set (tests only), the handler's internal error precedes its usage refusal, since the
+// probe runs before the verb parses its arguments; CallTool's checks and the valid-text -32602 still come first.
 internal static class JurisdictionResolveTool
 {
     public const string Name = "jurisdiction_resolve";
@@ -41,9 +40,6 @@ internal static class JurisdictionResolveTool
     // McpServer's handler: the arguments (present ones checked typed by CallTool) to the verb's handler.
     public static (string Text, bool IsError) Execute(JsonElement arguments)
     {
-        var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var property in arguments.EnumerateObject())
-            if (!names.Add(property.Name)) throw new McpInvalidParamsException(UsageMessage);
         var args = new List<string> { JurisdictionResolveCommand.Verb };
         foreach (var (parameter, option) in Options)
         {

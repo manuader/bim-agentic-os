@@ -17,6 +17,8 @@ namespace Bim.Mcp;
 // - revision: the CLI applies int.Parse to a string argument (accepting e.g. " 0" or "+0" and failing with
 //   status failed); here revision must be a JSON integer in Int32 range, otherwise the call is rejected with -32602.
 // - missing or wrongly typed arguments are rejected with -32602 instead of the CLI usage/null failures.
+// - P10-31: an argument name given twice in the arguments object is -32602 "invalid_params: repeated argument <name>" for
+//   every tool, checked in CallTool before any other argument check and before the tool runs.
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
@@ -585,6 +587,12 @@ public sealed class McpServer
         var name = nameElement.GetString();
         var tool = tools.FirstOrDefault(candidate => candidate.Name == name);
         if (tool == null) return Result(id, ToolResult(Failed("unknown_tool"), true));
+        // P10-31: JsonDocument keeps a name given twice in the arguments object and a lookup sees only one of its values,
+        // so any repeated name (declared or not) is -32602 with one message shape, before every other argument check and
+        // before the tool runs.
+        var names = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in arguments.EnumerateObject())
+            if (!names.Add(property.Name)) return Error(id, InvalidParams, "invalid_params: repeated argument " + property.Name);
         foreach (var property in arguments.EnumerateObject())
             if (!tool.Parameters.Any(parameter => parameter.Name == property.Name)) return Error(id, InvalidParams, "invalid_params: unexpected argument " + property.Name);
         foreach (var parameter in tool.Parameters)

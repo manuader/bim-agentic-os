@@ -15,9 +15,9 @@ namespace Bim.Mcp;
 // (root_missing, json_invalid, ...), a jurisdiction sidecar refusal unchanged, skill_list_internal_error (its IntentPlan
 // diagnostic on the server's stderr, as on the CLI).
 // Usage-equivalent arguments are JSON-RPC -32602 (UsageMessage), never a tool result: what the verb's parser refuses as
-// skill_list_usage (a blank or "--"-prefixed skills value; skills given twice, checked first, before any value is read),
-// and a string that is not valid text (a lone surrogate escape, which no CLI argument can carry). Null, wrongly typed and
-// unknown arguments are -32602 from McpServer.CallTool.
+// skill_list_usage (a blank or "--"-prefixed skills value), and a string that is not valid text (a lone surrogate escape,
+// which no CLI argument can carry). Null, wrongly typed, unknown and (P10-31) repeated arguments are -32602 from
+// McpServer.CallTool (skills given twice: "invalid_params: repeated argument skills", before this tool runs).
 internal static class SkillListTool
 {
     public const string Name = "skill_list";
@@ -27,9 +27,6 @@ internal static class SkillListTool
     // McpServer's handler: the arguments (present ones checked typed by CallTool) to the verb's shared handler.
     public static (string Text, bool IsError) Execute(JsonElement arguments)
     {
-        var names = new HashSet<string>(StringComparer.Ordinal);
-        foreach (var property in arguments.EnumerateObject())
-            if (!names.Add(property.Name)) throw new McpInvalidParamsException(UsageMessage);
         string? skills = null;
         if (arguments.TryGetProperty(SkillsParameter, out var value))
         {
