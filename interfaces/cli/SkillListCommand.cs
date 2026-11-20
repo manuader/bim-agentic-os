@@ -38,6 +38,11 @@ internal static class SkillListCommand
     public const string UsageCode = "skill_list_usage";
     public const string RepositoryNotFound = "skill_list_repository_not_found";
 
+    // P5-29 test seam (null in production, never assigned under interfaces/): invoked first inside Listing, which List runs
+    // in its guarded block, so a test can force the typed skill_list_internal_error through the CLI and the MCP tool alike.
+    // Not named WorkProbe: P10-27's pin requires that whole word only in JurisdictionResolveCommand.
+    internal static Action? ListingWorkProbe { get; set; }
+
     public static void Run(string[] args)
     {
         IntentEnvelope envelope;
@@ -62,6 +67,7 @@ internal static class SkillListCommand
 
     static IntentEnvelope Listing(string? skillsDirectory)
     {
+        ListingWorkProbe?.Invoke();
         if (skillsDirectory is null)
         {
             var root = SkillPackLookup.PackageRoot(AppContext.BaseDirectory) ?? RevitCommandPolicy.RepositoryRoot(AppContext.BaseDirectory);
