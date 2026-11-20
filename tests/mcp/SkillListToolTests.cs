@@ -36,6 +36,14 @@ using Bim.Core;
 //      IntentPlan diagnostic once (equal to the in-process CLI's), the defect message never reaches the text, and
 //      usage-equivalent arguments stay -32602 without reaching the probe. The seam is null before and after; with it
 //      reset the next calls answer the CLI listing and refusal bytes. The tool source never names ListingWorkProbe.
+//   9. P5-31 post-load seam and a throwing stderr: with SkillListCommand.LoadedProbe (invoked with the load right after
+//      JurisdictionRegistry.Load) throwing, the tool answers isError with exactly the typed skill_list_internal_error line
+//      for the default, an explicit and a missing skills directory, the probe running once, the server's stderr the
+//      IntentPlan diagnostic once, both equal to the in-process CLI Run, the defect message never in the text; usage stays
+//      -32602 without reaching the probe. With a Console.Error whose every write throws, the internal error (post-load
+//      probe, listing probe, NUL path) is still isError with the typed line through tools/call and through
+//      SkillListTool.Execute directly (nothing escapes the tool), one stderr write attempt; a listing and a root_missing
+//      refusal keep the CLI bytes and never write stderr. The tool source never names LoadedProbe; seams null after.
 internal static class SkillListToolTests
 {
     const string ToolName = "skill_list";
@@ -300,6 +308,132 @@ internal static class SkillListToolTests
             Check(refusal.Exit == 1 && IsResult(againRefusal) && IsError(againRefusal) && Text(againRefusal) == refusal.Out, "P5-29: with the seam reset a refusal answers the CLI bytes | " + Short(againRefusal.ToJsonString()));
             Check(!Directory.Exists(absent), "P5-29: the missing directory is not created");
         }
+
+        // ---- 9. P5-31 post-load seam and a throwing stderr ----
+        {
+            Check(Bim.Cli.SkillListCommand.LoadedProbe is null && Bim.Cli.SkillListCommand.ListingWorkProbe is null, "P5-31: both seams are null in production");
+            var toolPath = Path.Combine(root, "interfaces", "mcp", "SkillListTool.cs");
+            Check(!System.Text.RegularExpressions.Regex.IsMatch(File.Exists(toolPath) ? File.ReadAllText(toolPath) : "", @"\bLoadedProbe\b"), "P5-31: the tool source never names LoadedProbe");
+            var listing = Cli("--skills", generated);
+            var refusal = Cli("--skills", absent);
+            var probes = 0;
+            foreach (var failure in new Exception[] { new InvalidOperationException("boom skill_list P5-31"), new IOException("disk skill_list P5-31") })
+            {
+                var name = failure.GetType().Name;
+                var diagnostic = "skill-list internal error: " + failure.GetType().FullName + ": " + failure.Message;
+                Bim.Cli.SkillListCommand.LoadedProbe = load => { probes++; throw failure; };
+                try
+                {
+                    foreach (var (label, arguments, cliArguments) in new (string, JsonObject, string[])[]
+                    {
+                        ("default directory", A(), ["skill-list"]),
+                        ("explicit skills", A(("skills", generated)), ["skill-list", "--skills", generated]),
+                        ("missing directory", A(("skills", absent)), ["skill-list", "--skills", absent]),
+                    })
+                    {
+                        var errors = new StringWriter();
+                        var savedError = Console.Error;
+                        JsonObject response;
+                        var before = probes;
+                        Console.SetError(errors);
+                        try { response = call(Line(arguments)); }
+                        finally { Console.SetError(savedError); }
+                        var toolProbes = probes - before;
+                        var cli = InProcessCli(cliArguments);
+                        Check(IsResult(response) && IsError(response) && Text(response) == InternalLine && toolProbes == 1,
+                            "P5-31 " + name + " after the load, " + label + ": isError with the typed skill_list_internal_error line, the probe once | " + Short(response.ToJsonString()) + " probes " + toolProbes.ToString(CultureInfo.InvariantCulture));
+                        Check(!Text(response).Contains("P5-31", StringComparison.Ordinal), "P5-31 " + name + " " + label + ": the defect message is not in the tool text");
+                        Check(errors.ToString() == diagnostic + Environment.NewLine, "P5-31 " + name + " " + label + ": the IntentPlan diagnostic is on the server's stderr once | " + errors);
+                        Check(cli.Exit == 1 && cli.Line == Text(response) && cli.Error == errors.ToString(),
+                            "P5-31 " + name + " " + label + ": the in-process CLI Run prints the same line and diagnostic, exit 1 | " + cli.Line + " / " + cli.Error);
+                    }
+                    foreach (var arguments in new[] { A(("skills", " ")), A(("skills", "--x")), A(("other", "x")) })
+                    {
+                        var before = probes;
+                        var response = call(Line(arguments));
+                        Check(ErrorCode(response) == -32602 && probes == before, "P5-31: usage-equivalent " + arguments.ToJsonString() + " stays -32602 and never reaches the post-load probe | " + Short(response.ToJsonString()));
+                    }
+                }
+                finally { Bim.Cli.SkillListCommand.LoadedProbe = null; }
+            }
+
+            // A Console.Error whose every write throws: the typed line through tools/call and SkillListTool.Execute.
+            var nul = Path.Combine(scratch, "p531\0nul");
+            foreach (var rejection in new Exception[] { new IOException("stderr closed P5-31"), new ObjectDisposedException("stderr P5-31"), new InvalidOperationException("stderr rejected P5-31") })
+            {
+                var name = rejection.GetType().Name;
+                foreach (var (label, arguments, arm) in new (string, JsonObject, Action)[]
+                {
+                    ("post-load probe", A(("skills", generated)), () => Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new InvalidOperationException("post-load P5-31")),
+                    ("listing probe", A(("skills", absent)), () => Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new IOException("listing P5-31")),
+                    ("NUL skills path", A(("skills", nul)), () => { }),
+                })
+                {
+                    foreach (var direct in new[] { false, true })
+                    {
+                        var writer = new RejectingWriter(rejection);
+                        var savedError = Console.Error;
+                        string text = "";
+                        bool isError = false, result = false;
+                        var escaped = "";
+                        arm();
+                        Console.SetError(writer);
+                        try
+                        {
+                            if (direct)
+                            {
+                                using var document = JsonDocument.Parse(arguments.ToJsonString());
+                                (text, isError) = Bim.Mcp.SkillListTool.Execute(document.RootElement);
+                                result = true;
+                            }
+                            else
+                            {
+                                var response = call(Line(arguments));
+                                result = IsResult(response);
+                                if (result) { text = Text(response); isError = IsError(response); }
+                            }
+                        }
+                        catch (Exception error) { escaped = error.GetType().FullName + ": " + error.Message; }
+                        finally
+                        {
+                            Console.SetError(savedError);
+                            Bim.Cli.SkillListCommand.LoadedProbe = null;
+                            Bim.Cli.SkillListCommand.ListingWorkProbe = null;
+                        }
+                        Check(escaped.Length == 0 && result && isError && text == InternalLine && writer.Attempts == 1,
+                            "P5-31 stderr throws " + name + " (" + label + ", " + (direct ? "SkillListTool.Execute" : "tools/call") + "): isError with the typed line, nothing escapes, one write attempt | "
+                            + Short(text) + " escaped " + escaped + " attempts " + writer.Attempts.ToString(CultureInfo.InvariantCulture));
+                    }
+                }
+                foreach (var (label, arguments, expected) in new (string, JsonObject, (int Exit, string Out, string Err))[] { ("listing", A(("skills", generated)), listing), ("root_missing", A(("skills", absent)), refusal) })
+                {
+                    var writer = new RejectingWriter(rejection);
+                    var savedError = Console.Error;
+                    JsonObject response;
+                    Console.SetError(writer);
+                    try { response = call(Line(arguments)); }
+                    finally { Console.SetError(savedError); }
+                    Check(IsResult(response) && IsError(response) == (expected.Exit != 0) && Text(response) == expected.Out && writer.Attempts == 0,
+                        "P5-31 stderr throws " + name + " (" + label + "): the CLI bytes, stderr never written | " + Short(response.ToJsonString()));
+                }
+            }
+            Check(Bim.Cli.SkillListCommand.LoadedProbe is null && Bim.Cli.SkillListCommand.ListingWorkProbe is null, "P5-31: both seams are null again after the forced runs");
+            var again = call(Line(A(("skills", generated))));
+            Check(listing.Exit == 0 && IsResult(again) && !IsError(again) && Text(again) == listing.Out, "P5-31: with the seams reset the next call answers the CLI listing bytes | " + Short(again.ToJsonString()));
+            Check(!Directory.Exists(absent), "P5-31: the missing directory is not created");
+        }
+    }
+
+    // P5-31: a stderr whose every write throws the given exception (attempts counted); nothing is ever stored.
+    sealed class RejectingWriter(Exception failure) : TextWriter
+    {
+        public int Attempts { get; private set; }
+        public override Encoding Encoding => Encoding.UTF8;
+        public override void Write(char value) { Attempts++; throw failure; }
+        public override void Write(char[] buffer, int index, int count) { Attempts++; throw failure; }
+        public override void Write(string? value) { Attempts++; throw failure; }
+        public override void WriteLine(string? value) { Attempts++; throw failure; }
+        public override void Flush() { }
     }
 
     static void CopyDirectory(string source, string target)

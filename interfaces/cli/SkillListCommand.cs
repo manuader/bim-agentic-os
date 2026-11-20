@@ -31,6 +31,8 @@ namespace Bim.Cli;
 //   {"status":"failed","code":"skill_list_internal_error"}  a defect (IntentPlan.Internal, detail on stderr).
 // Precedence: usage, skills directory, loader, sidecars.
 // List(skillsDirectory) is the shared handler (the MCP skill_list tool, P5-22): it never prints and never throws.
+// P5-31: the internal-error diagnostic reaches stderr only through WriteDiagnostic (Run here, the MCP tool there), which
+// ignores a Console.Error that throws while the line is written: the typed line and exit 1 still follow, nothing escapes.
 internal static class SkillListCommand
 {
     public const string Verb = "skill-list";
@@ -43,12 +45,25 @@ internal static class SkillListCommand
     // Not named WorkProbe: P10-27's pin requires that whole word only in JurisdictionResolveCommand.
     internal static Action? ListingWorkProbe { get; set; }
 
+    // P5-31 second test seam (null in production, never assigned under interfaces/): invoked with the load right after the
+    // one JurisdictionRegistry.Load inside Listing, so a defect after the read reaches the same typed internal error.
+    internal static Action<JurisdictionLoad>? LoadedProbe { get; set; }
+
     public static void Run(string[] args)
     {
         IntentEnvelope envelope;
         try { envelope = Execute(args); }
         catch (Exception error) { envelope = IntentPlan.Internal("skill-list", error); }
-        envelope.Print();
+        WriteDiagnostic(envelope);
+        (envelope with { Diagnostic = null }).Print();
+    }
+
+    // P5-31: the envelope's internal-error diagnostic, if any, on stderr once; a Console.Error that throws is ignored.
+    internal static void WriteDiagnostic(IntentEnvelope envelope)
+    {
+        if (envelope.Diagnostic is not { } detail) return;
+        try { Console.Error.WriteLine(detail); }
+        catch (Exception) { }
     }
 
     static IntentEnvelope Execute(string[] args)
@@ -76,6 +91,7 @@ internal static class SkillListCommand
         }
         var skills = Path.TrimEndingDirectorySeparator(Path.GetFullPath(skillsDirectory));
         var load = JurisdictionRegistry.Load(skills);
+        LoadedProbe?.Invoke(load);
         if (load.Refusal is { } refusal)
         {
             if (load.LoaderError is { } error)
