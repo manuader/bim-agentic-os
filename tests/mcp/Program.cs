@@ -1698,6 +1698,8 @@ PlanLayoutsWriteLinkTests.Run(root,mcpDll,cliDll,Check);
 GenerateTypologyWriteLinkTests.Run(root,mcpDll,cliDll,Check);
 // P4-27 the server links the generate-prototypes document path, never the verb's write path (tests/mcp/GenerateWriteLinkTests.cs).
 GenerateWriteLinkTests.Run(root,mcpDll,cliDll,Check);
+// P4-28 the server binary references no Bim.Gltf API; its Bim.Gltf ProjectReference is kept only for the P10-18 package layout (tests/mcp/GltfReferenceTests.cs).
+GltfReferenceTests.Run(root,mcpDll,cliDll,Check);
 // P3-21 MCP internal-error envelopes from IntentPlan (tests/mcp/InternalErrorEnvelopeToolTests.cs).
 InternalErrorEnvelopeToolTests.Run(root,cliDir,Call,Check);
 // P5-18 the package root from a cli/ or mcp/ binary directory (tests/mcp/SkillPackPackageRootTests.cs).
