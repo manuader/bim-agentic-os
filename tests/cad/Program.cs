@@ -489,5 +489,8 @@ PdfNamedEncodingTests.Run(Check, fixtures);
 // P6-22 Type3 glyph-list names outside the reader table are signalled (tests/cad/PdfType3GlyphListTests.cs).
 PdfType3GlyphListTests.Run(Check, fixtures);
 
+// P6-30 tilted-extrusion inserts and an ezdxf cross-check of MINSERT cells (tests/cad/MinsertEzdxfTests.cs).
+MinsertEzdxfTests.Run(Check);
+
 Console.WriteLine(JsonSerializer.Serialize(new { passed, failed, cad_dxf = failed == 0 }));
 Environment.ExitCode = failed == 0 && passed > 0 ? 0 : 1;
