@@ -41,6 +41,9 @@ using Bim.Core;
 //      sentinel proves the environment really selects the culture in a .NET child: a pwsh child under the same environment
 //      must report CurrentCulture de-DE / tr-TR, and the CLI's runtimeconfig must not force invariant globalization; a
 //      missing pwsh or culture data on Linux is a failure, not a skip, so a silently invariant child cannot pass.
+//  10. P5-28 twice-read: over one generated package skills directory (a code pack + sidecar), skill-list and
+//      jurisdiction-resolve run twice in process and twice as real processes print byte-identical lines on success and
+//      on a sidecar refusal, while the two in-process JurisdictionRegistry loads behind them are unequal (TwiceRead).
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -383,6 +386,189 @@ internal static class SkillListTests
         var program = File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs"));
         Check(program.Contains("case \"skill-list\": SkillListCommand.Run(args); break;", StringComparison.Ordinal) && program.Contains("| skill-list [--skills skills-directory] |", StringComparison.Ordinal),
             "Program.cs registers skill-list and lists it in the usage text");
+
+        // ---- 10. P5-28 twice-read bytes pin ----
+        TwiceRead(scratch, dotnet, cliDll, check);
+    }
+
+    // P5-28 twice-read bytes pin: one generated package (<pkg>/cli = a copy of the CLI beside VERSION, manifest.json and
+    // skills/) whose skills/ hold one code pack xx.p528.pack with a jurisdiction.json sidecar (code xx.p528, not a stub).
+    // skill-list --skills <pkg>/skills and jurisdiction-resolve --code xx.p528 (package-first, so it reads the same
+    // directory) each run twice in process (the verb's Run with stdout/stderr/exit captured; jurisdiction-resolve with
+    // AppContext.BaseDirectory pointed at <pkg>/cli, restored in a finally, a sentinel proving the package is read) and
+    // twice as real processes of the packaged CLI. Phase "success" (valid sidecar) and phase "sidecar refusal" (the
+    // sidecar rewritten malformed: json_invalid, subject xx.p528.pack/jurisdiction.json): within a phase all four runs of
+    // a verb print byte-identical stdout (raw, newline included), the same exit and empty stderr, equal to the pinned
+    // line. Behind them, two in-process JurisdictionRegistry.Load reads of the directory: on success they carry equal
+    // content but are unequal registries (P5-27 reference identity) and unequal loads, so the identical bytes cannot
+    // depend on registry identity; on the refusal there is no registry and the two loads compare equal (Refusal by value,
+    // no LoaderError; P5-26). The skills tree is unchanged by every run.
+    static void TwiceRead(string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-28 twice-read: " + name, detail);
+        const string Pack = "xx.p528.pack";
+        const string Code = "xx.p528";
+        var package = Path.Combine(scratch, "p528-pkg");
+        var packageCli = Path.Combine(package, "cli");
+        CopyDirectory(Path.GetDirectoryName(cliDll)!, packageCli);
+        File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
+        var skills = Path.Combine(package, "skills");
+        Directory.CreateDirectory(Path.Combine(skills, Pack));
+        File.WriteAllText(Path.Combine(skills, Pack, "skill.json"),
+            "{\"manifest_version\":1,\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
+        var sidecar = Path.Combine(skills, Pack, "jurisdiction.json");
+        File.WriteAllText(sidecar,
+            "{\"jurisdiction_version\":1,\"code\":\"" + Code + "\",\"pack\":\"" + Pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"Fixture Town\"],\"stub\":false,\"note\":\"fictitious test fixture\"}\n",
+            new UTF8Encoding(false));
+        var packageDll = Path.Combine(packageCli, "Bim.Cli.dll");
+        string[] listArguments = { "skill-list", "--skills", skills };
+        string[] resolveArguments = { "jurisdiction-resolve", "--code", Code };
+
+        // A real process of the packaged CLI: raw stdout (newline kept), stderr, exit.
+        (int Exit, string Out, string Err) Child(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(packageDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result.ReplaceLineEndings(" ").Trim());
+        }
+        // The verb run in process: stdout raw, stderr and Environment.ExitCode captured; with baseDirectory set,
+        // AppContext.BaseDirectory reads it for the run (APP_CONTEXT_BASE_DIRECTORY). Every global is restored in the finally.
+        (int Exit, string Out, string Err) Inline(Action run, string? baseDirectory)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var previousBase = AppContext.GetData("APP_CONTEXT_BASE_DIRECTORY");
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var exit = -1;
+            var thrown = "";
+            var seen = "";
+            try
+            {
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+                seen = AppContext.BaseDirectory;
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                run();
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().Name + ": " + failure.Message; }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previousBase);
+            }
+            if (baseDirectory is not null)
+                Check(seen == baseDirectory, "sentinel: override visible during the run (in process AppContext.BaseDirectory is the package cli directory)", seen + " != " + baseDirectory);
+            return (exit, capturedOut.ToString(), (capturedError.ToString().Trim() + thrown).Trim());
+        }
+        static string D((int Exit, string Out, string Err) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out) + (r.Err.Length > 0 ? " stderr " + r.Err : "");
+
+        var originalBase = AppContext.BaseDirectory;
+        var packageBase = packageCli + Path.DirectorySeparatorChar;
+
+        // The four runs of each verb in one phase, all against the one directory.
+        ((int Exit, string Out, string Err)[] List, (int Exit, string Out, string Err)[] Resolve) Runs() => (
+            new[]
+            {
+                Inline(() => Bim.Cli.SkillListCommand.Run(listArguments), null),
+                Inline(() => Bim.Cli.SkillListCommand.Run(listArguments), null),
+                Child(listArguments),
+                Child(listArguments),
+            },
+            new[]
+            {
+                Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(resolveArguments), packageBase),
+                Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(resolveArguments), packageBase),
+                Child(resolveArguments),
+                Child(resolveArguments),
+            });
+        string[] runNames = { "in process #1", "in process #2", "process #1", "process #2" };
+        void Identical(string phase, string verb, (int Exit, string Out, string Err)[] runs, int exit, string line)
+        {
+            for (var index = 0; index < runs.Length; index++)
+                Check(runs[index].Exit == exit && runs[index].Out == line + Environment.NewLine && runs[index].Err.Length == 0,
+                    phase + ": " + verb + " " + runNames[index] + " prints the pinned line (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", nothing on stderr)",
+                    D(runs[index]) + " | expected " + JsonSerializer.Serialize(line + Environment.NewLine));
+            Check(runs.All(run => run.Exit == runs[0].Exit && run.Out == runs[0].Out && run.Err == runs[0].Err),
+                phase + ": " + verb + " twice in process and twice as a real process prints byte-identical output", string.Join(" || ", runs.Select(D)));
+        }
+        static string Failed(JurisdictionIssue issue) => JsonSerializer.Serialize(new { status = "failed", code = issue.Code, subject = issue.Subject, detail = issue.Detail });
+
+        // ---- success phase ----
+        var digest = TreeDigest(skills);
+        var first = JurisdictionRegistry.Load(skills);
+        var second = JurisdictionRegistry.Load(skills);
+        Check(first.Registry is { } a && second.Registry is { } b && a.Codes.SequenceEqual(new[] { Code }) && b.Codes.SequenceEqual(new[] { Code })
+            && a.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)).SequenceEqual(b.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)))
+            && a.Catalog.Skills.Select(skill => skill.Id).SequenceEqual(b.Catalog.Skills.Select(skill => skill.Id)),
+            "success: two in-process loads of the generated directory succeed with the same claim (" + Code + " -> " + Pack + ") and catalogue",
+            (first.Refusal?.ToString() ?? "") + " / " + (second.Refusal?.ToString() ?? ""));
+        var firstRegistry = first.Registry;
+        var secondRegistry = second.Registry;
+        // P5-27 reference identity: two in-process loads of the same directory (stand-ins; the verbs' own loads are not
+        // observable) give distinct, unequal registries (red phase run 44623782837 probed the opposite expectation and failed
+        // with ReferenceEquals False, Equals False, loads equal False).
+        Check(firstRegistry is not null && secondRegistry is not null && !ReferenceEquals(firstRegistry, secondRegistry) && !firstRegistry.Equals(secondRegistry)
+            && !firstRegistry.Equals((object)secondRegistry) && !EqualityComparer<JurisdictionRegistry>.Default.Equals(firstRegistry, secondRegistry),
+            "success: the two in-process registries are unequal (P5-27 reference identity), so the identical bytes below never depend on registry identity",
+            "ReferenceEquals " + ReferenceEquals(firstRegistry, secondRegistry) + ", Equals " + (firstRegistry?.Equals(secondRegistry)).ToString() + ", loads equal " + (first == second));
+        Check(first != second && !first.Equals(second), "success: the two in-process loads are unequal (JurisdictionLoad follows registry identity)", first + " / " + second);
+        var expectedList = Expected(skills);
+        Check(expectedList.Exit == 0 && expectedList.Line.Contains("\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false", StringComparison.Ordinal),
+            "success: the in-process oracle lists " + Pack + " as a code pack, not a stub", expectedList.Line);
+        // The success line pinned literally (field order as SkillListCommand writes it), and equal to the in-process oracle.
+        var listLine = "{\"status\":\"succeeded\",\"skills_path\":" + JsonSerializer.Serialize(Path.TrimEndingDirectorySeparator(Path.GetFullPath(skills)))
+            + ",\"packs\":[{\"id\":\"" + Pack + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"stub\":false,"
+            + "\"source_confidence\":{\"rules\":0,\"cited\":0,\"owner-confirmed\":0,\"to-verify\":0,\"lowest\":\"none\"}}]}";
+        Check(expectedList.Line == listLine, "success: the in-process skill-list oracle equals the literal pinned line", expectedList.Line + " | pinned " + listLine);
+        var resolveLine = JsonSerializer.Serialize(new { status = "succeeded", code = Code, pack = Pack, version = "1.2.3", stub = false });
+        // Negative control: without the base-directory override, in-process jurisdiction-resolve reads the repository
+        // skills (no xx.p528 claim) and refuses with jurisdiction_unknown, so the override is load-bearing.
+        var unoverridden = Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(resolveArguments), null);
+        string? unoverriddenCode = null;
+        try { using var document = JsonDocument.Parse(unoverridden.Out); unoverriddenCode = document.RootElement.GetProperty("code").GetString(); }
+        catch (Exception error) when (error is JsonException or KeyNotFoundException or InvalidOperationException) { }
+        Check(unoverridden.Exit == 1 && unoverridden.Out != resolveLine + Environment.NewLine && unoverriddenCode == JurisdictionCodes.JurisdictionUnknown && unoverridden.Err.Length == 0,
+            "negative control: in process with the original base directory, jurisdiction-resolve --code " + Code + " is jurisdiction_unknown (the override is load-bearing)", D(unoverridden));
+        var success = Runs();
+        Identical("success", "skill-list", success.List, 0, listLine);
+        Identical("success", "jurisdiction-resolve", success.Resolve, 0, resolveLine);
+        Check(TreeDigest(skills) == digest, "success: the generated skills tree is unchanged by every run");
+
+        // ---- sidecar refusal phase: the one sidecar rewritten malformed ----
+        File.WriteAllText(sidecar, "{ \"jurisdiction_version\": 1, ", new UTF8Encoding(false));
+        digest = TreeDigest(skills);
+        var firstRefused = JurisdictionRegistry.Load(skills);
+        var secondRefused = JurisdictionRegistry.Load(skills);
+        Check(firstRefused.Registry is null && secondRefused.Registry is null && firstRefused.LoaderError is null && secondRefused.LoaderError is null
+            && firstRefused.Refusal is { Code: JurisdictionCodes.JsonInvalid, Subject: Pack + "/jurisdiction.json", Detail.Length: > 0 },
+            "sidecar refusal: two in-process loads of the same directory (stand-ins; the verbs' own loads are not observable) refuse with json_invalid at " + Pack + "/jurisdiction.json and a non-empty detail (no registry, no loader error)",
+            (firstRefused.Refusal?.ToString() ?? "<no refusal>") + " / " + (secondRefused.Refusal?.ToString() ?? "<no refusal>"));
+        Check(firstRefused == secondRefused && firstRefused.GetHashCode() == secondRefused.GetHashCode(),
+            "sidecar refusal: the two refusal loads compare equal with an equal hash (no registry identity involved)", firstRefused + " / " + secondRefused);
+        var refusalLine = firstRefused.Refusal is { } refusal ? Failed(refusal) : "<no refusal>";
+        var expectedRefusal = Expected(skills);
+        Check(expectedRefusal.Exit == 1 && expectedRefusal.Line == refusalLine, "sidecar refusal: the skill-list oracle is the registry refusal line {status,code,subject,detail}",
+            expectedRefusal.Line + " | " + refusalLine);
+        var refused = Runs();
+        Identical("sidecar refusal", "skill-list", refused.List, 1, refusalLine);
+        Identical("sidecar refusal", "jurisdiction-resolve", refused.Resolve, 1, refusalLine);
+        Check(TreeDigest(skills) == digest, "sidecar refusal: the generated skills tree is unchanged by every run");
+
+        Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
 
     // Reads of the skills directory skill-list must never make itself (P5-24): only JurisdictionRegistry.Load reads it.
