@@ -1113,6 +1113,102 @@ try {
         }
     } catch { $failures.Add("P7-12 packaged skills/generate-prototypes checks threw: $($_.Exception.Message)") }
 
+    # --- P7-24 generate_prototypes from the packaged MCP binary: a copy of the real package (release A) outside any
+    # repository; its mcp/Bim.Mcp.dll over stdio (one tools/call line) returns the document whose UTF-8 bytes equal the
+    # packaged CLI generate-prototypes output file (ranked and infeasible requests), the code pack resolved package-first
+    # (no global.json above, so no repository skills/ to fall back to); with the packaged code pack removed, the MCP text
+    # is the typed generate_prototypes_pack_unavailable (input_not_found) line, equal to the packaged CLI stdout line ---
+    try {
+        function Test-P724UnderRepository([string]$Directory) {
+            for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
+            return $false
+        }
+        $p724Base = @($env:RUNNER_TEMP, [IO.Path]::GetTempPath(), $(if (!$IsWindows) { '/tmp' })) |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and !(Test-P724UnderRepository $_) } | Select-Object -First 1
+        if (!$p724Base) {
+            if ($env:GITHUB_ACTIONS -eq 'true') { $failures.Add('P7-24: a writable directory outside any repository exists on CI') }
+            else { Write-Host 'SKIP P7-24 packaged MCP generate_prototypes: no writable directory outside a repository' }
+        }
+        else {
+            $p724Case = Join-Path $p724Base ('bim-package-mcp-prototypes-' + [Guid]::NewGuid().ToString('N'))
+            try {
+                $p724Package = Join-Path $p724Case 'pkg'
+                $p724Io = Join-Path $p724Case 'io'
+                New-Item -ItemType Directory -Force $p724Io | Out-Null
+                Copy-Item -LiteralPath $outA -Destination $p724Package -Recurse
+                $p724Utf8 = [Text.UTF8Encoding]::new($false)
+                # One child process, stdin optionally written then closed, stdout/stderr read as UTF-8, bounded at 180 s.
+                function Invoke-P724Process([string[]]$Arguments, [string]$Stdin) {
+                    $start = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+                    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+                    $start.UseShellExecute = $false; $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+                    $start.StandardInputEncoding = $p724Utf8; $start.StandardOutputEncoding = $p724Utf8; $start.StandardErrorEncoding = $p724Utf8
+                    $start.WorkingDirectory = $p724Io
+                    $process = [Diagnostics.Process]::Start($start)
+                    try {
+                        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                        try { if ($Stdin) { $process.StandardInput.Write($Stdin) }; $process.StandardInput.Close() } catch [IO.IOException] { }
+                        if (!$process.WaitForExit(180000)) {
+                            try { $process.Kill($true) } catch { }
+                            return [pscustomobject]@{ Code = -1; Out = '<timed out>'; Err = '' }
+                        }
+                        $process.WaitForExit()
+                        return [pscustomobject]@{ Code = $process.ExitCode; Out = $stdout.GetAwaiter().GetResult(); Err = $stderr.GetAwaiter().GetResult() }
+                    } finally { $process.Dispose() }
+                }
+                function Invoke-P724Mcp([string]$Dll, [string]$RequestPath) {
+                    $line = [ordered]@{ jsonrpc = '2.0'; id = 24; method = 'tools/call'; params = [ordered]@{ name = 'generate_prototypes'; arguments = [ordered]@{ request = $RequestPath } } } | ConvertTo-Json -Compress -Depth 6
+                    $run = Invoke-P724Process @($Dll) ($line + "`n")
+                    $raw = "exit $($run.Code) $(Get-Tail $run.Out)$(if ($run.Err) { ' stderr ' + (Get-Tail $run.Err) })"
+                    try {
+                        $document = [Text.Json.JsonDocument]::Parse($run.Out.Split("`n")[0])
+                        try {
+                            $result = $document.RootElement.GetProperty('result')
+                            return [pscustomobject]@{ Ok = $true; IsError = $result.GetProperty('isError').GetBoolean(); Text = $result.GetProperty('content').get_Item(0).GetProperty('text').GetString(); Raw = $raw }
+                        } finally { $document.Dispose() }
+                    } catch { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$raw (unparsed: $($_.Exception.Message))" } }
+                }
+                $p724Mcp = Join-Path $p724Package 'mcp/Bim.Mcp.dll'
+                # RED PROBE (removed in the green commit): the server folder renamed to server/, so SkillPackLookup.PackageRoot (cli or mcp only,
+                # P5-18) does not see the package: the pre-P5-18 situation; the MCP oracles below must fail.
+                Move-Item -LiteralPath (Join-Path $p724Package 'mcp') -Destination (Join-Path $p724Package 'server'); $p724Mcp = Join-Path $p724Package 'server/Bim.Mcp.dll'
+                $p724Cli = Join-Path $p724Package 'cli/Bim.Cli.dll'
+                $p724Pack = Join-Path $p724Package 'skills/ar.caba.codigo-edificacion'
+                Assert ((Test-Path -LiteralPath $p724Mcp -PathType Leaf) -and (Test-Path -LiteralPath $p724Cli -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $p724Pack 'skill.json') -PathType Leaf) -and !(Test-P724UnderRepository $p724Package)) "P7-24: the package copy has mcp/Bim.Mcp.dll, cli/Bim.Cli.dll and skills/ar.caba.codigo-edificacion/skill.json with no global.json above it ($p724Package)"
+                $p724Requests = @(
+                    @{ Name = 'ranked two-bedroom (default code pack)'; Json = '{"typology":2,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0}'; Status = 'ranked' },
+                    @{ Name = 'infeasible three-bedroom on a 3 x 3 m lot (explicit code pack)'; Json = '{"typology":3,"lot":{"width_m":3,"depth_m":3},"alternatives":2,"seed":0,"pack":"ar.caba.codigo-edificacion"}'; Status = 'infeasible' }
+                )
+                $p724Index = 0
+                foreach ($case in $p724Requests) {
+                    $p724Index++
+                    $request = Join-Path $p724Io "request-$p724Index.json"
+                    Write-PackageText $request $case.Json
+                    $cliOut = Join-Path $p724Io "cli-$p724Index.json"
+                    $cli = Invoke-P724Process @($p724Cli, 'generate-prototypes', $request, $cliOut) ''
+                    $cliOk = $cli.Code -eq 0 -and (Test-Path -LiteralPath $cliOut -PathType Leaf) -and $cli.Out -match ('"status":"succeeded"') -and $cli.Out -match ('"pipeline_status":"' + $case.Status + '"')
+                    Assert $cliOk "P7-24 $($case.Name): the packaged CLI generate-prototypes outside any repository succeeds ($($case.Status)): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
+                    $mcp = Invoke-P724Mcp $p724Mcp $request
+                    $cliBytes = if (Test-Path -LiteralPath $cliOut -PathType Leaf) { [IO.File]::ReadAllBytes($cliOut) } else { [byte[]]@() }
+                    $mcpBytes = $p724Utf8.GetBytes($mcp.Text)
+                    Assert ($cliOk -and $mcp.Ok -and !$mcp.IsError -and $cliBytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($cliBytes)) "P7-24 $($case.Name): the packaged mcp/Bim.Mcp.dll generate_prototypes over stdio returns the packaged CLI output file bytes (cli $($cliBytes.Length) bytes, mcp $($mcpBytes.Length) bytes): mcp $($mcp.Raw)"
+                }
+                # The packaged code pack removed (VERSION, manifest.json and skills/ stay, so the folder is still the package root).
+                Remove-Item -LiteralPath $p724Pack -Recurse -Force
+                Assert ((Test-Path -LiteralPath (Join-Path $p724Package 'skills') -PathType Container) -and !(Test-Path -LiteralPath $p724Pack)) 'P7-24: the packaged code pack directory is removed, skills/ stays'
+                $request = Join-Path $p724Io 'request-missing-pack.json'
+                Write-PackageText $request $p724Requests[0].Json
+                $cliOut = Join-Path $p724Io 'cli-missing-pack.json'
+                $cli = Invoke-P724Process @($p724Cli, 'generate-prototypes', $request, $cliOut) ''
+                $expected = '{"status":"failed","code":"generate_prototypes_pack_unavailable","detail":"input_not_found"}'
+                $cliLine = $cli.Out.TrimEnd("`r", "`n")
+                Assert ($cli.Code -eq 1 -and $cliLine -ceq $expected -and !(Test-Path -LiteralPath $cliOut)) "P7-24: a missing packaged code pack makes the packaged CLI print $expected (exit 1, no output file): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
+                $mcp = Invoke-P724Mcp $p724Mcp $request
+                Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cliLine) "P7-24: a missing packaged code pack makes the packaged mcp/Bim.Mcp.dll generate_prototypes return the typed pack_unavailable line (isError), equal to the packaged CLI stdout line: mcp $($mcp.Raw)"
+            } finally { if (Test-Path -LiteralPath $p724Case) { Remove-Item -LiteralPath $p724Case -Recurse -Force -ErrorAction SilentlyContinue } }
+        }
+    } catch { $failures.Add("P7-24 packaged MCP generate_prototypes checks threw: $($_.Exception.Message)") }
+
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
     Assert ($ok.Code -eq 0) "package-verify rejected a clean package: $(Get-Tail $ok.Output)"
