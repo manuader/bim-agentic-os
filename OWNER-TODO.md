@@ -369,3 +369,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay248 (2026-11-20, cloud)
 - Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 4d0e588).
 - Behaviour change to know about (no action): MCP tools now refuse a call that repeats an argument name with -32602 "invalid_params: repeated argument <name>" (before, the last value silently won).
+
+## Relay249 (2026-11-20, cloud)
+- Nothing new requires you. Still open: decide ADR0011 (P9-03) and ADR0010 (P2-11) (recommended A); ONE -Catalogue run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` in your checkout (main = 8b26452).
