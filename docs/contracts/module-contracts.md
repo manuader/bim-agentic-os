@@ -749,6 +749,10 @@ A relative path argument while the CLI's working directory has been deleted (`Pa
 
 `interfaces/cli/GenerateTypologyWrite.cs` `Run` catch-all, same rule as P7-28: the internal-error diagnostic from `IntentPlan.Internal("generate-typology", e)` is written to stderr inside its own try/catch and the envelope is then printed without it, so a throwing `Console.Error` still yields the typed `generate_typology_internal_error` stdout line and exit 1 with nothing escaping `Run`; P3-25 deletion and the P3-26 partial-output line are unchanged; bytes unchanged when stderr accepts. A throwing `Console.Out` there and `InternalRefusal`'s unguarded stderr write → P3-30. Evidence: unit-tested.
 
+## generate-typology output write failures (P3-30)
+
+`interfaces/cli/GenerateTypologyWrite.cs` `Run`: `catch (Refusal)` sets `Environment.ExitCode = 1` before writing the typed line inside a try/catch; the catch-all writes the diagnostic guarded, sets the internal error's exit (1) and prints the typed line inside a try/catch. A throwing, rejecting or disposed stdout therefore leaves exit 1 and nothing escapes `Run` (success and refusal bytes unchanged). `GenerateTypologyCommand.InternalRefusal` writes its diagnostic inside a try/catch and returns `Refusal(InternalError)`, so a throwing stderr is attempted once and never becomes a second internal error (CLI and MCP Document share it). The P4-26 Run pin is compared through documented deltas RunDeltaP330 then RunDeltaP328. Document's own catch-all stderr write is still unguarded (P3-31).
+
 ## generate-prototypes diagnostic write failure (P7-28)
 
 `interfaces/cli/GenerateWrite.cs` `Run` catch-all: the internal-error diagnostic is written to `Console.Error` inside a try/catch that swallows any exception, then the envelope is printed without it (`with { Diagnostic = null }`). Normal output is unchanged (diagnostic, then `{"status":"failed","code":"generate_prototypes_internal_error"}`, exit 1). A stderr that rejects or throws loses only the diagnostic: the typed stdout line and exit 1 still appear and nothing escapes `Run`; P7-26/P7-27 cleanup (delete, or the left-behind-path line) is unchanged. A throwing stdout in the catch-all is contained since P7-29 (below).
@@ -769,6 +773,10 @@ A relative path argument while the CLI's working directory has been deleted (`Pa
 
 On macOS the fake raises its pipe socket's SO_RCVBUF to 4× its measured default (cap 1 MiB) before the `-BreakAfterBytes` connection's first read and reports the read-back as InBufferSize; FIONREAD is re-read every 50 ms until stable (≤ ~1 s). Queued bytes then equal the client's default unix send buffer, not InBufferSize, and handed = 4096 + that send buffer: the writer's send buffer is the limit on XNU AF_UNIX. Pinned as relations behind a separate precondition (InBufferSize > send buffer). Linux/Windows unchanged. A client-side send-buffer lever → P2-36. Evidence: unit-tested (test fake only).
 
+## macOS client send buffer (P2-36)
+
+`core/Bim.Core/RevitCommandsService.cs` has a test-only `[ThreadStatic] internal static Action<PipeStream>? PipeConnected` (no initializer, null in production) read once as `PipeConnected?.Invoke(pipe);` at the top of `WriteRequest`, before the first request byte; with it null the bytes and the single `pipe.Write` are unchanged. It is named only in that file and is never assigned in production (static pin). On macOS the mirror-journal write-progress loop raises the client socket's SO_SNDBUF to 2× its default through it: queued bytes then equal the raised send buffer and handed equals 4096 + it, while the lever-free CLI process stays at the default send buffer — the client's send buffer is the cause (P2-35).
+
 ## Remaining CLI test seam hygiene (P3-27)
 
 `UnguardedStageProbe` (`GenerateCommand.cs`), `UnguardedWorkProbe` (`GenerateTypologyCommand.cs`), `PostWriteProbe` (`GenerateTypologyWrite.cs`) and `PostWriteStageProbe` (`GenerateWrite.cs`) are each one initializer-free `internal static Action? X { get; set; }` read once as the statement `X?.Invoke();`; `GenerationWeightsProbe` (`PlanLayoutsCommand.cs`) is one initializer-free `internal static ScoringWeights?` read once as the last argument of `new AlternativeOptions(...)` in `AlternativeGenerator.Generate(...)`. Each is named only in its own file under `interfaces/` and never assigned there (literal-blanked and literal-kept counts; a source naming a seam may not contain `"""`, `@$"` or `$@"`, which the comment stripper does not lex). Tests may set them (GenerationWeightsProbe directly in tests/mcp/PlanLayoutsToolTests.cs, reset in finally). Evidence: unit-tested.
@@ -776,6 +784,10 @@ On macOS the fake raises its pipe socket's SO_RCVBUF to 4× its measured default
 ## MCP binary without Bim.Gltf metadata (P4-28)
 
 The Release `Bim.Mcp.dll` has no AssemblyRef, TypeRef, MemberRef or user string naming Bim.Gltf (zero GltfExporter MemberRefs; `Bim.Cli.dll` positive control). Since P4-29 `interfaces/mcp/Bim.Mcp.csproj` has no `Bim.Gltf.csproj` ProjectReference (no transitive route through Bim.Core or Bim.Generative), the P10-18 package-layout pin no longer requires `mcp/Bim.Gltf.dll` (`cli/Bim.Gltf.dll` still required), and `Bim.Mcp.deps.json` names Bim.Core and Bim.Generative but not Bim.Gltf; `tests/mcp/GltfReferenceTests.cs` requires zero references. An explicit package pin that `mcp/` holds no Bim.Gltf.dll → P4-30. Evidence: unit-tested.
+
+## Package mcp/ without Bim.Gltf (P4-30)
+
+The package built by `scripts/package.ps1` has no file under `mcp/` named `Bim.Gltf.*` and no `mcp/` Bim.Gltf path in `sbom.json` or `manifest.json`, while `cli/Bim.Gltf.dll` ships with exactly one sbom and one manifest line whose sha256 matches (`tests/cli/PackageLayoutPackTests.cs` `McpWithoutGltf`, fail-closed).
 
 ## MCP repeated argument names (P10-31)
 
