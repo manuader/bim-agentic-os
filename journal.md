@@ -1886,3 +1886,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 2026-11-20T03:13:20Z integration 5b2768b CI 44663391278 success (9/9) → main fast-forwarded (c7f4ebe..5b2768b). P5-29, P1-35, P7-28 ✅; new P5-31, P1-37, P7-29. Progress 273/292 (93.5 %). Worktrees retired (branches relay246-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-20T03:13:20Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P2-34, P3-27, P3-28, P4-28 (relay244); then P10-31, P10-32, P6-30, P6-31, P5-30 (relay245); then P1-36, P1-37, P5-31, P7-24, P7-29. GenerateTypologyWrite.cs edits serialize (P3-28); McpServer.cs edits serialize (P10-31, P1-36 comment); tests/cli/SkillListTests.cs serializes (P5-30, P5-31); RevitCommandDeadlineTests.cs serializes (P1-36, P1-37); GenerateWrite.cs (P7-29) updates the P4-27 Run pin via a second documented delta. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay247
+- 2026-11-20T03:52:54Z lock taken (session_014pxpsTc7RvBLJtse3PASag relay247; was FREE, relay246 released 2026-11-20T03:13:20Z)
