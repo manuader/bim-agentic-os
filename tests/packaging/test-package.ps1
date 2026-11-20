@@ -23,6 +23,9 @@
 # naming the path before any read or hash, in bounded child runs (counted SKIPs on Windows).
 # P7-24: a copy of the real package outside any repository: mcp/Bim.Mcp.dll generate_prototypes over stdio returns the packaged CLI
 # generate-prototypes output file bytes (pack resolved package-first); a removed packaged code pack is the same pack_unavailable line.
+# P7-31: the same copy: a malformed packaged skill.json is the same pack_invalid line from the packaged CLI and MCP; with a package
+# marker removed under a generated repository root both fall back to that repository's skills/ (byte-equal, sha256 pinned), else the
+# typed refusals; one MCP process runs initialize + tools/list + tools/call and the ranked document's sha256 is pinned.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -1219,6 +1222,197 @@ try {
             } finally { if (Test-Path -LiteralPath $p724Case) { Remove-Item -LiteralPath $p724Case -Recurse -Force -ErrorAction SilentlyContinue } }
         }
     } catch { $failures.Add("P7-24 packaged MCP generate_prototypes checks threw: $($_.Exception.Message)") }
+
+    # --- P7-31 packaged MCP generate_prototypes pack_invalid, repository fallback and handshake: copies of the real package
+    # (release A) outside any repository. (1) The packaged CLI generate-prototypes document for a ranked request has a pinned
+    # sha256 and one mcp/Bim.Mcp.dll process running initialize, notifications/initialized, tools/list and tools/call returns
+    # those bytes. (2) A malformed packaged skill.json (truncated JSON; a manifest naming another pack) is the same
+    # generate_prototypes_pack_invalid line from the packaged CLI (exit 1, empty stderr, no file) and MCP (isError). (3) With a
+    # package marker (VERSION or manifest.json) removed and the copy placed below a generated repository root (global.json,
+    # skills/<pack>/skill.json), the packaged pack made malformed, both resolve the repository's pack (SkillPackLookup: no
+    # package root, so the first ancestor holding global.json) and give the baseline bytes; without the repository's pack both
+    # give pack_unavailable (input_not_found); the marker-less copy outside any repository gives repository_not_found ---
+    try {
+        function Test-P731UnderRepository([string]$Directory) {
+            for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
+            return $false
+        }
+        $p731Base = @($env:RUNNER_TEMP, [IO.Path]::GetTempPath(), $(if (!$IsWindows) { '/tmp' })) |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and !(Test-P731UnderRepository $_) } | Select-Object -First 1
+        if (!$p731Base) {
+            if ($env:GITHUB_ACTIONS -eq 'true') { $failures.Add('P7-31: a writable directory outside any repository exists on CI') }
+            else { Write-Host 'SKIP P7-31 packaged MCP generate_prototypes pack_invalid/fallback/handshake: no writable directory outside a repository' }
+        }
+        else {
+            $p731Case = Join-Path $p731Base ('bim-package-mcp-p731-' + [Guid]::NewGuid().ToString('N'))
+            try {
+                $p731Io = Join-Path $p731Case 'io'
+                New-Item -ItemType Directory -Force $p731Io | Out-Null
+                $p731Utf8 = [Text.UTF8Encoding]::new($false)
+                $p731PackId = 'ar.caba.codigo-edificacion'
+                # SHA-256 of the canonical document for $p731Request (pipeline_status ranked, 150022 bytes), identical on Linux and Windows
+                # (observed in CI run 44788128345 on core and core-windows).
+                $p731RankedSha256 = '436d40726df4020f2a853ef85efd5effcce294e727ddfbb1d8a118f64709f22d'
+                $p731Request = '{"typology":2,"lot":{"width_m":12,"depth_m":30},"alternatives":8,"seed":0}'
+                $p731RequestPath = Join-Path $p731Io 'request.json'
+                Write-PackageText $p731RequestPath $p731Request
+                $p731CallLine = [ordered]@{ jsonrpc = '2.0'; id = 31; method = 'tools/call'; params = [ordered]@{ name = 'generate_prototypes'; arguments = [ordered]@{ request = $p731RequestPath } } } | ConvertTo-Json -Compress -Depth 6
+                # One child process, stdin written then closed, stdout/stderr read as UTF-8, bounded at 180 s.
+                function Invoke-P731Process([string[]]$Arguments, [string]$Stdin) {
+                    $start = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+                    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+                    $start.UseShellExecute = $false; $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+                    $start.StandardInputEncoding = $p731Utf8; $start.StandardOutputEncoding = $p731Utf8; $start.StandardErrorEncoding = $p731Utf8
+                    $start.WorkingDirectory = $p731Io
+                    $process = [Diagnostics.Process]::Start($start)
+                    try {
+                        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                        try { if ($Stdin) { $process.StandardInput.Write($Stdin) }; $process.StandardInput.Close() } catch [IO.IOException] { }
+                        if (!$process.WaitForExit(180000)) {
+                            try { $process.Kill($true) } catch { }
+                            try { [void]$process.WaitForExit(5000) } catch { }
+                            return [pscustomobject]@{ Code = -1; Out = '<timed out>'; Err = '' }
+                        }
+                        $process.WaitForExit()
+                        return [pscustomobject]@{ Code = $process.ExitCode; Out = $stdout.GetAwaiter().GetResult(); Err = $stderr.GetAwaiter().GetResult() }
+                    } finally { $process.Dispose() }
+                }
+                function Get-P731Sha256([byte[]]$Bytes) {
+                    $sha = [Security.Cryptography.SHA256]::Create()
+                    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+                }
+                # The packaged CLI on the request: exit code, stdout without its newline, stderr, output file bytes (or none).
+                function Invoke-P731Cli([string]$Package, [string]$Label) {
+                    $output = Join-Path $p731Io "cli-$Label.json"
+                    $run = Invoke-P731Process @((Join-Path $Package 'cli/Bim.Cli.dll'), 'generate-prototypes', $p731RequestPath, $output) ''
+                    $bytes = $null
+                    if (Test-Path -LiteralPath $output -PathType Leaf) { $bytes = [IO.File]::ReadAllBytes($output) }
+                    return [pscustomobject]@{ Code = $run.Code; Line = $run.Out.TrimEnd("`r", "`n"); Err = $run.Err; Bytes = $bytes
+                        Raw = "exit $($run.Code) $(Get-Tail $run.Out)$(if ($run.Err) { ' stderr ' + (Get-Tail $run.Err) })$(if ($null -ne $bytes) { " file $($bytes.Length) bytes" } else { ' no file' })" }
+                }
+                # One mcp/Bim.Mcp.dll process fed $Lines; Ok when it exits 0 with an empty stderr and one response line per
+                # expected id, in order. Responses holds each line's cloned root element.
+                function Invoke-P731Mcp([string]$Package, [string[]]$Lines, [int[]]$ExpectedIds) {
+                    $run = Invoke-P731Process @((Join-Path $Package 'mcp/Bim.Mcp.dll')) (($Lines -join "`n") + "`n")
+                    $raw = "exit $($run.Code) $(Get-Tail $run.Out)$(if ($run.Err) { ' stderr ' + (Get-Tail $run.Err) })"
+                    $responses = [Collections.Generic.List[Text.Json.JsonElement]]::new()
+                    $outLines = @($run.Out.Split("`n") | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_.Length -gt 0 })
+                    try {
+                        foreach ($line in $outLines) { $document = [Text.Json.JsonDocument]::Parse($line); try { $responses.Add($document.RootElement.Clone()) } finally { $document.Dispose() } }
+                        $ids = @($responses | ForEach-Object { $element = $_.GetProperty('id'); if ($element.ValueKind -eq [Text.Json.JsonValueKind]::Number) { $element.GetInt32() } else { -1 } })
+                        $clean = $run.Code -eq 0 -and $run.Err.Length -eq 0 -and ($ids -join ',') -ceq ($ExpectedIds -join ',')
+                        if (!$clean) { return [pscustomobject]@{ Ok = $false; Responses = $responses; Raw = "$raw (not a clean exchange: exit 0, empty stderr, response ids [$($ExpectedIds -join ',')] expected; got [$($ids -join ',')])" } }
+                        return [pscustomobject]@{ Ok = $true; Responses = $responses; Raw = $raw }
+                    } catch { return [pscustomobject]@{ Ok = $false; Responses = $responses; Raw = "$raw (unparsed: $($_.Exception.Message))" } }
+                }
+                # A tools/call response's content[0].text and isError (Ok false when the result is not shaped so).
+                function Get-P731CallResult($Exchange) {
+                    if (!$Exchange.Ok) { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = $Exchange.Raw } }
+                    try {
+                        $result = $Exchange.Responses[$Exchange.Responses.Count - 1].GetProperty('result')
+                        return [pscustomobject]@{ Ok = $true; IsError = $result.GetProperty('isError').GetBoolean(); Text = $result.GetProperty('content').get_Item(0).GetProperty('text').GetString(); Raw = $Exchange.Raw }
+                    } catch { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$($Exchange.Raw) (no tools/call result: $($_.Exception.Message))" } }
+                }
+                function Invoke-P731McpCall([string]$Package) { Get-P731CallResult (Invoke-P731Mcp $Package @($p731CallLine) @(31)) }
+                function New-P731Package([string]$Destination) {
+                    New-Item -ItemType Directory -Force (Split-Path $Destination) | Out-Null
+                    Copy-Item -LiteralPath $outA -Destination $Destination -Recurse
+                    return $Destination
+                }
+
+                # (1) Baseline: package-first CLI document, sha256 pinned; one MCP process with the full handshake returns it.
+                $p731Package = New-P731Package (Join-Path $p731Case 'plain/pkg')
+                Assert ((Test-Path -LiteralPath (Join-Path $p731Package 'mcp/Bim.Mcp.dll') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $p731Package "skills/$p731PackId/skill.json") -PathType Leaf) -and !(Test-P731UnderRepository $p731Package)) "P7-31: the package copy has mcp/Bim.Mcp.dll and the packaged code pack with no global.json above it ($p731Package)"
+                $baseline = Invoke-P731Cli $p731Package 'baseline'
+                [byte[]]$baselineBytes = @()
+                if ($null -ne $baseline.Bytes) { $baselineBytes = $baseline.Bytes }
+                $baselineSha = Get-P731Sha256 $baselineBytes
+                $baselineStatus = if ($baseline.Line -cmatch '"pipeline_status":"([a-z]+)"') { $Matches[1] } else { '<none>' }
+                Assert ($baseline.Code -eq 0 -and $baseline.Err.Length -eq 0 -and $baselineBytes.Length -gt 0 -and $baseline.Line -cmatch '^\{"status":"succeeded",' -and $baselineStatus -ceq 'ranked' -and $baseline.Line.Contains('"sha256":"' + $baselineSha + '"')) "P7-31: the packaged CLI generate-prototypes outside any repository gives a ranked document whose stdout sha256 is the file's: status $baselineStatus sha256 $baselineSha $($baseline.Raw)"
+                Assert ($baselineSha -ceq $p731RankedSha256) "P7-31: the packaged ranked document's sha256 is pinned $p731RankedSha256; observed $baselineSha ($($baselineBytes.Length) bytes, pipeline_status $baselineStatus, $(if ($IsWindows) { 'Windows' } else { 'Linux' }))"
+                $handshakeLines = @(
+                    ([ordered]@{ jsonrpc = '2.0'; id = 1; method = 'initialize'; params = [ordered]@{ protocolVersion = '2024-11-05'; capabilities = @{}; clientInfo = [ordered]@{ name = 'p7-31-packaging'; version = '1' } } } | ConvertTo-Json -Compress -Depth 6),
+                    '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+                    '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+                    $p731CallLine.Replace('"id":31', '"id":3')
+                )
+                $handshake = Invoke-P731Mcp $p731Package $handshakeLines @(1, 2, 3)
+                $initializeOk = $false; $listOk = $false
+                if ($handshake.Ok) {
+                    try {
+                        $init = $handshake.Responses[0].GetProperty('result')
+                        $initializeOk = $init.GetProperty('protocolVersion').GetString() -ceq '2024-11-05' -and $init.GetProperty('serverInfo').GetProperty('name').GetString() -ceq 'bim-agentic-os' -and $init.GetProperty('capabilities').GetProperty('tools').ValueKind -eq [Text.Json.JsonValueKind]::Object
+                        $listed = @($handshake.Responses[1].GetProperty('result').GetProperty('tools').EnumerateArray() | Where-Object { $_.GetProperty('name').GetString() -ceq 'generate_prototypes' })
+                        if ($listed.Count -eq 1) {
+                            $schema = $listed[0].GetProperty('inputSchema')
+                            $required = @($schema.GetProperty('required').EnumerateArray() | ForEach-Object { $_.GetString() })
+                            $listOk = $schema.GetProperty('properties').GetProperty('request').GetProperty('type').GetString() -ceq 'string' -and ($required -join ',') -ceq 'request' -and $listed[0].GetProperty('annotations').GetProperty('readOnlyHint').GetBoolean()
+                        }
+                    } catch { $handshake = [pscustomobject]@{ Ok = $handshake.Ok; Responses = $handshake.Responses; Raw = "$($handshake.Raw) (unexpected shape: $($_.Exception.Message))" } }
+                }
+                Assert ($handshake.Ok -and $initializeOk) "P7-31: one packaged mcp/Bim.Mcp.dll process answers initialize (id 1, protocolVersion 2024-11-05, serverInfo bim-agentic-os, tools capability), nothing for notifications/initialized, then ids 2 and 3: $($handshake.Raw)"
+                Assert ($handshake.Ok -and $listOk) "P7-31: tools/list in the same process lists generate_prototypes once with a required string request argument (readOnlyHint true): $($handshake.Raw)"
+                $handshakeCall = Get-P731CallResult $handshake
+                $handshakeBytes = $p731Utf8.GetBytes($handshakeCall.Text)
+                $handshakeSha = Get-P731Sha256 $handshakeBytes
+                Assert ($handshakeCall.Ok -and !$handshakeCall.IsError -and $baselineBytes.Length -gt 0 -and [Convert]::ToBase64String($handshakeBytes) -ceq [Convert]::ToBase64String($baselineBytes) -and $handshakeSha -ceq $p731RankedSha256) "P7-31: tools/call generate_prototypes after initialize and tools/list in the same process returns the packaged CLI ranked document bytes, sha256 pinned $p731RankedSha256 (mcp sha256 $handshakeSha, $($handshakeBytes.Length) bytes; cli $($baselineBytes.Length) bytes): $($handshakeCall.Raw)"
+
+                # (2) A malformed packaged skill.json: the same pack_invalid line from the packaged CLI and MCP.
+                $packagedManifest = Join-Path $p731Package "skills/$p731PackId/skill.json"
+                $validManifest = [IO.File]::ReadAllText($packagedManifest)
+                $otherId = $validManifest.Replace('"id": "' + $p731PackId + '"', '"id": "zz.other.code-pack"')
+                if ($otherId -ceq $validManifest) { throw "test setup: the packaged skill.json does not hold `"id`": `"$p731PackId`"" }
+                foreach ($case in @(
+                        @{ Name = 'truncated JSON'; Text = '{"manifest_version": 1, "id": '; Detail = 'json_invalid' },
+                        @{ Name = 'a manifest naming another pack'; Text = $otherId; Detail = 'id' })) {
+                    Write-PackageText $packagedManifest $case.Text
+                    $expected = '{"status":"failed","code":"generate_prototypes_pack_invalid","detail":"' + $case.Detail + '"}'
+                    $cli = Invoke-P731Cli $p731Package ('invalid-' + $case.Detail)
+                    Assert ($cli.Code -eq 1 -and $cli.Line -ceq $expected -and $cli.Err.Length -eq 0 -and $null -eq $cli.Bytes) "P7-31: a packaged skill.json with $($case.Name) makes the packaged CLI print $expected (exit 1, empty stderr, no output file): $($cli.Raw)"
+                    $mcp = Invoke-P731McpCall $p731Package
+                    Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cli.Line) "P7-31: a packaged skill.json with $($case.Name) makes the packaged mcp/Bim.Mcp.dll generate_prototypes return $expected (isError), equal to the packaged CLI stdout line: $($mcp.Raw)"
+                }
+
+                # (3) A package marker removed: no package root, so the repository above the copy (if any) is used.
+                $realPack = Join-Path $outA "skills/$p731PackId"
+                foreach ($marker in @('VERSION', 'manifest.json')) {
+                    $label = $marker.Replace('.', '-')
+                    $repository = Join-Path $p731Case "repo-$label"
+                    New-Item -ItemType Directory -Force (Join-Path $repository 'skills') | Out-Null
+                    Copy-Item -LiteralPath (Join-Path $root 'global.json') -Destination (Join-Path $repository 'global.json')
+                    Copy-Item -LiteralPath $realPack -Destination (Join-Path $repository "skills/$p731PackId") -Recurse
+                    $package = New-P731Package (Join-Path $repository 'tools/pkg')
+                    Remove-Item -LiteralPath (Join-Path $package $marker) -Force
+                    # The packaged pack is malformed: a package-first read would be pack_invalid, so success means the repository's pack.
+                    Write-PackageText (Join-Path $package "skills/$p731PackId/skill.json") '{"manifest_version": 1, "id": '
+                    Assert (!(Test-Path -LiteralPath (Join-Path $package $marker)) -and (Test-Path -LiteralPath (Join-Path $package 'skills') -PathType Container) -and (Test-P731UnderRepository $package) -and !(Test-P731UnderRepository $p731Io)) "P7-31 without $($marker): the copy lacks $marker, keeps skills/ and sits below the generated repository $repository (the working directory does not)"
+                    $cli = Invoke-P731Cli $package "fallback-$label"
+                    [byte[]]$cliBytes = @()
+                    if ($null -ne $cli.Bytes) { $cliBytes = $cli.Bytes }
+                    Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $baselineBytes.Length -gt 0 -and [Convert]::ToBase64String($cliBytes) -ceq [Convert]::ToBase64String($baselineBytes) -and $cli.Line -ceq $baseline.Line) "P7-31 without $($marker): the packaged CLI below a generated repository falls back to the repository's skills/ and writes the baseline document (sha256 $(Get-P731Sha256 $cliBytes), stdout equal to the package-first run): $($cli.Raw)"
+                    $mcp = Invoke-P731McpCall $package
+                    $mcpBytes = $p731Utf8.GetBytes($mcp.Text)
+                    Assert ($mcp.Ok -and !$mcp.IsError -and $baselineBytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($baselineBytes) -and (Get-P731Sha256 $mcpBytes) -ceq $p731RankedSha256) "P7-31 without $($marker): the packaged mcp/Bim.Mcp.dll below a generated repository falls back to the repository's skills/ and returns the baseline document, sha256 pinned (mcp sha256 $(Get-P731Sha256 $mcpBytes)): $($mcp.Raw)"
+                    # The repository's pack removed: the repository-path refusal, the same line from both.
+                    Remove-Item -LiteralPath (Join-Path $repository "skills/$p731PackId") -Recurse -Force
+                    $expected = '{"status":"failed","code":"generate_prototypes_pack_unavailable","detail":"input_not_found"}'
+                    $cli = Invoke-P731Cli $package "fallback-missing-$label"
+                    Assert ($cli.Code -eq 1 -and $cli.Line -ceq $expected -and $cli.Err.Length -eq 0 -and $null -eq $cli.Bytes) "P7-31 without $($marker): a generated repository without the pack makes the packaged CLI print $expected (exit 1, empty stderr, no file): $($cli.Raw)"
+                    $mcp = Invoke-P731McpCall $package
+                    Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cli.Line) "P7-31 without $($marker): a generated repository without the pack makes the packaged MCP return $expected (isError), equal to the CLI line: $($mcp.Raw)"
+                }
+                # A marker-less copy outside any repository: no package root and no repository.
+                $orphan = New-P731Package (Join-Path $p731Case 'orphan/pkg')
+                Remove-Item -LiteralPath (Join-Path $orphan 'VERSION') -Force
+                Assert (!(Test-P731UnderRepository $orphan)) "P7-31: the marker-less orphan copy has no global.json above it ($orphan)"
+                $expected = '{"status":"failed","code":"generate_prototypes_repository_not_found"}'
+                $cli = Invoke-P731Cli $orphan 'orphan'
+                Assert ($cli.Code -eq 1 -and $cli.Line -ceq $expected -and $cli.Err.Length -eq 0 -and $null -eq $cli.Bytes) "P7-31: a package copy without VERSION outside any repository makes the packaged CLI print $expected (exit 1, empty stderr, no file): $($cli.Raw)"
+                $mcp = Invoke-P731McpCall $orphan
+                Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cli.Line) "P7-31: a package copy without VERSION outside any repository makes the packaged MCP return $expected (isError), equal to the CLI line: $($mcp.Raw)"
+            } finally { if (Test-Path -LiteralPath $p731Case) { Remove-Item -LiteralPath $p731Case -Recurse -Force -ErrorAction SilentlyContinue } }
+        }
+    } catch { $failures.Add("P7-31 packaged MCP generate_prototypes pack_invalid/fallback/handshake checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
 
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
