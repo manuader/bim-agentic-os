@@ -1849,9 +1849,12 @@ internal static class GeneratePrototypesTests
                     // P7-28: the catch-all writes the diagnostic guarded (a throwing stderr drops only it), then prints the typed line.
                     + @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+internalError\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-prototypes""\s*,\s*error\s*\)\s*;\s*"
                     + @"try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*internalError\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*"
-                    + @"\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*\}"),
+                    // P7-29: the exit code is set first, then the typed line is printed guarded (a throwing stdout drops only it).
+                    + @"Environment\s*\.\s*ExitCode\s*=\s*internalError\s*\.\s*Exit\s*;\s*"
+                    + @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*\}"),
                 "GenerateCommand.Run is try Execute / catch (Refusal) Fail / catch (Exception) { var internalError = IntentPlan.Internal(\"generate-prototypes\", error); "
-                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } (internalError with { Diagnostic = null }).Print(); } (P7-28)");
+                + "try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { } Environment.ExitCode = internalError.Exit; "
+                + "try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { } } (P7-28, P7-29)");
         }
         finally
         {

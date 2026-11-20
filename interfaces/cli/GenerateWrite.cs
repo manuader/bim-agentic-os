@@ -27,11 +27,14 @@ internal static partial class GenerateCommand
         // GltfExporter.WriteNew succeeded reaches this catch. The guarded block's own failures already arrive above as
         // Refusal(InternalError) with their diagnostic written once. P7-28: the diagnostic is written on its own, guarded, so a
         // stderr that throws (any exception) drops only that line: the typed line still reaches stdout, exit 1, nothing escapes.
+        // P7-29: the exit code is set first and the typed line is printed guarded too, so a stdout that throws (any
+        // exception) drops only that line: exit 1, nothing escapes Run.
         catch (Exception error)
         {
             var internalError = IntentPlan.Internal("generate-prototypes", error);
             try { Console.Error.WriteLine(internalError.Diagnostic); } catch (Exception) { }
-            (internalError with { Diagnostic = null }).Print();
+            Environment.ExitCode = internalError.Exit;
+            try { (internalError with { Diagnostic = null }).Print(); } catch (Exception) { }
         }
     }
 
