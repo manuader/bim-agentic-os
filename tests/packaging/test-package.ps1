@@ -26,6 +26,9 @@
 # P7-31: the same copy: a malformed packaged skill.json is the same pack_invalid line from the packaged CLI and MCP; with a package
 # marker removed under a generated repository root both fall back to that repository's skills/ (byte-equal, sha256 pinned), else the
 # typed refusals; one MCP process runs initialize + tools/list + tools/call and the ranked document's sha256 is pinned.
+# P7-33: the same copy: the infeasible generate_prototypes document's sha256 is pinned from CLI and MCP; generate_typology and plan_layouts
+# fall back to a generated repository identically from CLI and MCP; a stray skills/ beside renamed cli/ and mcp/ is ignored; the tools/list
+# catalogue is pinned and the handshake also runs one awaited reply at a time; unremovable case folders are warned about.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -1413,6 +1416,320 @@ try {
             } finally { if (Test-Path -LiteralPath $p731Case) { Remove-Item -LiteralPath $p731Case -Recurse -Force -ErrorAction SilentlyContinue } }
         }
     } catch { $failures.Add("P7-31 packaged MCP generate_prototypes pack_invalid/fallback/handshake checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+    # --- P7-33 packaged MCP infeasible sha, sibling tools fallback and catalogue pin: copies of the real package (release A)
+    # outside any repository. (1) The packaged CLI generate-prototypes document for an infeasible request has a pinned sha256;
+    # one mcp/Bim.Mcp.dll process fed initialize, notifications/initialized, tools/list and tools/call at once, and another
+    # fed one line at a time waiting for each reply (none for the notification), give the same reply lines: the full ordered
+    # tools/list name catalogue is pinned and the tools/call text is the CLI file's bytes. (2) generate_typology and
+    # plan_layouts (with --pack) give the packaged CLI file bytes package-first; with a package marker (VERSION or
+    # manifest.json) removed and the copy below a generated repository root (packaged packs malformed) the packaged CLI and MCP
+    # both fall back to the repository's skills/ and give those bytes. (3) A package whose cli/ and mcp/ are renamed has only
+    # a stray skills/: outside any repository both refuse repository_not_found, below a generated repository both read the
+    # repository's pack (the packaged one malformed). (4) Case folders that cannot be removed are reported as a warning ---
+    try {
+        function Test-P733UnderRepository([string]$Directory) {
+            for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
+            return $false
+        }
+        # Removes a folder; one still present afterwards is a warning naming it (a GitHub annotation on CI unless Silent), returned
+        # as text; $null when it is gone.
+        function Remove-P733Directory([string]$Path, [switch]$Silent) {
+            if (!(Test-Path -LiteralPath $Path)) { return $null }
+            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+            if (!(Test-Path -LiteralPath $Path)) { return $null }
+            $warning = "P7-33: a case folder could not be removed and is left behind: $Path"
+            if (!$Silent) {
+                if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
+                else { Write-Host "WARNING $warning" }
+            }
+            return $warning
+        }
+        $p733Base = @($env:RUNNER_TEMP, [IO.Path]::GetTempPath(), $(if (!$IsWindows) { '/tmp' })) |
+            Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and !(Test-P733UnderRepository $_) } | Select-Object -First 1
+        if (!$p733Base) {
+            if ($env:GITHUB_ACTIONS -eq 'true') { $failures.Add('P7-33: a writable directory outside any repository exists on CI') }
+            else { Write-Host 'SKIP P7-33 packaged MCP infeasible sha/sibling fallback/catalogue: no writable directory outside a repository' }
+        }
+        else {
+            $p733Case = Join-Path $p733Base ('bim-package-mcp-p733-' + [Guid]::NewGuid().ToString('N'))
+            try {
+                $p733Io = Join-Path $p733Case 'io'
+                New-Item -ItemType Directory -Force $p733Io | Out-Null
+                $p733Utf8 = [Text.UTF8Encoding]::new($false)
+                $p733Os = if ($IsWindows) { 'Windows' } else { 'Linux' }
+                $p733Caba = 'ar.caba.codigo-edificacion'
+                $p733Typology = 'bim.typology.vivienda-unifamiliar'
+                # SHA-256 of the canonical generate-prototypes document for $p733Prototypes (pipeline_status infeasible).
+                $p733InfeasibleSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                # The full tools/list name catalogue of the packaged server, in listed order.
+                $p733Catalogue = [string[]]@()
+                $p733Prototypes = '{"typology":3,"lot":{"width_m":3,"depth_m":3},"alternatives":2,"seed":0,"pack":"' + $p733Caba + '"}'
+                $p733PrototypesPath = Join-Path $p733Io 'prototypes.json'
+                Write-PackageText $p733PrototypesPath $p733Prototypes
+                $p733TypologyPath = Join-Path $p733Io 'typology.json'
+                Write-PackageText $p733TypologyPath ('{"pack":"' + $p733Typology + '","family_size":3,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0,"project_id":"6f1c2a9e-7b3d-4c55-9a10-000000000733"}')
+                # The tests/mcp/PlanLayoutsToolTests.cs small brief: its Living room matches the CABA pack's area/side minimums.
+                $p733BriefPath = Join-Path $p733Io 'brief.json'
+                Write-PackageText $p733BriefPath ('{"brief_version":1,"name":"Small studio","constraints":{"site":{"width_m":6,"depth_m":8},"levels":1},'
+                    + '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],'
+                    + '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
+                $p733Sibling = @(
+                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"(ranked|infeasible)"' },
+                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]' }
+                )
+                function Get-P733Sha256([byte[]]$Bytes) {
+                    $sha = [Security.Cryptography.SHA256]::Create()
+                    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+                }
+                function New-P733Start([string[]]$Arguments) {
+                    $start = [Diagnostics.ProcessStartInfo]::new($Dotnet)
+                    foreach ($argument in $Arguments) { $start.ArgumentList.Add($argument) }
+                    $start.UseShellExecute = $false; $start.RedirectStandardInput = $true; $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
+                    $start.StandardInputEncoding = $p733Utf8; $start.StandardOutputEncoding = $p733Utf8; $start.StandardErrorEncoding = $p733Utf8
+                    $start.WorkingDirectory = $p733Io
+                    return $start
+                }
+                # One child process, stdin written then closed, stdout/stderr read as UTF-8, bounded at 180 s.
+                function Invoke-P733Process([string[]]$Arguments, [string]$Stdin) {
+                    $process = [Diagnostics.Process]::Start((New-P733Start $Arguments))
+                    try {
+                        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+                        try { if ($Stdin) { $process.StandardInput.Write($Stdin) }; $process.StandardInput.Close() } catch [IO.IOException] { }
+                        if (!$process.WaitForExit(180000)) {
+                            try { $process.Kill($true) } catch { }
+                            try { [void]$process.WaitForExit(5000) } catch { }
+                            return [pscustomobject]@{ Code = -1; Out = '<timed out>'; Err = '' }
+                        }
+                        $process.WaitForExit()
+                        return [pscustomobject]@{ Code = $process.ExitCode; Out = $stdout.GetAwaiter().GetResult(); Err = $stderr.GetAwaiter().GetResult() }
+                    } finally { $process.Dispose() }
+                }
+                # A packaged CLI verb on one input file and a fresh output path: exit, stdout without its newline, stderr, file bytes or $null.
+                function Invoke-P733Cli([string]$Dll, [string]$Verb, [string]$InputPath, [string[]]$Options, [string]$Label) {
+                    $output = Join-Path $p733Io "cli-$Label.json"
+                    $run = Invoke-P733Process (@($Dll, $Verb, $InputPath, $output) + $Options) ''
+                    $bytes = $null
+                    if (Test-Path -LiteralPath $output -PathType Leaf) { $bytes = [IO.File]::ReadAllBytes($output) }
+                    return [pscustomobject]@{ Code = $run.Code; Line = $run.Out.TrimEnd("`r", "`n"); Err = $run.Err; Bytes = $bytes
+                        Raw = "exit $($run.Code) $(Get-Tail $run.Out)$(if ($run.Err) { ' stderr ' + (Get-Tail $run.Err) })$(if ($null -ne $bytes) { " file $($bytes.Length) bytes" } else { ' no file' })" }
+                }
+                function Get-P733Ids([string[]]$Lines) {
+                    return @($Lines | ForEach-Object {
+                            try { $document = [Text.Json.JsonDocument]::Parse($_); try { $element = $document.RootElement.GetProperty('id'); if ($element.ValueKind -eq [Text.Json.JsonValueKind]::Number) { $element.GetInt32() } else { -1 } } finally { $document.Dispose() } }
+                            catch { -2 } })
+                }
+                # One mcp/Bim.Mcp.dll process fed all $Lines at once: Ok when it exits 0, stderr is empty and the reply lines carry
+                # $ExpectedIds in order. Lines holds the reply lines (without newline).
+                function Invoke-P733Batch([string]$Dll, [string[]]$Lines, [int[]]$ExpectedIds) {
+                    $run = Invoke-P733Process @($Dll) (($Lines -join "`n") + "`n")
+                    $raw = "exit $($run.Code) $(Get-Tail $run.Out)$(if ($run.Err) { ' stderr ' + (Get-Tail $run.Err) })"
+                    $outLines = [string[]]@($run.Out.Split("`n") | ForEach-Object { $_.TrimEnd("`r") } | Where-Object { $_.Length -gt 0 })
+                    $ids = Get-P733Ids $outLines
+                    $ok = $run.Code -eq 0 -and $run.Err.Length -eq 0 -and ($ids -join ',') -ceq ($ExpectedIds -join ',')
+                    return [pscustomobject]@{ Ok = $ok; Lines = $outLines; Raw = $(if ($ok) { $raw } else { "$raw (not a clean exchange: exit 0, empty stderr, reply ids [$($ExpectedIds -join ',')] expected; got [$($ids -join ',')])" }) }
+                }
+                # One mcp/Bim.Mcp.dll process fed one line at a time with stdin kept open: after each line whose $Replies entry is
+                # true the next reply line is read (180 s bound) before anything else is written; then stdin is closed and the
+                # process must exit 0 with nothing more on stdout and an empty stderr.
+                function Invoke-P733Waiting([string]$Dll, [string[]]$Lines, [bool[]]$Replies, [int[]]$ExpectedIds) {
+                    $process = [Diagnostics.Process]::Start((New-P733Start @($Dll)))
+                    $replyLines = [Collections.Generic.List[string]]::new()
+                    try {
+                        $stderr = $process.StandardError.ReadToEndAsync()
+                        for ($i = 0; $i -lt $Lines.Count; $i++) {
+                            $process.StandardInput.Write($Lines[$i] + "`n"); $process.StandardInput.Flush()
+                            if (!$Replies[$i]) { continue }
+                            $pending = $process.StandardOutput.ReadLineAsync()
+                            if (!$pending.Wait(180000)) {
+                                try { $process.Kill($true) } catch { }
+                                return [pscustomobject]@{ Ok = $false; Lines = [string[]]$replyLines; Raw = "no reply within 180 s to line $($i + 1) while stdin stays open (replies so far: $($replyLines.Count))" }
+                            }
+                            if ($null -eq $pending.Result) { return [pscustomobject]@{ Ok = $false; Lines = [string[]]$replyLines; Raw = "stdout ended before the reply to line $($i + 1): stderr $(Get-Tail $stderr.GetAwaiter().GetResult())" } }
+                            $replyLines.Add($pending.Result.TrimEnd("`r"))
+                        }
+                        $rest = $process.StandardOutput.ReadToEndAsync()
+                        $process.StandardInput.Close()
+                        if (!$process.WaitForExit(180000)) {
+                            try { $process.Kill($true) } catch { }
+                            return [pscustomobject]@{ Ok = $false; Lines = [string[]]$replyLines; Raw = 'no exit within 180 s after stdin closed' }
+                        }
+                        $process.WaitForExit()
+                        $tail = $rest.GetAwaiter().GetResult(); $err = $stderr.GetAwaiter().GetResult()
+                        $ids = Get-P733Ids ([string[]]$replyLines)
+                        $ok = $process.ExitCode -eq 0 -and $err.Length -eq 0 -and $tail.Length -eq 0 -and ($ids -join ',') -ceq ($ExpectedIds -join ',')
+                        return [pscustomobject]@{ Ok = $ok; Lines = [string[]]$replyLines; Raw = "exit $($process.ExitCode) reply ids [$($ids -join ',')] (expected [$($ExpectedIds -join ',')]) trailing stdout $($tail.Length) chars$(if ($err) { ' stderr ' + (Get-Tail $err) })" }
+                    } finally { $process.Dispose() }
+                }
+                function New-P733CallLine([int]$Id, [string]$Tool, $Arguments) {
+                    return [ordered]@{ jsonrpc = '2.0'; id = $Id; method = 'tools/call'; params = [ordered]@{ name = $Tool; arguments = $Arguments } } | ConvertTo-Json -Compress -Depth 6
+                }
+                # A tools/call reply line's content[0].text and isError (Ok false when it is not shaped so).
+                function Get-P733CallResult([string]$Line, [string]$Raw) {
+                    try {
+                        $document = [Text.Json.JsonDocument]::Parse($Line)
+                        try {
+                            $result = $document.RootElement.GetProperty('result')
+                            return [pscustomobject]@{ Ok = $true; IsError = $result.GetProperty('isError').GetBoolean(); Text = $result.GetProperty('content').get_Item(0).GetProperty('text').GetString(); Raw = $Raw }
+                        } finally { $document.Dispose() }
+                    } catch { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = "$Raw (no tools/call result: $($_.Exception.Message))" } }
+                }
+                function Invoke-P733Call([string]$Dll, [string]$Tool, $Arguments) {
+                    $exchange = Invoke-P733Batch $Dll @(New-P733CallLine 33 $Tool $Arguments) @(33)
+                    if (!$exchange.Ok) { return [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = $exchange.Raw } }
+                    return Get-P733CallResult $exchange.Lines[0] $exchange.Raw
+                }
+                function New-P733Package([string]$Destination) {
+                    New-Item -ItemType Directory -Force (Split-Path $Destination) | Out-Null
+                    Copy-Item -LiteralPath $outA -Destination $Destination -Recurse
+                    return $Destination
+                }
+                # A generated repository root (global.json and a copy of the packaged skills/) with a package copy below it.
+                function New-P733Repository([string]$Name) {
+                    $repository = Join-Path $p733Case $Name
+                    New-Item -ItemType Directory -Force $repository | Out-Null
+                    Copy-Item -LiteralPath (Join-Path $root 'global.json') -Destination (Join-Path $repository 'global.json')
+                    Copy-Item -LiteralPath (Join-Path $outA 'skills') -Destination (Join-Path $repository 'skills') -Recurse
+                    return $repository
+                }
+                $truncated = '{"manifest_version": 1, "id": '
+
+                # (4) Cleanup self-test: a folder that cannot be removed is reported, not silently left (and not thrown).
+                $locked = Join-Path $p733Case 'cleanup-probe'
+                $lockedInner = Join-Path $locked 'inner'
+                New-Item -ItemType Directory -Force $lockedInner | Out-Null
+                Write-PackageText (Join-Path $lockedInner 'held.txt') 'x'
+                $holder = $null
+                try {
+                    if ($IsWindows) { $holder = [IO.File]::Open((Join-Path $lockedInner 'held.txt'), 'Open', 'Read', 'None') }
+                    else { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserExecute') }
+                    $warning = Remove-P733Directory $locked -Silent
+                    if ($null -eq $warning -and $env:GITHUB_ACTIONS -ne 'true') { Write-Host 'SKIP P7-33 cleanup warning: the folder could not be held (running with rights that remove it anyway)' }
+                    else { Assert ($null -ne $warning -and $warning.Contains($locked) -and (Test-Path -LiteralPath $locked)) "P7-33: a case folder that cannot be removed ($($p733Os)) is reported as a warning naming it: $warning" }
+                } finally {
+                    if ($holder) { $holder.Dispose() }
+                    if (!$IsWindows -and (Test-Path -LiteralPath $lockedInner)) { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute') }
+                }
+                $released = Remove-P733Directory $locked -Silent
+                Assert ($null -eq $released -and !(Test-Path -LiteralPath $locked)) "P7-33: a removable case folder is removed with no warning: $released"
+
+                # (1) Infeasible document: packaged CLI sha256 pinned; batch and waiting MCP handshakes agree and return it.
+                $plain = New-P733Package (Join-Path $p733Case 'plain/pkg')
+                $plainCli = Join-Path $plain 'cli/Bim.Cli.dll'; $plainMcp = Join-Path $plain 'mcp/Bim.Mcp.dll'
+                Assert ((Test-Path -LiteralPath $plainMcp -PathType Leaf) -and (Test-Path -LiteralPath $plainCli -PathType Leaf) -and !(Test-P733UnderRepository $plain)) "P7-33: the package copy has cli/Bim.Cli.dll and mcp/Bim.Mcp.dll with no global.json above it ($plain)"
+                $infeasible = Invoke-P733Cli $plainCli 'generate-prototypes' $p733PrototypesPath @() 'infeasible'
+                [byte[]]$infeasibleBytes = @()
+                if ($null -ne $infeasible.Bytes) { $infeasibleBytes = $infeasible.Bytes }
+                $infeasibleSha = Get-P733Sha256 $infeasibleBytes
+                Assert ($infeasible.Code -eq 0 -and $infeasible.Err.Length -eq 0 -and $infeasibleBytes.Length -gt 0 -and $infeasible.Line -cmatch '^\{"status":"succeeded",' -and $infeasible.Line.Contains('"pipeline_status":"infeasible"') -and $infeasible.Line.Contains('"sha256":"' + $infeasibleSha + '"')) "P7-33: the packaged CLI generate-prototypes on a 3 x 3 m lot gives an infeasible document whose stdout sha256 is the file's: $($infeasible.Raw)"
+                Assert ($infeasibleSha -ceq $p733InfeasibleSha256) "P7-33: observed infeasible sha256 $infeasibleSha ($($infeasibleBytes.Length) bytes, $p733Os); pinned $p733InfeasibleSha256"
+                $handshakeLines = [string[]]@(
+                    ([ordered]@{ jsonrpc = '2.0'; id = 1; method = 'initialize'; params = [ordered]@{ protocolVersion = '2024-11-05'; capabilities = @{}; clientInfo = [ordered]@{ name = 'p7-33-packaging'; version = '1' } } } | ConvertTo-Json -Compress -Depth 6),
+                    '{"jsonrpc":"2.0","method":"notifications/initialized"}',
+                    '{"jsonrpc":"2.0","id":2,"method":"tools/list"}',
+                    (New-P733CallLine 3 'generate_prototypes' ([ordered]@{ request = $p733PrototypesPath }))
+                )
+                $batch = Invoke-P733Batch $plainMcp $handshakeLines @(1, 2, 3)
+                $waiting = Invoke-P733Waiting $plainMcp $handshakeLines @($true, $false, $true, $true) @(1, 2, 3)
+                Assert $batch.Ok "P7-33: one packaged mcp/Bim.Mcp.dll process fed the handshake at once answers ids 1, 2, 3 (nothing for the notification), exit 0, empty stderr: $($batch.Raw)"
+                Assert $waiting.Ok "P7-33: one packaged mcp/Bim.Mcp.dll process fed the handshake one line at a time, each reply awaited with stdin open, answers ids 1, 2, 3 (nothing for the notification) and exits 0 on stdin close with no further stdout and an empty stderr: $($waiting.Raw)"
+                Assert ($batch.Ok -and $waiting.Ok -and $batch.Lines.Count -eq 3 -and $waiting.Lines.Count -eq 3 -and $batch.Lines[0] -ceq $waiting.Lines[0] -and $batch.Lines[1] -ceq $waiting.Lines[1] -and $batch.Lines[2] -ceq $waiting.Lines[2]) "P7-33: the awaited handshake's reply lines are byte-equal to the batch handshake's (initialize, tools/list, tools/call)"
+                $initializeOk = $false
+                $names = [string[]]@()
+                $paged = $true
+                if ($batch.Ok) {
+                    try {
+                        $document = [Text.Json.JsonDocument]::Parse($batch.Lines[0])
+                        try {
+                            $init = $document.RootElement.GetProperty('result')
+                            $initializeOk = $init.GetProperty('protocolVersion').GetString() -ceq '2024-11-05' -and $init.GetProperty('serverInfo').GetProperty('name').GetString() -ceq 'bim-agentic-os' -and $init.GetProperty('capabilities').GetProperty('tools').ValueKind -eq [Text.Json.JsonValueKind]::Object
+                        } finally { $document.Dispose() }
+                        $document = [Text.Json.JsonDocument]::Parse($batch.Lines[1])
+                        try {
+                            $list = $document.RootElement.GetProperty('result')
+                            $cursor = $null
+                            $paged = $list.TryGetProperty('nextCursor', [ref]$cursor)
+                            $names = [string[]]@($list.GetProperty('tools').EnumerateArray() | ForEach-Object { $_.GetProperty('name').GetString() })
+                        } finally { $document.Dispose() }
+                    } catch { $failures.Add("P7-33: the handshake initialize / tools/list replies have an unexpected shape: $($_.Exception.Message)") }
+                }
+                Assert $initializeOk "P7-33: initialize answers protocolVersion 2024-11-05, serverInfo bim-agentic-os and a tools capability: $($batch.Raw)"
+                Assert (!$paged) 'P7-33: tools/list returns the whole catalogue in one page (no nextCursor)'
+                Assert (@($names | Select-Object -Unique).Count -eq $names.Count) "P7-33: tools/list names are unique: $($names -join ',')"
+                if (($names -join ',') -cne ($p733Catalogue -join ',')) {
+                    $failures.Add("P7-33: the tools/list catalogue ($p733Os) differs from the pinned $($p733Catalogue.Count) names; observed $($names.Count) names, listed in the next failure(s)")
+                    $chunk = [Collections.Generic.List[string]]::new(); $first = 0
+                    for ($i = 0; $i -le $names.Count; $i++) {
+                        if ($i -eq $names.Count -or (($chunk -join ',').Length + $names[$i].Length) -gt 700) {
+                            if ($chunk.Count) { $failures.Add("P7-33: observed catalogue [$first..$($i - 1)]: $($chunk -join ',')") }
+                            $chunk.Clear(); $first = $i
+                        }
+                        if ($i -lt $names.Count) { $chunk.Add($names[$i]) }
+                    }
+                }
+                $call = if ($batch.Ok) { Get-P733CallResult $batch.Lines[2] $batch.Raw } else { [pscustomobject]@{ Ok = $false; IsError = $true; Text = ''; Raw = $batch.Raw } }
+                $callBytes = $p733Utf8.GetBytes($call.Text)
+                $callSha = Get-P733Sha256 $callBytes
+                Assert ($call.Ok -and !$call.IsError -and $infeasibleBytes.Length -gt 0 -and [Convert]::ToBase64String($callBytes) -ceq [Convert]::ToBase64String($infeasibleBytes) -and $callSha -ceq $p733InfeasibleSha256) "P7-33: mcp sha256 $callSha ($($callBytes.Length) bytes): tools/call generate_prototypes after initialize and tools/list returns the packaged CLI infeasible document bytes, sha256 pinned $p733InfeasibleSha256 (cli $($infeasibleBytes.Length) bytes)"
+
+                # (2) generate_typology and plan_layouts: package-first baselines, then the repository fallback with a marker removed.
+                $baselines = @{}
+                foreach ($tool in $p733Sibling) {
+                    $cli = Invoke-P733Cli $plainCli $tool.Verb $tool.Input $tool.Options "$($tool.Tool)-baseline"
+                    Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $null -ne $cli.Bytes -and $cli.Line -cmatch '^\{"status":"succeeded",' -and $cli.Line -cmatch $tool.Status -and $cli.Line.Contains('"sha256":"' + (Get-P733Sha256 $cli.Bytes) + '"')) "P7-33 $($tool.Tool): the packaged CLI $($tool.Verb) outside any repository succeeds package-first ($($tool.Status)): $($cli.Raw)"
+                    [byte[]]$bytes = @()
+                    if ($null -ne $cli.Bytes) { $bytes = $cli.Bytes }
+                    $baselines[$tool.Tool] = [pscustomobject]@{ Bytes = $bytes; Line = $cli.Line }
+                    $mcp = Invoke-P733Call $plainMcp $tool.Tool $tool.Arguments
+                    $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
+                    Assert ($mcp.Ok -and !$mcp.IsError -and $bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($bytes)) "P7-33 $($tool.Tool): the packaged mcp/Bim.Mcp.dll returns the packaged CLI file bytes package-first (cli $($bytes.Length), mcp $($mcpBytes.Length) bytes): $($mcp.Raw)"
+                }
+                foreach ($marker in @('VERSION', 'manifest.json')) {
+                    $label = $marker.Replace('.', '-')
+                    $repository = New-P733Repository "repo-$label"
+                    $package = New-P733Package (Join-Path $repository 'tools/pkg')
+                    Remove-Item -LiteralPath (Join-Path $package $marker) -Force
+                    # The packaged typology and code packs are malformed: success means the repository's packs were read.
+                    foreach ($pack in @($p733Typology, $p733Caba)) { Write-PackageText (Join-Path $package "skills/$pack/skill.json") $truncated }
+                    Assert (!(Test-Path -LiteralPath (Join-Path $package $marker)) -and (Test-Path -LiteralPath (Join-Path $package 'skills') -PathType Container) -and (Test-P733UnderRepository $package) -and !(Test-P733UnderRepository $p733Io)) "P7-33 without $($marker): the copy lacks $marker, keeps skills/ and sits below the generated repository $repository (the working directory does not)"
+                    foreach ($tool in $p733Sibling) {
+                        $baseline = $baselines[$tool.Tool]
+                        $cli = Invoke-P733Cli (Join-Path $package 'cli/Bim.Cli.dll') $tool.Verb $tool.Input $tool.Options "$($tool.Tool)-fallback-$label"
+                        [byte[]]$cliBytes = @()
+                        if ($null -ne $cli.Bytes) { $cliBytes = $cli.Bytes }
+                        Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $baseline.Bytes.Length -gt 0 -and [Convert]::ToBase64String($cliBytes) -ceq [Convert]::ToBase64String($baseline.Bytes) -and $cli.Line -ceq $baseline.Line) "P7-33 $($tool.Tool) without $($marker): the packaged CLI below a generated repository falls back to the repository's skills/ and writes the package-first bytes and stdout: $($cli.Raw)"
+                        $mcp = Invoke-P733Call (Join-Path $package 'mcp/Bim.Mcp.dll') $tool.Tool $tool.Arguments
+                        $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
+                        Assert ($mcp.Ok -and !$mcp.IsError -and $baseline.Bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($baseline.Bytes) -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($cliBytes)) "P7-33 $($tool.Tool) without $($marker): the packaged mcp/Bim.Mcp.dll below a generated repository falls back identically to the packaged CLI (mcp $($mcpBytes.Length), cli $($cliBytes.Length) bytes): $($mcp.Raw)"
+                    }
+                }
+
+                # (3) A stray skills/: cli/ and mcp/ renamed, so VERSION, manifest.json and skills/ beside them are no package root.
+                foreach ($place in @('outside', 'repository')) {
+                    $parent = if ($place -eq 'outside') { Join-Path $p733Case 'stray' } else { New-P733Repository 'repo-stray' }
+                    $stray = New-P733Package (Join-Path $parent 'pkg')
+                    Rename-Item -LiteralPath (Join-Path $stray 'cli') -NewName 'bin'
+                    Rename-Item -LiteralPath (Join-Path $stray 'mcp') -NewName 'server'
+                    Write-PackageText (Join-Path $stray "skills/$p733Caba/skill.json") $truncated
+                    $strayCli = Join-Path $stray 'bin/Bim.Cli.dll'; $strayMcp = Join-Path $stray 'server/Bim.Mcp.dll'
+                    Assert ((Test-Path -LiteralPath $strayCli -PathType Leaf) -and (Test-Path -LiteralPath $strayMcp -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $stray 'VERSION') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $stray 'manifest.json') -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $stray 'skills') -PathType Container) -and ((Test-P733UnderRepository $stray) -eq ($place -eq 'repository'))) "P7-33 stray skills/ ($place): the copy keeps VERSION, manifest.json and skills/ beside bin/ and server/ ($stray)"
+                    $cli = Invoke-P733Cli $strayCli 'generate-prototypes' $p733PrototypesPath @() "stray-$place"
+                    $mcp = Invoke-P733Call $strayMcp 'generate_prototypes' ([ordered]@{ request = $p733PrototypesPath })
+                    if ($place -eq 'outside') {
+                        $expected = '{"status":"failed","code":"generate_prototypes_repository_not_found"}'
+                        Assert ($cli.Code -eq 1 -and $cli.Line -ceq $expected -and $cli.Err.Length -eq 0 -and $null -eq $cli.Bytes) "P7-33 stray skills/ outside any repository: the renamed packaged CLI ignores it and prints $expected (exit 1, empty stderr, no file): $($cli.Raw)"
+                        Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cli.Line) "P7-33 stray skills/ outside any repository: the renamed packaged MCP ignores it and returns $expected (isError), equal to the CLI line: $($mcp.Raw)"
+                    }
+                    else {
+                        [byte[]]$cliBytes = @()
+                        if ($null -ne $cli.Bytes) { $cliBytes = $cli.Bytes }
+                        $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
+                        Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $infeasibleBytes.Length -gt 0 -and [Convert]::ToBase64String($cliBytes) -ceq [Convert]::ToBase64String($infeasibleBytes) -and $cli.Line -ceq $infeasible.Line) "P7-33 stray skills/ below a generated repository: the renamed packaged CLI ignores the malformed stray pack and writes the repository pack's infeasible document: $($cli.Raw)"
+                        Assert ($mcp.Ok -and !$mcp.IsError -and $infeasibleBytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($infeasibleBytes) -and (Get-P733Sha256 $mcpBytes) -ceq $p733InfeasibleSha256) "P7-33 stray skills/ below a generated repository: the renamed packaged MCP ignores the malformed stray pack and returns the infeasible document, sha256 pinned (mcp sha256 $(Get-P733Sha256 $mcpBytes)): $($mcp.Raw)"
+                    }
+                }
+            } finally { [void](Remove-P733Directory $p733Case) }
+        }
+    } catch { $failures.Add("P7-33 packaged MCP infeasible sha/sibling fallback/catalogue checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
 
     # --- Verifier: clean package passes; tamper, missing, extra and forbidden files are detected ---
     $ok = Invoke-Script $verifier @('-PackageDirectory', $outA)
