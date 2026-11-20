@@ -1250,8 +1250,9 @@ try {
                 New-Item -ItemType Directory -Force $p731Io | Out-Null
                 $p731Utf8 = [Text.UTF8Encoding]::new($false)
                 $p731PackId = 'ar.caba.codigo-edificacion'
-                # SHA-256 of the canonical document for $p731Request (pipeline_status ranked), identical on Linux and Windows.
-                $p731RankedSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                # SHA-256 of the canonical document for $p731Request (pipeline_status ranked, 150022 bytes), identical on Linux and Windows
+                # (observed in CI run 44788128345 on core and core-windows).
+                $p731RankedSha256 = '436d40726df4020f2a853ef85efd5effcce294e727ddfbb1d8a118f64709f22d'
                 $p731Request = '{"typology":2,"lot":{"width_m":12,"depth_m":30},"alternatives":8,"seed":0}'
                 $p731RequestPath = Join-Path $p731Io 'request.json'
                 Write-PackageText $p731RequestPath $p731Request
