@@ -1905,3 +1905,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 - 2026-11-20T10:27:10Z integration 4d0e588 CI 44715437230 success (9/9) → main fast-forwarded (87b2b9d..4d0e588). P10-31, P6-30, P7-29 ✅; new P10-33, P6-32, P7-30. Progress 279/298 (93.6 %). Worktrees retired (branches relay248-* on origin).
 - CLOSE a) 3 tasks merged b) **subagents in flight: 0** c) session doc + HANDOFF on main d) STATUS/OWNER-TODO updated e) LOCK released 2026-11-20T10:27:10Z.
 **NEXT STEP:** next relay: oldest-touched phases first — P1-36, P1-37, P5-30, P5-31, P7-24 (relay246); then P2-35, P3-28, P3-29, P4-29 (relay247); then P10-32, P10-33, P6-31, P6-32, P7-30. McpServer.cs edits serialize (P10-33, P1-36 comment); GenerateWrite.cs (P7-30) updates the P4-27 Run pin via a third documented delta; tests/cli/SkillListTests.cs serializes (P5-30, P5-31); RevitCommandDeadlineTests.cs serializes (P1-36, P1-37); GenerateTypologyWrite.cs serializes (P3-28); InternalErrorDelegationTests.cs serializes (P3-29). PyPI is blocked by the proxy: offline Python tools come from GitHub source checkouts. ADR0010/ADR0011 await the owner. Phase 8 remaining is 🔒 Blender.
+
+## Relay249
+- 2026-11-20T10:53:05Z lock taken (session_014pxpsRg1XcA7MUy5bLcJZM relay249; was FREE, relay248 released 2026-11-20T10:27:10Z)
