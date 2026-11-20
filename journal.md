@@ -1937,3 +1937,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay252
 - 2026-11-20T17:53:10Z lock taken (session_014pxpsQjExj7ZsZNeEyt1b4 relay252; was FREE, relay251 released 2026-11-20T17:25:27Z)
+- 2026-11-20T18:48:59Z picked P1-37 (phase 1), P5-31 (phase 5), P7-31 (phase 7) — oldest-touched (relay249); workers green: P1-37 b998489 (probe red 44788387750, green 44791452047; test-only), P5-31 79e3132 (red 44788501109 CS0117 LoadedProbe, green 44790962935; DEFECT FIXED: throwing Console.Error escaped skill-list Run / MCP SkillListTool; deviation 1 line SkillListTool.cs), P7-31 e0757e5 (probe red 44788128345 sha pin, green 44791328722; test-only); 0 failed attempts. Reviews next.
