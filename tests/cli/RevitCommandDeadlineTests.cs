@@ -242,6 +242,9 @@ internal static class RevitCommandDeadlineTests
         // ---- 2g. P1-36: one page seam (connectThenRead), the legacy seams retired ----
         LegacySeamsRetired(root, check);
 
+        // ---- 2h. P1-37: ReadReplyLine's OnlyOnFaulted continuation pinned statically ----
+        ContinuationPinned(root, check);
+
         // A .NET pipe on Unix is a Unix domain socket under Path.GetTempPath(), whose path must fit 108 characters;
         // verify.ps1 points TMPDIR at a long evidence directory, so this section (and the CLI it starts) uses /tmp/.
         var tmpDir = Environment.GetEnvironmentVariable("TMPDIR");
@@ -317,6 +320,9 @@ internal static class RevitCommandDeadlineTests
 
             // ---- 3d. P1-34: the read of a page whose connect was not cut is measured after the connect too ----
             UncutConnectRead(wallsText, model, Check);
+
+            // ---- 3e. P1-37: ReadReplyLine's abandoned read on a real pipe raises no unobserved fault ----
+            LateCancelRealPipe(wallsText, check);
 
             // ---- 4. Absent flag: no deadline, today's bytes ----
             addIn.Delay = TimeSpan.FromMilliseconds(100);
@@ -840,6 +846,304 @@ internal static class RevitCommandDeadlineTests
             .Select(line => line.TrimStart('/').Trim()));
         check(comment.Contains("the read is measured after the connect on every real-pipe page", StringComparison.Ordinal),
             "P1-36 static: McpServer.RevitCallAll's deadline comment states the read is measured after the connect on every real-pipe page", comment);
+    }
+
+    // ---- 2h. P1-37: ReadReplyLine observes its abandoned read (static pin) ----
+    // On the comment- and literal-stripped source of core/Bim.Core/RevitCommandsService.cs, ReadReplyLine starts its read
+    // as `var read = readLine(cancel.Token)` and, after cancel.Cancel() and before it throws RevitPipeReadTimeoutException,
+    // attaches exactly one continuation read.ContinueWith(task => task.Exception, CancellationToken.None,
+    // TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default): reading Exception marks a late fault observed.
+    // Mutation self-test: the checker flags the continuation removed, hidden in a comment or a (regular, verbatim or raw)
+    // string, on another task, not reading Exception, for cancels instead of faults, duplicated, or out of place.
+    static string StripCommentsAndLiterals(string source)
+    {
+        var text = new StringBuilder(source.Length);
+        void Skip(int from, int to) { for (var k = from; k < to; k++) if (source[k] == '\n') text.Append('\n'); }
+        var i = 0;
+        while (i < source.Length)
+        {
+            var c = source[i];
+            var next = i + 1 < source.Length ? source[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < source.Length && source[i] != '\n') i++; continue; }
+            if (c == '/' && next == '*')
+            {
+                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                var stop = end < 0 ? source.Length : end + 2;
+                Skip(i, stop);
+                text.Append(' ');
+                i = stop;
+                continue;
+            }
+            if (c == '"' || c == '\'')
+            {
+                var previous = i > 0 ? source[i - 1] : '\0';
+                var verbatim = c == '"' && (previous == '@' || (previous == '$' && i > 1 && source[i - 2] == '@'));
+                var quotes = 0;
+                while (c == '"' && !verbatim && i + quotes < source.Length && source[i + quotes] == '"') quotes++;
+                if (quotes >= 3)
+                {
+                    // Raw string literal: closed by the same number of quotes.
+                    var close = source.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
+                    var stop = close < 0 ? source.Length : close + quotes;
+                    text.Append("\"\"");
+                    Skip(i, stop);
+                    i = stop;
+                    continue;
+                }
+                var start = i;
+                i++;
+                while (i < source.Length)
+                {
+                    var d = source[i];
+                    i++;
+                    if (verbatim && d == '"' && i < source.Length && source[i] == '"') { i++; continue; }
+                    if (!verbatim && d == '\\' && i < source.Length) { i++; continue; }
+                    if (d == c || (!verbatim && d == '\n')) break;
+                }
+                text.Append(c).Append(c);
+                Skip(start, i);
+                continue;
+            }
+            text.Append(c);
+            i++;
+        }
+        return text.ToString();
+    }
+
+    static string[] ContinuationProblems(string source)
+    {
+        var code = StripCommentsAndLiterals(source.ReplaceLineEndings("\n"));
+        var start = code.IndexOf("internal static string? ReadReplyLine(", StringComparison.Ordinal);
+        var end = start < 0 ? -1 : code.IndexOf("\n    }\n", start, StringComparison.Ordinal);
+        if (end < 0) return new[] { "no ReadReplyLine definition" };
+        var body = code[start..end];
+        var problems = new List<string>();
+        if (!System.Text.RegularExpressions.Regex.IsMatch(body, @"\bvar\s+read\s*=\s*readLine\s*\(\s*cancel\s*\.\s*Token\s*\)\s*;"))
+            problems.Add("the read is not started as var read = readLine(cancel.Token)");
+        var continuations = System.Text.RegularExpressions.Regex.Matches(body, @"\.\s*ContinueWith\s*\(").Count;
+        if (continuations != 1) problems.Add("ContinueWith( appears " + N(continuations) + " times, not once");
+        var pinned = System.Text.RegularExpressions.Regex.Matches(body,
+            @"\bread\s*\.\s*ContinueWith\s*\(\s*(?:static\s+)?(?<t>\w+)\s*=>\s*\k<t>\s*\.\s*Exception\s*,\s*CancellationToken\s*\.\s*None\s*,\s*TaskContinuationOptions\s*\.\s*OnlyOnFaulted\s*,\s*TaskScheduler\s*\.\s*Default\s*\)\s*;");
+        if (pinned.Count != 1) { problems.Add("no read.ContinueWith(task => task.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default)"); return problems.ToArray(); }
+        var at = pinned[0].Index;
+        var cancelled = body.IndexOf("cancel.Cancel();", StringComparison.Ordinal);
+        var thrown = body.IndexOf("throw new RevitPipeReadTimeoutException(", StringComparison.Ordinal);
+        if (cancelled < 0 || at < cancelled) problems.Add("the continuation is not attached after cancel.Cancel()");
+        if (thrown < 0 || at > thrown) problems.Add("the continuation is not attached before the read timeout is thrown");
+        return problems.ToArray();
+    }
+
+    static void ContinuationPinned(string root, Action<bool, string, string> check)
+    {
+        var source = File.ReadAllText(Path.Combine(root, "core", "Bim.Core", "RevitCommandsService.cs")).ReplaceLineEndings("\n");
+        var problems = ContinuationProblems(source);
+        check(problems.Length == 0, "P1-37 static: ReadReplyLine attaches one OnlyOnFaulted continuation reading the abandoned read's Exception, after the cancel and before the read timeout throw",
+            string.Join("; ", problems));
+
+        const string Attach = "_ = read.ContinueWith(static task => task.Exception, CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);";
+        const string Clean = "static class S\n{\n    internal static string? ReadReplyLine(Func<CancellationToken, Task<string?>> readLine, TimeSpan readTimeout)\n    {\n"
+            + "        using var cancel = new CancellationTokenSource();\n        var read = readLine(cancel.Token);\n        // read.ContinueWith( named in a comment\n"
+            + "        if (read.Wait(readTimeout)) return read.Result;\n        cancel.Cancel();\n        var note = \"read.ContinueWith(\" + @\"read.ContinueWith(\"\"\";\n"
+            + "        if (read.IsCompletedSuccessfully) return read.Result;\n        " + Attach + "\n        throw new RevitPipeReadTimeoutException(readTimeout);\n    }\n}\n";
+        check(ContinuationProblems(Clean).Length == 0, "P1-37 mutation self-test: one pinned continuation (others named only in comments and strings) passes",
+            string.Join("; ", ContinuationProblems(Clean)));
+        var mutants = new (string Label, string Source)[]
+        {
+            ("removed continuation", Clean.Replace(Attach, "", StringComparison.Ordinal)),
+            ("line-commented continuation", Clean.Replace(Attach, "// " + Attach, StringComparison.Ordinal)),
+            ("block-commented continuation", Clean.Replace(Attach, "/* " + Attach + " */", StringComparison.Ordinal)),
+            ("continuation in a string", Clean.Replace(Attach, "var hidden = \"" + Attach + "\";", StringComparison.Ordinal)),
+            ("continuation in a verbatim string", Clean.Replace(Attach, "var hidden = @\"" + Attach + "\";", StringComparison.Ordinal)),
+            ("continuation in a raw string", Clean.Replace(Attach, "var hidden = \"\"\"\n" + Attach + "\n\"\"\";", StringComparison.Ordinal)),
+            ("OnlyOnCanceled continuation", Clean.Replace("OnlyOnFaulted", "OnlyOnCanceled", StringComparison.Ordinal)),
+            ("continuation not reading Exception", Clean.Replace("task => task.Exception", "task => task.Status", StringComparison.Ordinal)),
+            ("continuation on another task", Clean.Replace("_ = read.ContinueWith(", "_ = Task.CompletedTask.ContinueWith(", StringComparison.Ordinal)),
+            ("second continuation", Clean.Replace(Attach, Attach + "\n        " + Attach, StringComparison.Ordinal)),
+            ("continuation after the throw", Clean.Replace("        " + Attach + "\n        throw new RevitPipeReadTimeoutException(readTimeout);", "        throw new RevitPipeReadTimeoutException(readTimeout);\n        " + Attach, StringComparison.Ordinal)),
+            ("continuation before the cancel", Clean.Replace("        " + Attach + "\n", "", StringComparison.Ordinal).Replace("        cancel.Cancel();\n", "        " + Attach + "\n        cancel.Cancel();\n", StringComparison.Ordinal)),
+            ("read not started with the cancel token", Clean.Replace("var read = readLine(cancel.Token);", "var read = readLine(CancellationToken.None);", StringComparison.Ordinal)),
+        };
+        foreach (var (label, mutant) in mutants)
+            check(mutant != Clean && ContinuationProblems(mutant).Length > 0, "P1-37 mutation self-test: the continuation check flags a " + label, string.Join("; ", ContinuationProblems(mutant)));
+    }
+
+    // ---- 3e. P1-37: ReadReplyLine's abandoned read on a real pipe ----
+    // An in-process same-user pipe server (StallingAddIn) accepts the client, reads its request line and never replies,
+    // so ReadReplyLine, given a real StreamReader.ReadLineAsync on the client pipe, times out after its 200 ms wait. The
+    // abandoned read then ends one of three ways: (A) it honours the cancel and the pipe is disposed at once, as
+    // SendMeasured's `using` does; (B) it ignores the cancel and the pipe is disposed under it; (C) it ignores the cancel and
+    // the server sends a byte that a throwing UTF-8 decoder rejects, so it faults (DecoderFallbackException). Once each
+    // read is collected (bounded GC loop, at most 2 s, no sleep over 10 ms) TaskScheduler.UnobservedTaskException,
+    // filtered to faults raised inside StreamReader (or decoder faults) and attributed to the step that ran, reports none;
+    // (D) a control read faulting the same way as C but never given to ReadReplyLine is reported, proving the detector.
+    // (E) The production transport (RevitCommandService.Run over PipeTransportWithTimeouts(200 ms, 5 s)) on the stalled
+    // server is pipe_read_timeout naming 200 ms after the exact wire line, with no unobserved fault after a GC loop.
+    sealed class StallingAddIn : IDisposable
+    {
+        readonly ManualResetEventSlim served = new();
+        readonly ManualResetEventSlim send = new();
+        readonly ManualResetEventSlim release = new();
+        readonly Thread thread;
+        byte[]? late;
+
+        public StallingAddIn(string name)
+        {
+            thread = new Thread(() =>
+            {
+                try
+                {
+                    using var server = new System.IO.Pipes.NamedPipeServerStream(name, System.IO.Pipes.PipeDirection.InOut, 1,
+                        System.IO.Pipes.PipeTransmissionMode.Byte, System.IO.Pipes.PipeOptions.None);
+                    server.WaitForConnection();
+                    using var reader = new StreamReader(server, new UTF8Encoding(false), false, 4096, leaveOpen: true);
+                    Line = reader.ReadLine();
+                    served.Set();
+                    if (send.Wait(TimeSpan.FromSeconds(10)) && late is { } bytes) { server.Write(bytes); server.Flush(); Sent = true; }
+                    release.Wait(TimeSpan.FromSeconds(10));
+                }
+                catch (Exception error) { Error = error.GetType().Name + ": " + error.Message; }
+                finally { served.Set(); }
+            }) { IsBackground = true };
+            thread.Start();
+        }
+
+        public string? Line { get; private set; }
+        public string? Error { get; private set; }
+        public bool Sent { get; private set; }
+
+        public bool WaitServed() => served.Wait(TimeSpan.FromSeconds(10)) && Error is null && Line is not null;
+
+        public void Send(byte[] bytes) { late = bytes; send.Set(); }
+
+        public string Describe() => "line " + (Line ?? "<none>") + (Sent ? ", sent" : "") + (Error is null ? "" : ", error " + Error);
+
+        public void Dispose()
+        {
+            send.Set();
+            release.Set();
+            if (!thread.Join(TimeSpan.FromSeconds(10))) return;
+            served.Dispose();
+            send.Dispose();
+            release.Dispose();
+        }
+    }
+
+    static string TaskState(Task? task) => task is null ? "not started" : task.IsCanceled ? "canceled" : task.IsFaulted ? "faulted" : task.IsCompletedSuccessfully ? "completed" : "pending";
+
+    // Starts a real ReadLineAsync on a client pipe to a stalled server and abandons it: through ReadReplyLine (viaSeam) or
+    // never observed (the control). badBytes: the read ignores the cancel and the server sends 0xFF '\n' to a throwing
+    // decoder once the wait gave up; else the client pipe is disposed right after (honourCancel: the read gets the token).
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static WeakReference AbandonRealPipeRead(string label, bool viaSeam, bool honourCancel, bool badBytes, TimeSpan wait, List<string> outcome)
+    {
+        var pipe = AbsentPipe();
+        using var addIn = new StallingAddIn(pipe);
+        Task<string?>? started = null;
+        var client = new System.IO.Pipes.NamedPipeClientStream(".", pipe, System.IO.Pipes.PipeDirection.InOut, System.IO.Pipes.PipeOptions.Asynchronous);
+        try
+        {
+            client.Connect(5000);
+            client.Write(new UTF8Encoding(false).GetBytes("p1-37 " + label + "\n"));
+            var reader = new StreamReader(client, badBytes ? new UTF8Encoding(false, true) : new UTF8Encoding(false), false, 4096, leaveOpen: true);
+            Func<CancellationToken, Task<string?>> readLine = token => started = reader.ReadLineAsync(honourCancel ? token : CancellationToken.None).AsTask();
+            var watch = Stopwatch.StartNew();
+            if (viaSeam)
+            {
+                try { outcome.Add("no error, line " + (RevitCommandService.ReadReplyLine(readLine, wait) ?? "null")); }
+                catch (RevitPipeReadTimeoutException error) { outcome.Add("timeout " + N((long)error.Timeout.TotalMilliseconds)); }
+                catch (Exception error) { outcome.Add(error.GetType().Name); }
+            }
+            else
+            {
+                readLine(CancellationToken.None);
+                outcome.Add("unobserved");
+            }
+            outcome.Add(addIn.WaitServed() ? "served " + addIn.Line : "not served (" + addIn.Describe() + ")");
+            if (badBytes) addIn.Send(new byte[] { 0xFF, (byte)'\n' });
+            else client.Dispose();
+            var completed = SpinWait.SpinUntil(() => started is { IsCompleted: true }, TimeSpan.FromSeconds(2));
+            outcome.Add(TaskState(started) + (completed ? "" : " after 2 s") + " in " + N(watch.ElapsedMilliseconds) + " ms");
+        }
+        catch (Exception error) { outcome.Add("harness " + error.GetType().Name + ": " + error.Message); }
+        finally { client.Dispose(); }
+        return new WeakReference(started);
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    static string ProductionStall(string wallsText, TimeSpan wait, out string? served)
+    {
+        var pipe = AbsentPipe();
+        using var addIn = new StallingAddIn(pipe);
+        var result = RevitCommandService.Run(pipe, wallsText, RevitCommandPolicy.None, RevitCommandService.PipeTransportWithTimeouts(wait, TimeSpan.FromSeconds(5)));
+        served = addIn.WaitServed() ? addIn.Line : null;
+        return result.Line;
+    }
+
+    static void LateCancelRealPipe(string wallsText, Action<bool, string, string> check)
+    {
+        var wait = TimeSpan.FromMilliseconds(200);
+        var seen = new List<string>();
+        var step = "";
+        EventHandler<UnobservedTaskExceptionEventArgs> detector = (_, e) =>
+        {
+            var mine = e.Exception.Flatten().InnerExceptions
+                .Where(inner => inner is DecoderFallbackException || inner.ToString().Contains("System.IO.StreamReader", StringComparison.Ordinal))
+                .Select(inner => inner.GetType().Name).ToArray();
+            if (mine.Length == 0) return;
+            lock (seen) seen.AddRange(mine.Select(name => Volatile.Read(ref step) + ":" + name));
+            e.SetObserved();
+        };
+        string[] Seen(string name) { lock (seen) return seen.Where(entry => entry.StartsWith(name + ":", StringComparison.Ordinal)).ToArray(); }
+        TaskScheduler.UnobservedTaskException += detector;
+        try
+        {
+            (List<string> Outcome, bool Collected, string[] Faults) Step(string name, bool viaSeam, bool honourCancel, bool badBytes)
+            {
+                Volatile.Write(ref step, name);
+                var outcome = new List<string>();
+                var collected = Collected(AbandonRealPipeRead(name, viaSeam, honourCancel, badBytes, wait, outcome));
+                return (outcome, collected, Seen(name));
+            }
+            static string Describe((List<string> Outcome, bool Collected, string[] Faults) result)
+                => string.Join(" | ", result.Outcome) + "; collected " + result.Collected + "; unobserved [" + string.Join(", ", result.Faults) + "]";
+            var timeout = "timeout " + N((long)wait.TotalMilliseconds);
+
+            var control = Step("D", false, false, true);
+            check(control.Collected && control.Outcome.Count == 3 && control.Outcome[1] == "served p1-37 D" && control.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal)
+                && control.Faults.Contains("D:" + nameof(DecoderFallbackException)),
+                "P1-37 real pipe detector: a real-pipe read faulting (decoder) and never observed is reported by TaskScheduler.UnobservedTaskException once collected", Describe(control));
+            var faulting = Step("C", true, false, true);
+            check(faulting.Collected && faulting.Outcome.Count == 3 && faulting.Outcome[0] == timeout && faulting.Outcome[1] == "served p1-37 C"
+                && faulting.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal) && faulting.Faults.Length == 0,
+                "P1-37 real pipe: a stalled server makes ReadReplyLine time out (200 ms) and the abandoned read faulting late (decoder) raises no UnobservedTaskException", Describe(faulting));
+            var disposed = Step("B", true, false, false);
+            check(disposed.Collected && disposed.Outcome.Count == 3 && disposed.Outcome[0] == timeout && disposed.Outcome[1] == "served p1-37 B"
+                && !disposed.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !disposed.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && disposed.Faults.Length == 0,
+                "P1-37 real pipe: a read ignoring the cancel, whose pipe is disposed after ReadReplyLine timed out, ends within 2 s and raises no UnobservedTaskException", Describe(disposed));
+            var honoured = Step("A", true, true, false);
+            check(honoured.Collected && honoured.Outcome.Count == 3 && honoured.Outcome[0] == timeout && honoured.Outcome[1] == "served p1-37 A"
+                && !honoured.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !honoured.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && honoured.Faults.Length == 0,
+                "P1-37 real pipe: the production read form (honouring the cancel, pipe disposed at once) times out and raises no UnobservedTaskException", Describe(honoured));
+            // P1-37 probe: the measured terminal state of each abandoned real-pipe read, per OS (deliberately red).
+            check(false, "P1-37 probe on " + System.Runtime.InteropServices.RuntimeInformation.OSDescription + ": abandoned real-pipe read states",
+                "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1]);
+
+            Volatile.Write(ref step, "E");
+            var expected = RevitCommandResponse.Failure(RevitCommandCodes.PipeReadTimeout, "pipe_name",
+                RevitCommandService.ReadTimeoutDetail(RevitCommandProtocol.Parse(wallsText), wait)).ToJson();
+            var watch = Stopwatch.StartNew();
+            var line = ProductionStall(wallsText, wait, out var served);
+            var ended = watch.ElapsedMilliseconds;
+            var rounds = Stopwatch.StartNew();
+            for (var round = 0; round < 5 && rounds.Elapsed < TimeSpan.FromSeconds(2); round++) { GC.Collect(); GC.WaitForPendingFinalizers(); Thread.Sleep(10); }
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            var production = Seen("E");
+            check(line == expected && served == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(wallsText)) && ended >= 190 && production.Length == 0,
+                "P1-37 real pipe through RevitCommandService.Run (PipeTransportWithTimeouts 200 ms): a stalled add-in is pipe_read_timeout naming 200 ms after the exact wire line, no UnobservedTaskException after a GC loop",
+                line + " in " + N(ended) + " ms; served " + (served ?? "<none>") + "; unobserved [" + string.Join(", ", production) + "]");
+        }
+        finally { TaskScheduler.UnobservedTaskException -= detector; }
     }
 
     const string AbsentExceededCli ="""{"status":"failed","code":"query_all_deadline_exceeded","field":null,"detail":"the --all listing took longer than its 1000 ms deadline; read-only, the document is unchanged and the request may be resent, or page it with args.cursor","pages":0,"matched":null,"returned":0,"elements":[]}""";
