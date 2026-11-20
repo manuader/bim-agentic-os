@@ -1945,3 +1945,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay253
 - 2026-11-20T19:52:58Z lock taken (session_014pxpsT9G8r2NM3XB2hJrzE relay253; was FREE, relay252 released 2026-11-20T19:12:58Z)
+- 2026-11-20T19:53:19Z picked P2-36 (phase 2), P3-30 (phase 3), P4-30 (phase 4) — oldest-touched (relay250); disjoint files (tests/mirror-journal macOS pin + optional [ThreadStatic] seam in RevitCommandsService.cs only by P2-36; GenerateTypologyWrite.cs Run catch-all + GenerateTypologyCommand.cs InternalRefusal + GenerateTypologyTests.cs new section + GenerateTypologyWriteLinkTests.cs Run delta only by P3-30; tests/cli/PackageLayoutPackTests.cs new check only by P4-30). Workers spawned.
