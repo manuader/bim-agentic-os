@@ -71,6 +71,13 @@ using Bim.Core;
 //      SkillListCommand.WriteDiagnostic(envelope) once; documented deltas CommandDeltaP531 and ToolDeltaP531, reversed,
 //      give the pre-P5-31 SkillListCommand.cs and SkillListTool.cs byte for byte (SHA-256, "\n" line endings), so the
 //      P5-21/P5-22/P5-29 code read by the earlier pins is otherwise unchanged.
+//  14. P5-32 selection twice-read: over a generated package with a real code pack (xx.p532) and a stub code pack
+//      (xx.p532s) and an outside lock pinning both, jurisdiction-resolve --country/--municipality and --code/--allow-stub
+//      under --lock run twice in process (APP_CONTEXT_BASE_DIRECTORY override, restored; negative control
+//      skill_lock_missing) and twice as real processes print byte-identical, literally pinned lines: selection success,
+//      jurisdiction_unknown, allow-stub success, jurisdiction_stub_refused (by code and by metadata), exit 0/1, empty
+//      stderr; with the stub sidecar truncated and repinned, json_invalid whose detail is exactly "$: " + the documented
+//      System.Text.Json message (equal to JsonDocument.Parse in this runtime, .NET 8 required and named in the check).
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -425,6 +432,9 @@ internal static class SkillListTests
 
         // ---- 13. P5-31 post-load seam and a throwing stderr ----
         PostLoad(root, scratch, dotnet, cliDll, check);
+
+        // ---- 14. P5-32 twice-read for selection flags and --allow-stub under --lock ----
+        SelectionTwiceRead(scratch, dotnet, cliDll, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -974,6 +984,152 @@ internal static class SkillListTests
         Check(malformedLine.StartsWith("{\"status\":\"failed\",\"code\":\"json_invalid\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"", StringComparison.Ordinal),
             "sidecar json_invalid: the in-process LoadLocked refusal line is json_invalid at " + Pack + "/jurisdiction.json", malformedLine);
         Phase("sidecar json_invalid", repinned, 1, malformedLine);
+
+        Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
+    }
+
+    // Section 14 (P5-32): see oracle 14 in the header.
+    static void SelectionTwiceRead(string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-32 selection twice-read: " + name, detail);
+        const string Pack = "xx.p532.pack";
+        const string Code = "xx.p532";
+        const string StubPack = "xx.p532s.pack";
+        const string StubCode = "xx.p532s";
+        const string Truncated = "{ \"jurisdiction_version\": 1, ";
+        var package = Path.Combine(scratch, "p532-pkg");
+        var packageCli = Path.Combine(package, "cli");
+        CopyDirectory(Path.GetDirectoryName(cliDll)!, packageCli);
+        File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
+        var skills = Path.Combine(package, "skills");
+        static string Manifest(string id) =>
+            "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n";
+        static string Sidecar(string code, string pack, string municipality, bool stub) =>
+            "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":" + (stub ? "true" : "false") + ",\"note\":\"fictitious test fixture\"}\n";
+        foreach (var (id, code, municipality, stub) in new[] { (Pack, Code, "Fixture Town", false), (StubPack, StubCode, "Stub Village", true) })
+        {
+            Directory.CreateDirectory(Path.Combine(skills, id));
+            File.WriteAllText(Path.Combine(skills, id, "skill.json"), Manifest(id), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(skills, id, "jurisdiction.json"), Sidecar(code, id, municipality, stub), new UTF8Encoding(false));
+        }
+        var lockPath = Path.Combine(scratch, "p532.skills.lock.json");
+        File.WriteAllBytes(lockPath, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { Pack, StubPack })));
+        var packageDll = Path.Combine(packageCli, "Bim.Cli.dll");
+
+        (int Exit, string Out, string Err) Child(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(packageDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result.ReplaceLineEndings(" ").Trim());
+        }
+        // In process with AppContext.BaseDirectory read from baseDirectory for the run (null: unchanged); globals restored.
+        (int Exit, string Out, string Err) Inline(string[] arguments, string? baseDirectory)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var previousBase = AppContext.GetData("APP_CONTEXT_BASE_DIRECTORY");
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var exit = -1;
+            var thrown = "";
+            var seen = "";
+            try
+            {
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+                seen = AppContext.BaseDirectory;
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                Bim.Cli.JurisdictionResolveCommand.Run(arguments);
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().Name + ": " + failure.Message; }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previousBase);
+            }
+            if (baseDirectory is not null)
+                Check(seen == baseDirectory, "sentinel: override visible during the run", seen + " != " + baseDirectory);
+            return (exit, capturedOut.ToString(), (capturedError.ToString().Trim() + thrown).Trim());
+        }
+        static string D((int Exit, string Out, string Err) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out) + (r.Err.Length > 0 ? " stderr " + r.Err : "");
+
+        var originalBase = AppContext.BaseDirectory;
+        var packageBase = packageCli + Path.DirectorySeparatorChar;
+        string[] runNames = { "in process #1", "in process #2", "process #1", "process #2" };
+        void Case(string label, string lockFile, string[] selection, int exit, string line)
+        {
+            var digest = TreeDigest(skills);
+            var lockBytes = File.ReadAllBytes(lockFile);
+            var arguments = new[] { "jurisdiction-resolve" }.Concat(selection).Concat(new[] { "--lock", lockFile }).ToArray();
+            var runs = new[] { Inline(arguments, packageBase), Inline(arguments, packageBase), Child(arguments), Child(arguments) };
+            for (var index = 0; index < runs.Length; index++)
+                Check(runs[index].Exit == exit && runs[index].Out == line + Environment.NewLine && runs[index].Err.Length == 0,
+                    label + ": " + string.Join(" ", selection) + " --lock " + runNames[index] + " prints the pinned line (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", nothing on stderr)",
+                    D(runs[index]) + " | expected " + JsonSerializer.Serialize(line + Environment.NewLine));
+            Check(runs.All(run => run.Exit == runs[0].Exit && run.Out == runs[0].Out && run.Err == runs[0].Err),
+                label + ": twice in process and twice as a real process print byte-identical output", string.Join(" || ", runs.Select(D)));
+            Check(TreeDigest(skills) == digest && File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes), label + ": the generated skills tree and the lock are unchanged by every run");
+        }
+
+        // Two LoadLocked reads of the same inputs: unequal registries holding the same two claims.
+        var first = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        var second = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        Check(first.Registry is { } a && second.Registry is { } b && !ReferenceEquals(a, b) && !a.Equals(b) && first != second
+            && a.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)).SequenceEqual(b.Claims.Select(claim => (claim.Code, claim.Pack, claim.Stub)))
+            && a.Codes.Order(StringComparer.Ordinal).SequenceEqual(new[] { Code, StubCode }),
+            "two in-process LoadLocked reads of the lock pinning both packs succeed with the same claims and are unequal registries (P5-27)",
+            (first.Refusal?.ToString() ?? "") + " / " + (second.Refusal?.ToString() ?? "") + " / " + string.Join(",", first.Registry?.Codes ?? Array.Empty<string>()));
+        var unoverridden = Inline(new[] { "jurisdiction-resolve", "--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath }, null);
+        Check(unoverridden.Exit == 1 && unoverridden.Err.Length == 0
+            && unoverridden.Out.StartsWith("{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockMissing + "\",\"subject\":\"xx.p532", StringComparison.Ordinal),
+            "negative control: in process with the original base directory the selection under the lock is skill_lock_missing (the override is load-bearing)", D(unoverridden));
+
+        static string Succeeded(string code, string pack, bool stub) =>
+            "{\"status\":\"succeeded\",\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"version\":\"1.2.3\",\"stub\":" + (stub ? "true" : "false") + "}";
+        const string UnknownLine = "P532-PROBE-UNKNOWN";
+        const string StubRefusedLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_stub_refused\",\"subject\":\"xx.p532s\",\"detail\":\"jurisdiction xx.p532s is a stub example pack (xx.p532s.pack), not real law; pass allowStub to use it\"}";
+        const string StubRefusedByMetadataLine = StubRefusedLine;
+        Case("selection success", lockPath, new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 0, Succeeded(Code, Pack, false));
+        Case("selection success (accents, case and spacing folded)", lockPath, new[] { "--country", "  FIXTURE  country ", "--municipality", "f\u00EDxture town" }, 0, Succeeded(Code, Pack, false));
+        Case("selection refusal", lockPath, new[] { "--country", "Fixture Country", "--municipality", "Nowhere Else" }, 1, UnknownLine);
+        Case("allow-stub success", lockPath, new[] { "--code", StubCode, "--allow-stub" }, 0, Succeeded(StubCode, StubPack, true));
+        Case("allow-stub success by selection flags", lockPath, new[] { "--allow-stub", "--country", "Fixture Country", "--municipality", "Stub Village" }, 0, Succeeded(StubCode, StubPack, true));
+        Case("allow-stub refusal", lockPath, new[] { "--code", StubCode }, 1, StubRefusedLine);
+        Case("allow-stub refusal by selection flags", lockPath, new[] { "--country", "Fixture Country", "--municipality", "Stub Village" }, 1, StubRefusedByMetadataLine);
+        Case("allow-stub on a real pack", lockPath, new[] { "--code", Code, "--allow-stub" }, 0, Succeeded(Code, Pack, false));
+
+        // json_invalid: the stub sidecar truncated and both packs pinned again; the load refuses before any selection.
+        File.WriteAllText(Path.Combine(skills, StubPack, "jurisdiction.json"), Truncated, new UTF8Encoding(false));
+        var repinned = Path.Combine(scratch, "p532.repinned.skills.lock.json");
+        File.WriteAllBytes(repinned, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { Pack, StubPack })));
+        // The detail is "$: " + the System.Text.Json JsonException message for the truncated text; pinned literally (the only
+        // tolerated text), and must equal what JsonDocument.Parse reports in this runtime.
+        const string JsonMessage = "Expected start of a property name or value, but instead reached end of data. LineNumber: 0 | BytePositionInLine: 29.";
+        var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+        string observed;
+        try { using var parsed = JsonDocument.Parse(Truncated); observed = "<parsed>"; }
+        catch (JsonException error) { observed = error.Message; }
+        Check(runtime.StartsWith(".NET 8.", StringComparison.Ordinal) && observed == JsonMessage,
+            "json_invalid: System.Text.Json reports the documented message for the truncated sidecar on " + runtime, JsonSerializer.Serialize(observed));
+        var jsonInvalidLine = "{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.JsonInvalid + "\",\"subject\":\"" + StubPack + "/jurisdiction.json\",\"detail\":" + JsonSerializer.Serialize("$: " + JsonMessage) + "}";
+        var malformed = JurisdictionRegistry.LoadLocked(skills, repinned);
+        Check(malformed.Refusal is { } refusal && JsonSerializer.Serialize(new { status = "failed", code = refusal.Code, subject = refusal.Subject, detail = refusal.Detail }) == jsonInvalidLine,
+            "json_invalid: the in-process LoadLocked refusal equals the pinned line", (malformed.Refusal?.ToString() ?? "<no refusal>") + " | pinned " + jsonInvalidLine);
+        Case("json_invalid under selection flags", repinned, new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, jsonInvalidLine);
+        Case("json_invalid under allow-stub", repinned, new[] { "--code", StubCode, "--allow-stub" }, 1, jsonInvalidLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
