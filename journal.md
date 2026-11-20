@@ -1955,3 +1955,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay254
 - 2026-11-20T21:53:12Z lock taken (session_014pxpsPwda8aqkqPijrKjzA relay254; was FREE, relay253 released 2026-11-20T21:16:40Z)
+- 2026-11-20T21:53:30Z picked P10-32 (phase 10), P6-32 (phase 6), P7-32 (phase 7) — oldest-touched (relay248/251); disjoint files (tests/cli/DeletedCwdPathTests.cs new section (+ OutputProblem.cs/path helpers if defect) only by P10-32; tests/cad new section/file + offline ezdxf generator (+ BriefExtract uncertainty list if gap) only by P6-32; tests/cli/GeneratePrototypesTests.cs new section + InternalErrorDelegationTests.cs 2e labels (+ GenerateWrite.cs if defect) only by P7-32). Workers spawned.
