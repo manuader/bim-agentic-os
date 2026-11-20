@@ -39,7 +39,9 @@
 # "broken-after:<bytes read>:<InBufferSize>:<bytes queued>" line instead. InBufferSize is what the server end reports
 # ("unknown" when it throws): on Windows it is the requested quota (0 here), not a measured buffer. Bytes queued is
 # measured: Windows PeekNamedPipe TotalBytesAvail on the server handle, Linux ioctl FIONREAD on its socket fd (-1 - error
-# code when the call fails, -1 on other OSes), so a test can tell whether the client still had bytes unsent. The
+# code when the call fails), macOS (P2-34) FIONREAD through Socket.Available on a non-owning SafeSocketHandle over that
+# fd (-1 - SocketException.ErrorCode when it fails, long.MinValue + 1 for ErrorCode 0, long.MinValue + 2 for any other
+# exception), -1 on other OSes, so a test can tell whether the client still had bytes unsent. The
 # request never reaches the executor: nothing runs, no operation id is known or logged, no -RecorderFailures id
 # matches. A request whose newline lies within its first N bytes is read up to it and served exactly as without the
 # option. It cannot be combined with -BreakPipeCommand (refused before the pipe is ready).
@@ -88,6 +90,7 @@ if ($breakAfter -gt 0) {
     # P2-31: the bytes queued in the server end of a connection (see the header).
     Add-Type -TypeDefinition @'
 using System;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 public static class FakePipeQueue
 {
@@ -104,6 +107,23 @@ public static class FakePipeQueue
             var raw = handle.DangerousGetHandle();
             if (OperatingSystem.IsWindows()) return PeekNamedPipe(raw, IntPtr.Zero, 0, IntPtr.Zero, out var available, IntPtr.Zero) ? available : -1L - Marshal.GetLastWin32Error();
             if (OperatingSystem.IsLinux()) return ioctl(checked((int)raw), (UIntPtr)0x541Bu, out var queued) == 0 ? queued : -1L - Marshal.GetLastWin32Error();
+            if (OperatingSystem.IsMacOS())
+            {
+                // P2-34: ioctl(fd, FIONREAD = 0x4004667F). ioctl is variadic and Apple arm64 passes a variadic argument on
+                // the stack, which the fixed DllImport above cannot express, so FIONREAD is reached through Socket.Available
+                // (the runtime's native ioctl FIONREAD) on a non-owning handle to the same fd. The Socket is neither disposed
+                // nor finalized: either could shut the fake's own socket down.
+                var fd = new SafeSocketHandle(raw, false);
+                GC.SuppressFinalize(fd);
+                try
+                {
+                    var socket = new Socket(fd);
+                    GC.SuppressFinalize(socket);
+                    return socket.Available;
+                }
+                catch (SocketException error) { return error.ErrorCode == 0 ? long.MinValue + 1 : -1L - error.ErrorCode; }
+                catch (Exception) { return long.MinValue + 2; }
+            }
             return -1;
         }
         finally { if (added) handle.DangerousRelease(); }
