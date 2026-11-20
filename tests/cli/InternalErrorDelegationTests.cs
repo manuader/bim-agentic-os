@@ -342,6 +342,73 @@ internal static class InternalErrorDelegationTests
                 Check(uses.Clean, "seam hygiene: " + name + " only declares GuardedWorkProbe and reads it once through ?.Invoke(), never assigns it", uses.Detail);
         }
 
+        // P3-27: the same hygiene (literal-blanked uses plus the literal-kept count) for the remaining CLI test seams. Each
+        // is declared once under interfaces/, in its pinned file, as `internal static <Type>? <Name> { get; set; }` with no
+        // initializer, read exactly once in its pinned form, and never assigned: the four Action seams through a
+        // statement `<Name>?.Invoke();`, GenerationWeightsProbe as the last argument of `new AlternativeOptions(...)` in
+        // the single `AlternativeGenerator.Generate(...)` call. Tests set them (by reflection, or directly from
+        // tests/mcp); nothing under interfaces/ does. The checker is first run on planted sources for every seam.
+        {
+            const string Generate = "var set = AlternativeGenerator.Generate(brief, new AlternativeOptions(count, seed, rules is null ? null : new PlannerOptions(Rules: rules), GenerationWeightsProbe));";
+            var seams = new (string Name, string File, string Type, string Read)[]
+            {
+                ("UnguardedStageProbe", "interfaces/cli/GenerateCommand.cs", "Action", "UnguardedStageProbe?.Invoke();"),
+                ("UnguardedWorkProbe", "interfaces/cli/GenerateTypologyCommand.cs", "Action", "UnguardedWorkProbe?.Invoke();"),
+                ("PostWriteProbe", "interfaces/cli/GenerateTypologyWrite.cs", "Action", "PostWriteProbe?.Invoke();"),
+                ("PostWriteStageProbe", "interfaces/cli/GenerateWrite.cs", "Action", "PostWriteStageProbe?.Invoke();"),
+                ("GenerationWeightsProbe", "interfaces/cli/PlanLayoutsCommand.cs", "ScoringWeights", Generate),
+            };
+
+            foreach (var (seam, _, type, read) in seams)
+            {
+                var declaration = "internal static " + type + "? " + seam + " { get; set; }";
+                var good = declaration + "\nstatic void W() { try { " + read + " } catch (Exception error) { throw InternalRefusal(error); } }\n";
+                var other = type == "Action" ? "internal static Action<string>? " + seam + " { get; set; }" : "internal static AlternativeOptions? " + seam + " { get; set; }";
+                var bareRead = type == "Action" ? "var p = " + seam + "; p?.Invoke();" : "var w = " + seam + ";";
+                var cases = new (string Name, string Source, bool Clean)[]
+                {
+                    ("the declaration plus the pinned read", good, true),
+                    ("assignments only inside comments", good + "// " + seam + " = null;\n/* " + seam + " ??= x; */\n", true),
+                    ("a planted assignment", good + "static void T() { " + seam + " = null; }\n", false),
+                    ("a planted qualified assignment without spaces", good + "static void T() { Owner." + seam + "=null; }\n", false),
+                    ("a planted ??=", good + "static void T() { " + seam + " ??= default; }\n", false),
+                    ("a planted initializer", declaration + " = default;\nstatic void W() { " + read + " }\n", false),
+                    ("another declared type", other + "\nstatic void W() { " + read + " }\n", false),
+                    ("a second pinned read", good + "static void T() { " + read + " }\n", false),
+                    ("a read in another form", good + "static void T() { " + bareRead + " }\n", false),
+                    ("the read missing", declaration + "\n", false),
+                    ("an assignment in an interpolation hole (planted evasion)", good + "static void T() { var s = $\"{" + seam + " = null}\"; }\n", false),
+                    ("an assignment inside a raw string literal", good + "static void T() { var s = \"\"\"\n" + seam + " = null;\n\"\"\"; }\n", false),
+                };
+                foreach (var (name, source, clean) in cases)
+                {
+                    var uses = SeamHygiene(source, seam, type);
+                    Check(uses.Clean == clean, "P3-27 seam hygiene self-test: " + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
+                }
+            }
+
+            var sep = Path.DirectorySeparatorChar;
+            var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
+                .Where(f => !f.Contains(sep + "bin" + sep, StringComparison.Ordinal) && !f.Contains(sep + "obj" + sep, StringComparison.Ordinal))
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Text: File.ReadAllText(f))).ToArray();
+            Check(sources.Length > 0, "P3-27 seam hygiene: interfaces/ code found from the repository root", root);
+            foreach (var (seam, file, type, read) in seams)
+            {
+                var found = sources.Select(s => (s.Name, Uses: SeamHygiene(s.Text, seam, type))).Where(s => s.Uses.Mentions > 0).ToArray();
+                Check(found.Length == 1 && found[0].Name == file, "P3-27 seam hygiene: " + seam + " appears under interfaces/ only in " + file, string.Join(", ", found.Select(s => s.Name)));
+                foreach (var (name, uses) in found)
+                    Check(uses.Clean, "P3-27 seam hygiene: " + name + " declares " + seam + " once without an initializer, reads it once as [" + read + "], never assigns it", uses.Detail);
+            }
+            // PROBE RED (P3-27, removed in the green commit): a planted interpolation-hole assignment appended to each
+            // real seam file must be caught; asserted the wrong way here so CI shows the checker failing on it.
+            foreach (var (seam, file, type, _) in seams)
+            {
+                var planted = SeamHygiene(sources.Single(s => s.Name == file).Text + "\nstatic class Planted { static string S() => $\"{" + seam + " = null}\"; }\n", seam, type);
+                Check(planted.Clean, "P3-27 PROBE RED: " + file + " with a planted $\"{" + seam + " = null}\" is clean", planted.Detail);
+            }
+        }
+
         // 2f. MCP audit_verify (AuditVerifyTool.Run, in process): the catch-all forced by an actor list whose enumeration
         // throws (after the path checks and the Count check, inside Actors); the Outcome and stderr equal the hand-written
         // pre-P3-20 catch body.
@@ -452,6 +519,42 @@ internal static class InternalErrorDelegationTests
         var detail = "declarations " + uses.Declarations.ToString(CultureInfo.InvariantCulture) + " reads " + uses.Reads.ToString(CultureInfo.InvariantCulture)
             + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", uses.Others) + "]";
         return (clean, Math.Max(kept, uses.Declarations + uses.Reads + uses.Others.Count), detail);
+    }
+
+    // P3-27: ProbeUses plus Hygiene for a remaining CLI test seam, given its name, declared type (Action or
+    // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
+    // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start);
+    // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
+    // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
+    // literals kept (comments stripped) equal to declarations + reads.
+    static (bool Clean, int Mentions, string Detail) SeamHygiene(string text, string name, string type)
+    {
+        var word = @"\b" + System.Text.RegularExpressions.Regex.Escape(name) + @"\b";
+        var code = ApplyIntentTests.CodeOf(text, blankStrings: true);
+        int declarations = 0, reads = 0;
+        var others = new List<string>();
+        foreach (System.Text.RegularExpressions.Match use in System.Text.RegularExpressions.Regex.Matches(code, word))
+        {
+            var before = code[..use.Index];
+            var after = code[(use.Index + use.Length)..];
+            var read = type == "Action"
+                ? System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;")
+                : System.Text.RegularExpressions.Regex.IsMatch(before, @"\bAlternativeGenerator\s*\.\s*Generate\s*\([^;{}]*\bnew\s+AlternativeOptions\s*\([^;{}]*,\s*$")
+                    && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\)\s*\)\s*;");
+            if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\binternal\s+static\s+" + System.Text.RegularExpressions.Regex.Escape(type) + @"\s*\?\s+$")
+                && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)"))
+                declarations++;
+            else if (read)
+                reads++;
+            else
+                others.Add((System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*(?:[-+*/%&|^]|\?\?|<<|>>)?=(?!=)") ? "assignment: " : "use: ")
+                    + code.Substring(use.Index, Math.Min(60, code.Length - use.Index)).ReplaceLineEndings(" "));
+        }
+        var kept = System.Text.RegularExpressions.Regex.Matches(ApplyIntentTests.CodeOf(text, blankStrings: false), word).Count;
+        var clean = declarations == 1 && reads == 1 && others.Count == 0 && kept == declarations + reads;
+        var detail = name + ": declarations " + declarations.ToString(CultureInfo.InvariantCulture) + " reads " + reads.ToString(CultureInfo.InvariantCulture)
+            + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", others) + "]";
+        return (clean, Math.Max(kept, declarations + reads + others.Count), detail);
     }
 
     // P3-22: a stdout whose every write throws the given exception, so Run throws while it prints.
