@@ -1081,14 +1081,26 @@ internal static class RevitCommandDeadlineTests
     const string ReadTimeoutHelperDefinition = "core/Bim.Core/RevitCommandsService.cs";
     const string LegacyUnmodelled = "P1-38 Legacy adapter: every cut connect a fake meets is modelled by that fake";
 
-    static List<string> ReadTimeoutHelperReferences(string root)
+    // P1-40: the .cs files the 2i caller scan reads, relative with '/' separators. RED PROBE: still the directory walk.
+    static List<string>? ScannedSourceFiles(string root, out string reason)
+    {
+        reason = "";
+        return WalkedSourceFiles(root).ToList();
+    }
+
+    // Every .cs file under root on disk (tracked or not), relative with '/' separators: the P1-38 walk, kept as the
+    // control that proves an untracked copy exists on disk.
+    static IEnumerable<string> WalkedSourceFiles(string root) =>
+        Directory.EnumerateFiles(root, "*.cs", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
+            .Select(file => Path.GetRelativePath(root, file).Replace('\\', '/'));
+
+    static List<string> ReadTimeoutHelperReferences(string root, IEnumerable<string> files)
     {
         var found = new List<string>();
-        foreach (var file in Directory.EnumerateFiles(root, "*.cs", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }))
+        foreach (var relative in files)
         {
-            var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
             if (relative.Split('/').Any(part => part is "bin" or "obj" || part.StartsWith('.'))) continue;
-            var code = StripCode(File.ReadAllText(file).ReplaceLineEndings("\n"));
+            var code = StripCode(File.ReadAllText(Path.Combine(root, relative)).ReplaceLineEndings("\n"));
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPipeTransportWithReadTimeout\b")) found.Add(relative);
         }
         found.Sort(StringComparer.Ordinal);
@@ -1099,9 +1111,13 @@ internal static class RevitCommandDeadlineTests
     static string[] CallArguments(string code, string call)
     {
         var at = code.IndexOf(call, StringComparison.Ordinal);
-        if (at < 0) return Array.Empty<string>();
+        return at < 0 ? Array.Empty<string>() : ArgumentsAt(code, at + call.Length) ?? Array.Empty<string>();
+    }
+
+    // The top-level arguments of the call whose '(' ends just before code[from]; null if it is not closed.
+    static string[]? ArgumentsAt(string code, int from)
+    {
         var arguments = new List<string>();
-        var from = at + call.Length;
         var depth = 0;
         for (var i = from; i < code.Length; i++)
         {
@@ -1115,27 +1131,119 @@ internal static class RevitCommandDeadlineTests
             }
             else if (c == ',' && depth == 0) { arguments.Add(code[from..i].Trim()); from = i + 1; }
         }
-        return Array.Empty<string>();
+        return null;
+    }
+
+    // P1-40: RevitDeadlineTransport's constructor parameters, in order (the parsed argument list maps calls onto them).
+    static readonly string[] DeadlineTransportParameters = { "pipeName", "policy", "transport", "readTimeout", "deadline", "elapsed", "listing", "cutReads", "probe", "connectThenRead" };
+
+    // P1-40: every `new [Bim.Cli.]RevitDeadlineTransport(` construction in stripped code, its arguments by parameter name
+    // (positional by position, named by name), whitespace removed; null for a call that cannot be mapped.
+    static List<Dictionary<string, string>?> DeadlineTransportCalls(string code)
+    {
+        var calls = new List<Dictionary<string, string>?>();
+        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?RevitDeadlineTransport\s*\("))
+        {
+            var arguments = ArgumentsAt(code, match.Index + match.Length);
+            Dictionary<string, string>? map = arguments is null ? null : new Dictionary<string, string>(StringComparer.Ordinal);
+            var named = false;
+            for (var k = 0; map is not null && arguments is not null && k < arguments.Length; k++)
+            {
+                if (arguments.Length == 1 && arguments[0].Length == 0) break;
+                var name = System.Text.RegularExpressions.Regex.Match(arguments[k], @"^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)");
+                string? key = name.Success ? name.Groups[1].Value : !named && k < DeadlineTransportParameters.Length ? DeadlineTransportParameters[k] : null;
+                named |= name.Success;
+                if (key is null || !DeadlineTransportParameters.Contains(key) || map.ContainsKey(key)) { map = null; break; }
+                map[key] = System.Text.RegularExpressions.Regex.Replace(name.Success ? arguments[k][name.Length..] : arguments[k], @"\s+", "");
+            }
+            calls.Add(map);
+        }
+        return calls;
+    }
+
+    // P1-40: what is wrong with the CLI's deadline transport construction in stripped Program.cs code (empty: one
+    // construction, exactly pipeName, policy, transport null, readTimeout revitOptions.ReadTimeout and deadline).
+    // RED PROBE: still the P1-38 positional match on the exact text "new RevitDeadlineTransport(".
+    static string[] CliTransportProblems(string code)
+    {
+        var built = System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+RevitDeadlineTransport\s*\(").Count;
+        var cliArguments = CallArguments(code, "new RevitDeadlineTransport(");
+        return built == 1 && cliArguments.Length == 5 && cliArguments[2] == "null" && cliArguments[3] == "revitOptions.ReadTimeout" && !cliArguments.Any(a => a.Contains("cutReads", StringComparison.Ordinal))
+            ? Array.Empty<string>()
+            : new[] { N(built) + " built; arguments: " + string.Join(" | ", cliArguments) };
     }
 
     static void ConfiguredTransportTidy(string root, string wallsText, long[] model, Action<bool, string, string> check)
     {
-        // (a) PipeTransportWithReadTimeout callers.
-        var references = ReadTimeoutHelperReferences(root);
+        // (a) PipeTransportWithReadTimeout callers, over the tracked .cs files (P1-40).
+        var scanned = ScannedSourceFiles(root, out var scanReason);
+        var references = scanned is null ? new List<string>() : ReadTimeoutHelperReferences(root, scanned);
         var production = references.Where(file => !file.StartsWith("tests/", StringComparison.Ordinal) && file != ReadTimeoutHelperDefinition).ToArray();
-        var listed = "references: " + string.Join(", ", references);
+        var listed = (scanned is null ? "no tracked-file list (" + scanReason + "); " : N(scanned.Count) + " files scanned; ") + "references: " + string.Join(", ", references);
         check(references.Contains(ReadTimeoutHelperDefinition) && production.SequenceEqual(ReadTimeoutHelperProductionCallers),
             "P1-38 static: RevitCommandService.PipeTransportWithReadTimeout is kept because production calls it (exactly RevitCommandOptions.cs and McpServer.cs)", listed);
-        check(!references.Contains("interfaces/cli/RevitDeadlineTransport.cs") && references.Any(file => file.StartsWith("tests/", StringComparison.Ordinal)),
-            "P1-38 static: RevitDeadlineTransport.cs does not name PipeTransportWithReadTimeout; tests still do", listed);
+        check(!references.Contains("interfaces/cli/RevitDeadlineTransport.cs"),
+            "P1-38 static: RevitDeadlineTransport.cs does not name PipeTransportWithReadTimeout (P1-40: test references are not pinned; the helper is kept for its production callers alone)", listed);
 
-        // (b) The CLI passes no never-called transport.
+        // P1-40 control: an untracked copy naming the helper, in an untracked non-dot folder, is on disk (the walk finds
+        // it) but is not scanned, so it cannot add a caller.
+        var untrackedFolder = "p1-40-untracked-" + N(Random.Shared.Next(100000, 999999));
+        var untrackedCopy = untrackedFolder + "/Copy.cs";
+        var walkedReferences = new List<string>();
+        List<string>? scannedReferences = null;
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, untrackedFolder));
+            File.WriteAllText(Path.Combine(root, untrackedFolder, "Copy.cs"),
+                "static class Copy\n{\n    static object M() => Bim.Core.RevitCommandService.PipeTransportWithReadTimeout(System.TimeSpan.FromSeconds(1));\n}\n");
+            walkedReferences = ReadTimeoutHelperReferences(root, WalkedSourceFiles(root));
+            var withCopy = ScannedSourceFiles(root, out _);
+            scannedReferences = withCopy is null ? null : ReadTimeoutHelperReferences(root, withCopy);
+        }
+        finally
+        {
+            try { Directory.Delete(Path.Combine(root, untrackedFolder), recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        check(walkedReferences.Contains(untrackedCopy) && scannedReferences is not null && !scannedReferences.Contains(untrackedCopy) && scannedReferences.SequenceEqual(references),
+            "P1-40 control: an untracked copy naming PipeTransportWithReadTimeout (untracked non-dot folder) is on disk but not scanned, so the caller set is unchanged",
+            "walk " + (walkedReferences.Contains(untrackedCopy) ? "finds " : "misses ") + untrackedCopy + "; scan: "
+            + (scannedReferences is null ? "no tracked-file list" : string.Join(", ", scannedReferences)));
+        check(!Directory.Exists(Path.Combine(root, untrackedFolder)), "P1-40 control: the untracked copy's folder is removed", untrackedFolder);
+
+        // (b) The CLI passes no never-called transport (P1-40: on the parsed argument list, any formatting or naming).
         var program = StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
-        var built = System.Text.RegularExpressions.Regex.Matches(program, @"\bnew\s+RevitDeadlineTransport\s*\(").Count;
-        var cliArguments = CallArguments(program, "new RevitDeadlineTransport(");
-        check(built == 1 && cliArguments.Length == 5 && cliArguments[2] == "null" && cliArguments[3] == "revitOptions.ReadTimeout" && !cliArguments.Any(a => a.Contains("cutReads", StringComparison.Ordinal)),
+        var cliProblems = CliTransportProblems(program);
+        check(cliProblems.Length == 0,
             "P1-38 static: the CLI builds its one RevitDeadlineTransport with a null configured transport (cutReads true: never called) and its configured read timeout",
-            N(built) + " built; arguments: " + string.Join(" | ", cliArguments));
+            string.Join("; ", cliProblems));
+        const string CliCall = "new RevitDeadlineTransport(revitPipe!,revitPolicy,null,revitOptions.ReadTimeout,revitDeadline)";
+        var cliCleans = new (string Label, string Code)[]
+        {
+            ("today's compact call", "var t = all ? " + CliCall + " : other;\n"),
+            ("one argument per line", "var t = new RevitDeadlineTransport(\n    revitPipe!,\n    revitPolicy,\n    null,\n    revitOptions.ReadTimeout,\n    revitDeadline);\n"),
+            ("named transport and read timeout", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, transport: null, readTimeout: revitOptions.ReadTimeout, deadline: revitDeadline);\n"),
+            ("reordered named arguments", "var t = new RevitDeadlineTransport(pipeName: revitPipe!, deadline: revitDeadline, transport: null, policy: revitPolicy, readTimeout: revitOptions . ReadTimeout);\n"),
+            ("qualified type and a space before '('", "var t = new Bim.Cli.RevitDeadlineTransport (revitPipe!, revitPolicy, null, revitOptions.ReadTimeout, revitDeadline);\n"),
+            ("a comment inside the list", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, /* never called */ null, revitOptions.ReadTimeout, // read\n    revitDeadline);\n"),
+        };
+        foreach (var (label, code) in cliCleans)
+        {
+            var problems = CliTransportProblems(StripCode(code));
+            check(problems.Length == 0, "P1-40 CLI pin self-test: " + label + " passes", string.Join("; ", problems));
+        }
+        var cliMutants = new (string Label, string Code)[]
+        {
+            ("named configured transport", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, transport: revitOptions.Transport, readTimeout: revitOptions.ReadTimeout, deadline: revitDeadline);\n"),
+            ("positional configured transport", "var t = new RevitDeadlineTransport(revitPipe!,revitPolicy,revitOptions.Transport,revitOptions.ReadTimeout,revitDeadline);\n"),
+            ("cutReads false", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, null, revitOptions.ReadTimeout, revitDeadline, cutReads: false);\n"),
+            ("another named read timeout", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, null, deadline: revitDeadline, readTimeout: TimeSpan.FromSeconds(1));\n"),
+            ("a \"null\" string", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, \"null\", revitOptions.ReadTimeout, revitDeadline);\n"),
+            ("the call only in a comment", "// " + CliCall + "\nvar t = new RevitServiceTransport(revitPipe!, revitPolicy, revitOptions.Transport);\n"),
+            ("two constructions", "var t = " + CliCall + ";\nvar u = " + CliCall + ";\n"),
+        };
+        foreach (var (label, code) in cliMutants)
+            check(CliTransportProblems(StripCode(code)).Length > 0, "P1-40 CLI pin self-test: " + label + " is flagged", "no problem flagged");
         const string TidyPipe = "bim-agentic-os-2025-3838";
         string? Paging(string pipe, string line) => PageReply(line, model);
         var waits = new List<(TimeSpan Connect, TimeSpan Read)>();
@@ -1152,6 +1260,31 @@ internal static class RevitCommandDeadlineTests
         catch (Exception error) { refused = error; }
         check(refused is ArgumentNullException { ParamName: "transport" }, "P1-38 cutReads false (pages through the configured transport) refuses a null transport when built (ArgumentNullException transport)",
             refused is null ? "no exception" : refused.GetType().Name + ": " + refused.Message);
+
+        // P1-40: McpServer's never-called transport. With cutReads true Send never calls its configured transport: its one
+        // use is the cutReads false return (static), and a cutReads true listing whose configured transport counts and
+        // throws is byte-equal to RevitServiceTransport paging with no call. McpServer.RevitCallAll passes cutReads:
+        // realPipe, so it passes a configured transport only when realPipe is false (realPipe ? null : revitTransport).
+        var deadlineCode = StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "RevitDeadlineTransport.cs")).ReplaceLineEndings("\n"));
+        var transportUses = (MemberBody(deadlineCode, "public string? Send(") ?? "").Split('\n')
+            .Where(line => System.Text.RegularExpressions.Regex.IsMatch(line, @"\btransport\b")).Select(line => line.Trim()).ToArray();
+        check(transportUses.Length == 1 && transportUses[0].StartsWith("if (!cutReads) return ", StringComparison.Ordinal),
+            "P1-40 static: RevitDeadlineTransport.Send uses its configured transport only on the cutReads false return", string.Join(" | ", transportUses));
+        var configuredCalls = 0;
+        string? Configured(string pipe, string line) { configuredCalls++; throw new InvalidOperationException("the configured transport was called"); }
+        var spied = new Bim.Cli.RevitDeadlineTransport(TidyPipe, RevitCommandPolicy.None, Configured, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), () => clock,
+            listing: Bim.Cli.RevitDeadlineTransport.McpListing, connectThenRead: (_, _) => Paging);
+        var spiedListing = RevitElementQueryPaging.All(wallsText, spied).ToJson();
+        check(configuredCalls == 0 && spiedListing == direct,
+            "P1-40 a cutReads true deadline transport never calls its configured transport (MCP listing, byte-equal to RevitServiceTransport paging)",
+            N(configuredCalls) + " configured calls; " + (spiedListing.Length > 200 ? spiedListing[..200] : spiedListing));
+        var mcpCalls = DeadlineTransportCalls(StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")).ReplaceLineEndings("\n")));
+        var mcpArguments = mcpCalls.Count == 1 ? mcpCalls[0] : null;
+        var mcpTransport = mcpArguments is not null && mcpArguments.TryGetValue("transport", out var mcpT) ? mcpT : null;
+        var mcpCut = mcpArguments is not null && mcpArguments.TryGetValue("cutReads", out var mcpC) ? mcpC : null;
+        check(mcpCut == "realPipe" && mcpTransport == "realPipe?null:revitTransport",
+            "P1-40 static: McpServer.RevitCallAll passes no configured transport when cutReads (realPipe) is true (realPipe ? null : revitTransport)",
+            N(mcpCalls.Count) + " constructions; transport " + (mcpTransport ?? "absent") + "; cutReads " + (mcpCut ?? "absent"));
 
         // (c) The Legacy adapter's unmodelled cut connect.
         var recorded = new List<(bool Ok, string Name, string Detail)>();
