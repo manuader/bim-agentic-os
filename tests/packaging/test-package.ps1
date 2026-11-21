@@ -1915,13 +1915,25 @@ try {
             try { $deps = [IO.File]::ReadAllText($File) | ConvertFrom-Json -NoEnumerate } catch { return $null }
             if (!(Test-P431Object $deps) -or $null -eq $deps.PSObject.Properties['libraries'] -or !(Test-P431Object $deps.libraries)) { return $null }
             $escaping = [Collections.Generic.List[string]]::new()
+            if ($null -ne $deps.PSObject.Properties['targets'] -and (Test-P431Object $deps.targets)) {
+                foreach ($target in $deps.targets.PSObject.Properties) {
+                    if (!(Test-P431Object $target.Value)) { continue }
+                    foreach ($entry in $target.Value.PSObject.Properties) {
+                        if (!(Test-P431Object $entry.Value)) { continue }
+                        $runtime = $entry.Value.PSObject.Properties['runtime']
+                        if ($null -eq $runtime -or !(Test-P431Object $runtime.Value)) { continue }
+                        foreach ($asset in $runtime.Value.PSObject.Properties) { if ($null -eq (ConvertTo-P431Path $asset.Name)) { $escaping.Add("runtime $($entry.Name) escaping path $($asset.Name)") } }
+                    }
+                }
+            }
             return , $escaping
         }
         # P4-33: removes a P4-32 case folder through Remove-PackageCaseDirectory and records a left-behind folder as a named
         # failure in $Into (not only a cleanup warning); $Remove stands in for the remover in the self-test.
         function Add-P433CleanupFailure($Into, [string]$Label, [string]$Path, [scriptblock]$Remove) {
             if ($null -eq $Remove) { $Remove = { param($l, $p) Remove-PackageCaseDirectory $l $p } }
-            [void](& $Remove $Label $Path)
+            $warning = & $Remove $Label $Path
+            if ($warning) { $Into.Add("P4-33: cleanup failed: $warning") }
         }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
