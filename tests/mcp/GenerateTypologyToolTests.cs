@@ -25,6 +25,8 @@ using Bim.Mcp;
 //      of its own; the MCP projects link the CLI source.
 //   7. P7-19: "include":[] with a non-empty skills list is the tool text, CLI file and CLI stdout of the run without include;
 //      a duplicate include member stays request_invalid (request.include) in three member orders.
+//   8. P3-32: with a throwing or disposed stderr on Document's catch-all (and InternalRefusal) the in-process tool is
+//      isError with the typed generate_typology_internal_error line, the diagnostic attempted once, nothing escapes.
 internal static class GenerateTypologyToolTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -301,6 +303,135 @@ internal static class GenerateTypologyToolTests
                 .Any(include => string.Equals(Path.GetFullPath(Path.Combine(projectDir, include!.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar))), shared,
                     OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
             Check(linked, Path.GetFileName(project) + " compiles interfaces/cli/GenerateTypologyCommand.cs (shared source, not a copy)");
+        }
+
+        // ---- 8. P3-32: a throwing stderr on Document's catch-all, through the in-process server ----
+        ThrowingStderrRun(work, call, check);
+    }
+
+    // P3-32: the in-process McpServer (Program.cs's server.Handle) runs generate_typology while Console.Error throws on the
+    // diagnostic. Document's own catch-all (UnguardedWorkProbe, the parse / pack-load stretch) and the guarded block's
+    // InternalRefusal (GuardedWorkProbe) are forced with stderr a RejectingWriter (IOException, non-IO
+    // InvalidOperationException, ObjectDisposedException; attempts counted) or a disposed StringWriter: the response is a
+    // tools/call result (no JSON-RPC error, nothing escapes Handle), isError true, the text exactly the typed
+    // generate_typology_internal_error line (IntentPlan.Internal("generate-typology", e).Line, never McpServer's generic
+    // Failed carrying the stderr or original exception message), the diagnostic attempted exactly once, stdout never
+    // written, the exit code untouched; Console and both seams restored in finally. Controls: an accepting stderr gets the
+    // diagnostic once with the same text; with the seams reset the next call answers the P5-12 pinned success bytes.
+    static void ThrowingStderrRun(string work, Func<string, JsonObject> call, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "generate_typology P3-32 throwing stderr: " + name);
+        static string Short(string text) => text.Length > 400 ? text[..400] + "..." : text;
+        static string Hex(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
+        static string? TextOf(JsonObject? response) => response?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+        static bool? IsErrorOf(JsonObject? response) => response?["result"]?["isError"]?.GetValue<bool>();
+        var nl = Environment.NewLine;
+        var scratch = Path.Combine(work, "p3-32-generate-typology-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(scratch);
+        try
+        {
+            var requestPath = Path.Combine(scratch, "request.json");
+            File.WriteAllText(requestPath, "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}", new UTF8Encoding(false));
+            var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 32, ["method"] = "tools/call",
+                ["params"] = new JsonObject { ["name"] = GenerateTypologyTool.Name, ["arguments"] = new JsonObject { [GenerateTypologyTool.RequestParameter] = requestPath } } }.ToJsonString();
+            bool SeamsNull() => Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe is null && Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe is null;
+            Check(SeamsNull(), "fixture: the generate_typology unguarded and guarded test seams are null unless a test sets them");
+            var baseline = call(line);
+            Check(IsErrorOf(baseline) == false && TextOf(baseline) is { } baseText && Hex(baseText) == PinnedAcceptedSha256,
+                "fixture: with the seams unset the tool answers the P5-12 pinned document | " + Short(TextOf(baseline) ?? baseline.ToJsonString()));
+
+            var failure = new InvalidOperationException("boom generate_typology P3-32 original");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_typology_internal_error\"}"
+                && envelope.Diagnostic == "generate-typology internal error: System.InvalidOperationException: boom generate_typology P3-32 original",
+                "fixture: IntentPlan.Internal(\"generate-typology\", e) is the literal typed line and diagnostic | " + envelope.Line + " / " + envelope.Diagnostic);
+            const string StderrMessage = "p3-32 stderr rejects the diagnostic";
+
+            // One tools/call with Console.Out / Console.Error replaced and the seams set; all restored in finally.
+            (JsonObject? Response, Exception? Escaped, string Stdout, int Exit, bool Restored) Forced(TextWriter stderr, Action? before, Action? guardedWork)
+            {
+                var stdout = new StringWriter(CultureInfo.InvariantCulture);
+                var savedOut = Console.Out;
+                var savedErr = Console.Error;
+                var savedExit = Environment.ExitCode;
+                JsonObject? response = null;
+                Exception? escaped = null;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(stderr);
+                    Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = before;
+                    Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe = guardedWork;
+                    try { response = call(line); }
+                    catch (Exception error) { escaped = error; }
+                    finally
+                    {
+                        Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = null;
+                        Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe = null;
+                    }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(savedOut);
+                    Console.SetError(savedErr);
+                    Environment.ExitCode = savedExit;
+                }
+                var restored = ReferenceEquals(Console.Out, savedOut) && ReferenceEquals(Console.Error, savedErr) && Environment.ExitCode == savedExit && SeamsNull();
+                return (response, escaped, stdout.ToString(), exit - savedExit, restored);
+            }
+            string D((JsonObject? Response, Exception? Escaped, string Stdout, int Exit, bool Restored) r) =>
+                "response " + Short(r.Response?.ToJsonString() ?? "<none>") + " escaped " + (r.Escaped is { } e ? e.GetType().FullName + ": " + e.Message : "nothing")
+                + " stdout [" + Short(r.Stdout) + "] exit delta " + r.Exit.ToString(CultureInfo.InvariantCulture) + " restored " + r.Restored;
+            // A tools/call result (not a JSON-RPC error), isError, exactly the typed line, no exception message in it.
+            bool Typed((JsonObject? Response, Exception? Escaped, string Stdout, int Exit, bool Restored) r) =>
+                r.Escaped is null && r.Restored && r.Exit == 0 && r.Stdout.Length == 0 && r.Response is { } response && response["error"] is null
+                && IsErrorOf(response) == true && TextOf(response) is { } text && text == envelope.Line
+                && !text.Contains(StderrMessage, StringComparison.Ordinal) && !text.Contains(failure.Message, StringComparison.Ordinal);
+
+            var paths = new (string Label, Action? Before, Action? GuardedWork)[]
+            {
+                ("Document's own catch-all (UnguardedWorkProbe)", () => throw failure, null),
+                ("the guarded block's InternalRefusal (GuardedWorkProbe)", null, () => throw failure),
+            };
+            foreach (var (path, before, guardedWork) in paths)
+            {
+                {
+                    var accepting = new StringWriter(CultureInfo.InvariantCulture);
+                    var r = Forced(accepting, before, guardedWork);
+                    Check(Typed(r) && accepting.ToString() == envelope.Diagnostic + nl,
+                        "control: " + path + " with an accepting stderr is isError with the typed internal-error line, the diagnostic written once | " + D(r) + " stderr [" + Short(accepting.ToString()) + "]");
+                }
+                foreach (var (kind, make) in new (string, Func<Exception>)[]
+                {
+                    ("IOException", () => new IOException(StderrMessage)),
+                    ("InvalidOperationException", () => new InvalidOperationException(StderrMessage)),
+                    ("ObjectDisposedException", () => new ObjectDisposedException(StderrMessage)),
+                })
+                {
+                    var rejecting = new RejectingWriter(make());
+                    var r = Forced(rejecting, before, guardedWork);
+                    Check(Typed(r) && rejecting.Attempts == 1,
+                        path + " + a stderr throwing " + kind + " on the diagnostic: nothing escapes McpServer, isError with the typed internal-error line (no exception message), the diagnostic attempted once, stdout never written, exit untouched | "
+                        + D(r) + " stderr attempts " + rejecting.Attempts.ToString(CultureInfo.InvariantCulture));
+                }
+                {
+                    var closed = new StringWriter(CultureInfo.InvariantCulture);
+                    closed.Dispose();
+                    var r = Forced(closed, before, guardedWork);
+                    Check(Typed(r), path + " + a disposed StringWriter as stderr: nothing escapes McpServer, isError with the typed internal-error line, stdout never written, exit untouched | " + D(r));
+                }
+            }
+
+            var after = call(line);
+            Check(SeamsNull() && IsErrorOf(after) == false && TextOf(after) is { } afterText && afterText == TextOf(baseline) && Hex(afterText) == PinnedAcceptedSha256,
+                "the seams are reset: the next call answers the unchanged pinned success bytes | " + Short(TextOf(after) ?? after.ToJsonString()));
+        }
+        finally
+        {
+            try { Directory.Delete(scratch, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
     }
 }
