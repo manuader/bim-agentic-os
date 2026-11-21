@@ -428,6 +428,9 @@ public sealed class McpServer
         try
         {
             if (line.Length > MaxLineChars) return Error(null, InvalidRequest, "request_too_large");
+            // P10-36: a line holding an unpaired surrogate char (raw, not a \u escape) is not JSON text and cannot be
+            // transcoded for the parser (which threw, giving internal_error).
+            if (!IsText(line)) return Error(null, ParseError, "parse_error: line is not valid text");
             JsonDocument document;
             try { document = JsonDocument.Parse(line); }
             catch (JsonException) { return Error(null, ParseError, "parse_error"); }
@@ -506,6 +509,10 @@ public sealed class McpServer
         if (!hasId) return null;
         JsonElement? parameters = null;
         if (root.TryGetProperty("params", out var paramsElement)) parameters = paramsElement;
+        // P10-36: the params member names of the other known methods are checked as text like tools/call's (P10-34);
+        // their params are otherwise unread, so _meta content is never compared or echoed.
+        if (method is "initialize" or "ping" or "tools/list" && parameters is { ValueKind: JsonValueKind.Object } other && !NamesAreText(other))
+            return Error(id, InvalidParams, "invalid_params: params member name is not valid text");
         try
         {
             switch (method)
