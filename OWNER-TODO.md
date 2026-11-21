@@ -404,3 +404,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay260 (2026-11-21, cloud)
 - Nothing new for you: P2-38, P3-29, P4-32 merged (main c38431d, CI green; relay259 stopped mid-run, relay260 took over its stale lock and finished its branches). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` on Windows.
+
+## Relay261 (2026-11-21, cloud)
+- P3-32, P10-35, P6-34 merged (main d537bd4, CI green). New optional decision (P6-34): the cad-brief does not list reader warnings for dropped tilted inserts. Proposed opt-in BriefExtractOptions.IncludeReaderWarnings + `--include-reader-warnings` (default off, existing bytes unchanged) is written up in docs/contracts/module-contracts.md (cad-brief section). Say "implement" or "leave" in OWNER.md.
+- Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
