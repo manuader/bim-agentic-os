@@ -207,33 +207,16 @@ internal static class PackageLayoutPackTests
                 "the package has VERSION, manifest.json and skills/ (CABA, typology, compact-modern) and no global.json above it", package);
             // P10-18: the shipped Bim.* assemblies are first-party on every OS (macOS included): project entries of each
             // folder's deps.json, and NOASSERTION sbom.json lines without a "package" field.
+            // P4-32: a missing, unreadable or malformed deps.json/sbom.json is a named failure of these checks, never an exception.
             foreach (var (depsFolder, depsEntry) in new[] { ("cli", "Bim.Cli"), ("mcp", "Bim.Mcp") })
             {
-                var depsPath = Path.Combine(package, depsFolder, depsEntry + ".deps.json");
-                var notProject = new List<string>();
-                if (File.Exists(depsPath))
-                {
-                    using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
-                    if (depsDocument.RootElement.ValueKind != JsonValueKind.Object || !depsDocument.RootElement.TryGetProperty("libraries", out var depsLibraries) || depsLibraries.ValueKind != JsonValueKind.Object)
-                        notProject.Add("<no libraries object>");
-                    else foreach (var depsLibrary in depsLibraries.EnumerateObject())
-                        if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (depsLibrary.Value.ValueKind != JsonValueKind.Object || !depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.ValueKind != JsonValueKind.String || depsType.GetString() != "project"))
-                            notProject.Add(depsLibrary.Name);
-                }
-                Check(File.Exists(depsPath) && notProject.Count == 0, "P10-18: " + depsFolder + "/" + depsEntry + ".deps.json lists every Bim.* library as a project", string.Join(", ", notProject));
+                var notProject = DepsNotProject(Path.Combine(package, depsFolder, depsEntry + ".deps.json"));
+                Check(notProject.Count == 0, "P10-18: " + depsFolder + "/" + depsEntry + ".deps.json lists every Bim.* library as a project", string.Join(", ", notProject));
             }
-            var sbomPath = Path.Combine(package, "sbom.json");
-            var bimLines = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-            using (var sbomDocument = JsonDocument.Parse(File.Exists(sbomPath) ? File.ReadAllText(sbomPath) : "{\"assemblies\":[]}"))
-                if (sbomDocument.RootElement.ValueKind == JsonValueKind.Object && sbomDocument.RootElement.TryGetProperty("assemblies", out var sbomAssemblies) && sbomAssemblies.ValueKind == JsonValueKind.Array)
-                    foreach (var sbomAssembly in sbomAssemblies.EnumerateArray())
-                        if (sbomAssembly.ValueKind == JsonValueKind.Object && sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.ValueKind == JsonValueKind.String && sbomPathValue.GetString() is { } shipped
-                            && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
-                            bimLines[shipped] = sbomAssembly.Clone();
             var requiredFirstParty = new[] { "cli/Bim.Cad.dll", "cli/Bim.Cli.dll", "cli/Bim.Core.dll", "cli/Bim.Evaluation.dll", "cli/Bim.Generative.dll", "cli/Bim.Gltf.dll", "cli/Bim.Ifc.Compiler.dll", "mcp/Bim.Core.dll", "mcp/Bim.Generative.dll", "mcp/Bim.Mcp.dll" };
-            var notFirstParty = requiredFirstParty.Where(required => !bimLines.ContainsKey(required))
-                .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToArray();
-            Check(notFirstParty.Length == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
+            var notFirstParty = SbomNotFirstParty(Path.Combine(package, "sbom.json"), requiredFirstParty);
+            Check(notFirstParty.Count == 0, "P10-18: sbom.json lists every cli/ and mcp/ Bim.* assembly (Cad, Cli, Core, Evaluation, Generative, Gltf, Ifc.Compiler; Core, Generative, Mcp) first-party: NOASSERTION without a package", string.Join(", ", notFirstParty));
+            P1018SelfTest(package, caseRoot, requiredFirstParty, Check);
             McpWithoutGltf(package, caseRoot, Check);
 
             // ---- 2. the same inputs through the repository CLI and the packaged CLI ----
@@ -463,6 +446,97 @@ internal static class PackageLayoutPackTests
         finally { try { if (Directory.Exists(caseRoot)) Directory.Delete(caseRoot, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
     }
 
+    // P10-18: every Bim.* library of a deps.json that is not a project entry ("<no libraries object>" when there is none).
+    // P4-32: a missing file, an unreadable file or malformed JSON is the named first item, never an exception.
+    static List<string> DepsNotProject(string depsPath)
+    {
+        var name = Path.GetFileName(depsPath);
+        if (!File.Exists(depsPath)) return ["<" + name + " missing>"];
+        try
+        {
+            using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
+            var notProject = new List<string>();
+            if (depsDocument.RootElement.ValueKind != JsonValueKind.Object || !depsDocument.RootElement.TryGetProperty("libraries", out var depsLibraries) || depsLibraries.ValueKind != JsonValueKind.Object)
+                notProject.Add("<no libraries object>");
+            else foreach (var depsLibrary in depsLibraries.EnumerateObject())
+                if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (depsLibrary.Value.ValueKind != JsonValueKind.Object || !depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.ValueKind != JsonValueKind.String || depsType.GetString() != "project"))
+                    notProject.Add(depsLibrary.Name);
+            return notProject;
+        }
+        catch (JsonException) { return ["<" + name + " malformed JSON>"]; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return ["<" + name + " unreadable: " + error.GetType().Name + ">"]; }
+    }
+
+    // P10-18: every required first-party assembly without an sbom.json line, then every cli/ or mcp/ Bim.* line that is not
+    // NOASSERTION without a package. P4-32: a missing file, an unreadable file or malformed JSON is the named first item
+    // (every required assembly then follows as missing), never an exception.
+    static List<string> SbomNotFirstParty(string sbomPath, string[] required)
+    {
+        if (!File.Exists(sbomPath)) return ["<sbom.json missing>", .. required];
+        var bimLines = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
+        try
+        {
+            using var sbomDocument = JsonDocument.Parse(File.ReadAllText(sbomPath));
+            if (sbomDocument.RootElement.ValueKind == JsonValueKind.Object && sbomDocument.RootElement.TryGetProperty("assemblies", out var sbomAssemblies) && sbomAssemblies.ValueKind == JsonValueKind.Array)
+                foreach (var sbomAssembly in sbomAssemblies.EnumerateArray())
+                    if (sbomAssembly.ValueKind == JsonValueKind.Object && sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.ValueKind == JsonValueKind.String && sbomPathValue.GetString() is { } shipped
+                        && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
+                        bimLines[shipped] = sbomAssembly.Clone();
+        }
+        catch (JsonException) { return ["<sbom.json malformed JSON>", .. required]; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return ["<sbom.json unreadable: " + error.GetType().Name + ">", .. required]; }
+        return required.Where(item => !bimLines.ContainsKey(item))
+            .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToList();
+    }
+
+    // P4-32: the P10-18 readers on a copy of cli/Bim.Cli.deps.json, mcp/Bim.Mcp.deps.json and sbom.json under the case root
+    // (never the package): the clean copy names nothing; a malformed ("{"), non-JSON or missing file is named, never thrown.
+    static void P1018SelfTest(string package, string caseRoot, string[] requiredFirstParty, Action<bool, string, string> check)
+    {
+        void Check32(bool condition, string name, string detail) => check(condition, "P4-32: " + name, detail);
+        var copy = Path.Combine(caseRoot, "p4-32-p10-18-copy");
+        try
+        {
+            var cliDeps = Path.Combine(copy, "cli", "Bim.Cli.deps.json");
+            var mcpDeps = Path.Combine(copy, "mcp", "Bim.Mcp.deps.json");
+            var sbom = Path.Combine(copy, "sbom.json");
+            foreach (var destination in new[] { cliDeps, mcpDeps, sbom })
+            {
+                var source = Path.Combine(package, Path.GetRelativePath(copy, destination));
+                if (!File.Exists(source)) continue;
+                Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+                File.Copy(source, destination);
+            }
+            var clean = DepsNotProject(cliDeps).Concat(DepsNotProject(mcpDeps)).Concat(SbomNotFirstParty(sbom, requiredFirstParty)).ToList();
+            Check32(clean.Count == 0, "P10-18 self-test: the copied cli/mcp deps.json and sbom.json read like the package (nothing named)", "[" + string.Join(", ", clean) + "]");
+            foreach (var (target, read) in new (string Target, Func<List<string>> Read)[]
+                { (cliDeps, () => DepsNotProject(cliDeps)), (mcpDeps, () => DepsNotProject(mcpDeps)), (sbom, () => SbomNotFirstParty(sbom, requiredFirstParty)) })
+            {
+                var name = Path.GetFileName(target);
+                var original = File.Exists(target) ? File.ReadAllBytes(target) : null;
+                foreach (var (label, content, expected) in new (string Label, string? Content, string Expected)[]
+                    { ("malformed ({)", "{", "<" + name + " malformed JSON>"), ("non-JSON", "not json", "<" + name + " malformed JSON>"), ("missing", null, "<" + name + " missing>") })
+                {
+                    List<string>? got = null;
+                    string? escaped = null;
+                    try
+                    {
+                        if (content is null) File.Delete(target);
+                        else File.WriteAllText(target, content);
+                        got = read();
+                    }
+                    catch (Exception error) { escaped = error.GetType().Name + ": " + error.Message; }
+                    finally { if (original is not null) File.WriteAllBytes(target, original); }
+                    var shown = escaped ?? (got is null ? "<null>" : "[" + string.Join(", ", got) + "]");
+                    Check32(escaped is null && got is not null && got.Count > 0 && got[0] == expected,
+                        "P10-18 self-test: a " + label + " " + name + " is the named failure " + expected + ", never an exception", shown);
+                }
+            }
+        }
+        catch (Exception error) { Check32(false, "P10-18 self-tests run without an unhandled exception", error.GetType().Name + ": " + error.Message); }
+        finally { try { if (Directory.Exists(copy)) Directory.Delete(copy, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+    }
+
     // P4-30: the package scripts/package.ps1 built ships no Bim.Gltf in mcp/ (P4-29 dropped the MCP reference): no
     // mcp/**/Bim.Gltf.* file, no mcp/ Bim.Gltf sbom.json assembly line and no mcp/ Bim.Gltf manifest.json file line, while
     // cli/Bim.Gltf.dll, its sbom line and its manifest line (both the file's sha256) stay (positive control). Fail-closed
@@ -475,23 +549,28 @@ internal static class PackageLayoutPackTests
     // runtime asset (cli/Bim.Cli.deps.json names the library: control). A missing cli/Bim.Gltf.dll, a missing or malformed
     // sbom/manifest/deps file or a missing layout are named check failures, never an exception (self-tested by running
     // the whole check, self-tests included, on a broken copy); a changed package names its first differing fingerprint line.
+    // P4-32: a ".." that climbs above the package root is no longer clamped: such an sbom/manifest path is a named
+    // escaping-path failure (and neither a leak nor a control line); an extensionless Bim.Gltf runtime asset in a deps.json
+    // is caught like Bim.Gltf.dll (self-tested with planted lines and a planted asset).
     static void McpWithoutGltf(string package, string caseRoot, Action<bool, string, string> check, int depth = 0)
     {
         void Check(bool condition, string name, string detail) => check(condition, "P4-30: " + name, detail);
         void Check31(bool condition, string name, string detail) => check(condition, "P4-31: " + name, detail);
+        void Check32(bool condition, string name, string detail) => check(condition, "P4-32: " + name, detail);
         static string? Sha(string file)
         {
             try { return Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(file))).ToLowerInvariant(); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
         }
-        // A package-relative path with \ as /, empty and "." segments dropped and ".." resolved (never above the root).
-        static string Normal(string path)
+        // A package-relative path with \ as /, empty and "." segments dropped and ".." resolved; null when a ".." climbs
+        // above the package root (P4-32: reported as an escaping path, never clamped).
+        static string? Normal(string path)
         {
             var segments = new List<string>();
             foreach (var segment in path.Replace('\\', '/').Split('/'))
             {
                 if (segment.Length == 0 || segment == ".") continue;
-                if (segment == "..") { if (segments.Count > 0) segments.RemoveAt(segments.Count - 1); continue; }
+                if (segment == "..") { if (segments.Count == 0) return null; segments.RemoveAt(segments.Count - 1); continue; }
                 segments.Add(segment);
             }
             return string.Join("/", segments);
@@ -499,6 +578,7 @@ internal static class PackageLayoutPackTests
         static bool IsMcpGltf(string relative)
         {
             var normal = Normal(relative);
+            if (normal is null) return false;
             var name = normal[(normal.LastIndexOf('/') + 1)..];
             return normal.StartsWith("mcp/", StringComparison.OrdinalIgnoreCase)
                 && (name.Equals("Bim.Gltf", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase));
@@ -546,6 +626,18 @@ internal static class PackageLayoutPackTests
             }
             return leaks;
         }
+        // P4-32: every sbom.json/manifest.json path whose ".." climbs above the package root; an unreadable file is named too.
+        static List<string> Escaping(string layout)
+        {
+            var escaping = new List<string>();
+            foreach (var (name, property) in new[] { ("sbom.json", "assemblies"), ("manifest.json", "files") })
+            {
+                var entries = Entries(Path.Combine(layout, name), property);
+                if (entries is null) escaping.Add("<" + name + " " + property + " unreadable>");
+                else escaping.AddRange(entries.Where(entry => Normal(entry.Path) is null).Select(entry => name + " escaping path " + entry.Path));
+            }
+            return escaping;
+        }
         // The positive control: cli/Bim.Gltf.dll with exactly one sbom line and one manifest line carrying its sha256 (one
         // verbatim cli/Bim.Gltf.dll line, and no other line that normalises to it).
         static List<string> ControlMissing(string layout)
@@ -590,8 +682,10 @@ internal static class PackageLayoutPackTests
                             if (entry.Value.TryGetProperty("runtime", out var runtime) && runtime.ValueKind == JsonValueKind.Object)
                                 foreach (var asset in runtime.EnumerateObject())
                                 {
-                                    var assetName = Normal(asset.Name);
-                                    if (assetName[(assetName.LastIndexOf('/') + 1)..].StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase)) found.Add("runtime " + entry.Name + " " + asset.Name);
+                                    // An escaping asset name is still matched on its last segment (P4-32).
+                                    var assetName = Normal(asset.Name) ?? asset.Name.Replace('\\', '/');
+                                    var assetFile = assetName[(assetName.LastIndexOf('/') + 1)..];
+                                    if (assetFile.Equals("Bim.Gltf", StringComparison.OrdinalIgnoreCase) || assetFile.StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase)) found.Add("runtime " + entry.Name + " " + asset.Name);
                                 }
                         }
                 return found;
@@ -627,6 +721,8 @@ internal static class PackageLayoutPackTests
         Check(leaks.Count == 0, "the package scripts/package.ps1 built has no mcp/ Bim.Gltf file, sbom.json line or manifest.json line", Show(leaks));
         var control = ControlMissing(package);
         Check(control.Count == 0, "positive control: the package keeps cli/Bim.Gltf.dll with one sbom.json and one manifest.json line carrying its sha256", Show(control));
+        var escapingPaths = Escaping(package);
+        Check32(escapingPaths.Count == 0, "no sbom.json or manifest.json path of the package climbs above its root (an escaping .. is a named failure, not clamped)", Show(escapingPaths));
         var mcpDeps = GltfInDeps(Path.Combine(package, "mcp", "Bim.Mcp.deps.json"));
         Check31(mcpDeps is { Count: 0 }, "the packaged mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime asset", Missing(mcpDeps, "mcp/Bim.Mcp.deps.json"));
         var cliDeps = GltfInDeps(Path.Combine(package, "cli", "Bim.Cli.deps.json"));
@@ -652,6 +748,8 @@ internal static class PackageLayoutPackTests
                 var copied = Leaks(copy);
                 var copiedControl = ControlMissing(copy);
                 Check(copied.Count == 0 && copiedControl.Count == 0, "self-test: the unplanted copy of the layout reads like the package (no leak, control present)", Show(copied) + " control " + Show(copiedControl));
+                var copiedEscaping = Escaping(copy);
+                Check32(copiedEscaping.Count == 0, "self-test: the unplanted copy of the layout has no escaping sbom.json/manifest.json path", Show(copiedEscaping));
 
                 // Planted files: canonical, extensionless (in a subfolder) and upper-case names are caught alone; a longer
                 // Bim.GltfTools name is no leak.
@@ -698,9 +796,25 @@ internal static class PackageLayoutPackTests
                         }
                         else Check31(plantedLine.Count == 0, "self-test: a planted " + planted + " " + name + " line is no leak (not Bim.Gltf)", Show(plantedLine));
                     }
+                    // P4-32: a ".." above the package root is a named escaping path, not clamped into the layout: no leak, the
+                    // control unchanged (an escaping cli/Bim.Gltf.dll spelling is no second control line), only it named.
+                    foreach (var planted in new[] { "../mcp/Bim.Gltf.dll", "mcp/../../mcp/Bim.Gltf.dll", "..\\mcp\\Bim.Gltf", "cli/../../cli/Bim.Gltf.dll", "../other/Other.dll" })
+                    {
+                        var edited = (JsonObject)node!.DeepClone();
+                        edited[property]!.AsArray().Add(new JsonObject { ["path"] = planted, ["sha256"] = "00" });
+                        File.WriteAllText(path, edited.ToJsonString(), new UTF8Encoding(false));
+                        var escapingLine = Escaping(copy);
+                        var escapingLeaks = Leaks(copy);
+                        var escapingControl = ControlMissing(copy);
+                        Check32(Exactly(escapingLine, name + " escaping path " + planted) && escapingLeaks.Count == 0 && escapingControl.Count == 0,
+                            "self-test: a planted " + planted + " " + name + " line climbing above the package root is a named escaping path (and only it), no leak, control unchanged",
+                            Show(escapingLine) + " leaks " + Show(escapingLeaks) + " control " + Show(escapingControl));
+                    }
                     File.WriteAllText(path, "{");
                     var unreadable = Leaks(copy);
                     Check(Exactly(unreadable, "<" + name + " " + property + " unreadable>"), "self-test: an unreadable " + name + " is a leak (fail-closed)", Show(unreadable));
+                    var unreadableEscaping = Escaping(copy);
+                    Check32(Exactly(unreadableEscaping, "<" + name + " " + property + " unreadable>"), "self-test: an unreadable " + name + " is a named escaping-path failure too (fail-closed)", Show(unreadableEscaping));
                     File.WriteAllBytes(path, original);
                 }
 
@@ -722,6 +836,9 @@ internal static class PackageLayoutPackTests
                         ("library", deps => deps["libraries"]!.AsObject()["Bim.Gltf/1.0.0"] = new JsonObject { ["type"] = "project" }, "library Bim.Gltf/1.0.0"),
                         ("dependency", deps => Entry(deps)["dependencies"] = new JsonObject { ["Bim.Gltf"] = "1.0.0" }, "dependency " + mcpTarget + " -> Bim.Gltf"),
                         ("runtime asset", deps => Entry(deps)["runtime"] = new JsonObject { ["lib/net8.0/Bim.Gltf.dll"] = new JsonObject() }, "runtime " + mcpTarget + " lib/net8.0/Bim.Gltf.dll"),
+                        // P4-32: an extensionless asset name, also behind a ".." above the root and in upper case.
+                        ("extensionless runtime asset", deps => Entry(deps)["runtime"] = new JsonObject { ["lib/net8.0/Bim.Gltf"] = new JsonObject() }, "runtime " + mcpTarget + " lib/net8.0/Bim.Gltf"),
+                        ("escaping extensionless runtime asset", deps => Entry(deps)["runtime"] = new JsonObject { ["../BIM.GLTF"] = new JsonObject() }, "runtime " + mcpTarget + " ../BIM.GLTF"),
                     };
                     JsonObject Entry(JsonObject deps) => deps["targets"]!.AsObject().Select(target => target.Value as JsonObject).First(target => target is not null)![entryKey]!.AsObject();
                     foreach (var (label, plant, expected) in plants)
@@ -730,8 +847,16 @@ internal static class PackageLayoutPackTests
                         plant(edited);
                         File.WriteAllText(depsCopy, edited.ToJsonString(), new UTF8Encoding(false));
                         var found = GltfInDeps(depsCopy);
-                        Check31(found is not null && Exactly(found, expected), "self-test: a planted Bim.Gltf " + label + " in mcp/Bim.Mcp.deps.json is caught (and only it)", Missing(found, "deps"));
+                        var holds = found is not null && Exactly(found, expected);
+                        if (label.Contains("extensionless", StringComparison.Ordinal)) Check32(holds, "self-test: a planted Bim.Gltf " + label + " in mcp/Bim.Mcp.deps.json is caught (and only it)", Missing(found, "deps"));
+                        else Check31(holds, "self-test: a planted Bim.Gltf " + label + " in mcp/Bim.Mcp.deps.json is caught (and only it)", Missing(found, "deps"));
                     }
+                    // A longer Bim.GltfTools runtime asset is no Bim.Gltf (control for the extensionless match).
+                    var toolsDeps = (JsonObject)depsNode!.DeepClone();
+                    Entry(toolsDeps)["runtime"] = new JsonObject { ["lib/net8.0/Bim.GltfTools"] = new JsonObject() };
+                    File.WriteAllText(depsCopy, toolsDeps.ToJsonString(), new UTF8Encoding(false));
+                    var toolsFound = GltfInDeps(depsCopy);
+                    Check32(toolsFound is { Count: 0 }, "self-test: a planted Bim.GltfTools runtime asset in mcp/Bim.Mcp.deps.json is no Bim.Gltf", Missing(toolsFound, "deps"));
                     File.WriteAllText(depsCopy, "{");
                     Check31(GltfInDeps(depsCopy) is null, "self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)", "");
                     File.Delete(depsCopy);
@@ -775,6 +900,7 @@ internal static class PackageLayoutPackTests
                     Check31(escaped is null, "self-test: the whole check on a broken copy (no cli/Bim.Gltf.dll, malformed sbom/manifest/deps) throws nothing", escaped ?? "");
                     Check31(Failed("P4-30: the package scripts/package.ps1 built has no mcp/", "<sbom.json assemblies unreadable>") && Failed("P4-30: the package scripts/package.ps1 built has no mcp/", "<manifest.json files unreadable>")
                         && Failed("P4-30: positive control", "file cli/Bim.Gltf.dll") && Failed("P4-31: the packaged mcp/Bim.Mcp.deps.json", "<mcp/Bim.Mcp.deps.json missing or unreadable>")
+                        && Failed("P4-32: no sbom.json or manifest.json path", "<sbom.json assemblies unreadable>")
                         && seen.Any(item => !item.Ok && item.Name.StartsWith("P4-31: self-test setup:", StringComparison.Ordinal))
                         && !seen.Any(item => item.Name.StartsWith("P4-31: self-tests run without an unhandled exception", StringComparison.Ordinal))
                         && seen.Any(item => item.Ok && item.Name.StartsWith("P4-30: the check never modifies", StringComparison.Ordinal)),
