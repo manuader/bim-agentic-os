@@ -416,7 +416,7 @@ internal static class RepeatedEnvelopeKeyTests
         foreach (var (label, line, expected) in cases)
         {
             var outcome = Safe(line);
-            measured.Add(label + " => " + outcome);
+            measured.Add(label + " => " + (outcome.Length > 160 ? outcome[..160] + "..." : outcome));
             if (outcome != expected) bad.Add(label + " (expected " + expected + ")");
         }
         Check(bad.Count == 0 && sends == 0,
