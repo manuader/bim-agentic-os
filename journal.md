@@ -2037,3 +2037,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay264
 - 2026-11-21T16:52:45Z lock taken (session_014pxpsR2muLACqvwvfwCcy7 relay264; was FREE, relay263 released 2026-11-21T16:13:03Z)
+- 2026-11-21T16:53:09Z picked P2-39 (phase 2), P3-33 (phase 3), P4-33 (phase 4) — oldest-touched (relay260); disjoint files (MirrorDriftLoopChecks.cs macOS second-value block; InternalErrorDelegationTests.cs P3-29 section; PackageLayoutPackTests.cs P4-32 helpers + test-package.ps1 P4-32 section). Workers spawned; background heartbeat every 20 min.
