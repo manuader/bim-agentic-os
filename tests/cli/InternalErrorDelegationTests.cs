@@ -427,6 +427,107 @@ internal static class InternalErrorDelegationTests
             }
         }
 
+        // P3-29: SeamHygiene for the Action<string> post-write delete seams and the listing seams, and every Action seam's
+        // read held outside any block lambda or anonymous method. PostWriteDeleteProbe (GenerateWrite.cs) and
+        // PostWriteRemovalProbe (GenerateTypologyWrite.cs) are `internal static Action<string>? <Name> { get; set; }` read
+        // once as the statement `<Name>?.Invoke(output);`; WorkProbe (JurisdictionResolveCommand.cs, its real file, not
+        // SkillListCommand.cs) and ListingWorkProbe (SkillListCommand.cs) are Action seams read once as `<Name>?.Invoke();`.
+        // Each is named under interfaces/ (comments stripped) only in its file, declared once without an initializer, read
+        // once, never assigned. A read moved into a block lambda (stored or passed) or an anonymous method is not the
+        // pinned read, for these four, the four P3-27 Action seams and GuardedWorkProbe (also checked here through
+        // SeamHygiene in its four verb files). The checker is first run on planted sources for every seam.
+        {
+            var seams = new (string Name, string File, string Type, string Read, bool Full)[]
+            {
+                ("PostWriteDeleteProbe", "interfaces/cli/GenerateWrite.cs", "Action<string>", "PostWriteDeleteProbe?.Invoke(output);", true),
+                ("PostWriteRemovalProbe", "interfaces/cli/GenerateTypologyWrite.cs", "Action<string>", "PostWriteRemovalProbe?.Invoke(output);", true),
+                ("WorkProbe", "interfaces/cli/JurisdictionResolveCommand.cs", "Action", "WorkProbe?.Invoke();", true),
+                ("ListingWorkProbe", "interfaces/cli/SkillListCommand.cs", "Action", "ListingWorkProbe?.Invoke();", true),
+                ("UnguardedStageProbe", "interfaces/cli/GenerateCommand.cs", "Action", "UnguardedStageProbe?.Invoke();", false),
+                ("UnguardedWorkProbe", "interfaces/cli/GenerateTypologyCommand.cs", "Action", "UnguardedWorkProbe?.Invoke();", false),
+                ("PostWriteProbe", "interfaces/cli/GenerateTypologyWrite.cs", "Action", "PostWriteProbe?.Invoke();", false),
+                ("PostWriteStageProbe", "interfaces/cli/GenerateWrite.cs", "Action", "PostWriteStageProbe?.Invoke();", false),
+                ("GuardedWorkProbe", "", "Action", "GuardedWorkProbe?.Invoke();", false),
+            };
+            var guardedFiles = new[] { "interfaces/cli/DocRealizedCommand.cs", "interfaces/cli/GenerateCommand.cs", "interfaces/cli/GenerateTypologyCommand.cs", "interfaces/cli/PlanLayoutsCommand.cs" };
+
+            var selfTests = 0;
+            foreach (var (seam, _, type, read, full) in seams)
+            {
+                var declaration = "internal static " + type + "? " + seam + " { get; set; }";
+                var good = declaration + "\nstatic void W() { try { " + read + " } catch (Exception error) { throw InternalRefusal(error); } }\n";
+                var cases = new List<(string Name, string Source, bool Clean)>
+                {
+                    ("the declaration plus the pinned read", good, true),
+                    ("an unrelated block lambda closed before the pinned read", declaration + "\nstatic void W() { Action unrelated = () => { }; try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the read moved into a stored block lambda (planted)", declaration + "\nstatic void W() { Action later = () => { " + read + " }; later(); }\n", false),
+                    ("the read nested in a block inside a stored block lambda", declaration + "\nstatic void W(bool ok) { Action later = () => { if (ok) { " + read + " } }; later(); }\n", false),
+                    ("the read moved into a stored anonymous method", declaration + "\nstatic void W() { Action later = delegate { " + read + " }; later(); }\n", false),
+                    ("the read moved into a stored anonymous method with parameters", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
+                    ("the read moved into a block lambda passed as an argument", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
+                    ("the read moved into a stored expression lambda", declaration + "\nstatic void W() { Action later = () => " + read + " later(); }\n", false),
+                };
+                if (full)
+                {
+                    var other = type == "Action" ? "internal static Action<string>? " + seam + " { get; set; }" : "internal static Action? " + seam + " { get; set; }";
+                    var bareRead = type == "Action" ? "var p = " + seam + "; p?.Invoke();" : "var p = " + seam + "; p?.Invoke(output);";
+                    cases.AddRange(new (string Name, string Source, bool Clean)[]
+                    {
+                        ("assignments only inside comments", good + "// " + seam + " = null;\n/* " + seam + " ??= x; */\n", true),
+                        ("a planted assignment", good + "static void T() { " + seam + " = null; }\n", false),
+                        ("a planted qualified assignment without spaces", good + "static void T() { Owner." + seam + "=null; }\n", false),
+                        ("a planted ??=", good + "static void T() { " + seam + " ??= default; }\n", false),
+                        ("a planted +=", good + "static void T() { " + seam + " += _ => { }; }\n", false),
+                        ("a planted parenthesized assignment", good + "static void T() { (" + seam + ") = null; }\n", false),
+                        ("a planted initializer", declaration + " = default;\nstatic void W() { " + read + " }\n", false),
+                        ("another declared type", other + "\nstatic void W() { " + read + " }\n", false),
+                        ("a second pinned read", good + "static void T() { " + read + " }\n", false),
+                        ("a read in another form", good + "static void T() { " + bareRead + " }\n", false),
+                        ("the read missing", declaration + "\n", false),
+                        ("the name inside a string literal", good + "const string S = \"" + seam + " = null;\";\n", false),
+                        ("an assignment in an interpolation hole (planted evasion)", good + "static void T() { var s = $\"{" + seam + " = null}\"; }\n", false),
+                        ("an assignment inside a raw string literal", good + "static void T() { var s = \"\"\"\n" + seam + " = null;\n\"\"\"; }\n", false),
+                        ("an assignment after a raw string holding '\"' and '//' (lexer gap)", good + "static void T() { var s = \"\"\" a \" // \"\"\"; " + seam + " = null; }\n", false),
+                        ("an assignment after @$\"\\\" + \"//\" (lexer gap)", good + "static void T() { var s = @$\"\\\" + \"//\"; " + seam + " = null; }\n", false),
+                    });
+                    if (type == "Action")
+                        cases.Add(("the read with an argument instead", good.Replace(read, seam + "?.Invoke(output);", StringComparison.Ordinal), false));
+                    else
+                        cases.AddRange(new (string Name, string Source, bool Clean)[]
+                        {
+                            ("the read without its argument instead", good.Replace(read, seam + "?.Invoke();", StringComparison.Ordinal), false),
+                            ("the read with another argument instead", good.Replace(read, seam + "?.Invoke(path);", StringComparison.Ordinal), false),
+                        });
+                }
+                foreach (var (name, source, clean) in cases)
+                {
+                    var uses = SeamHygiene(source, seam, type);
+                    Check(uses.Clean == clean, "P3-29 seam hygiene self-test: " + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
+                    selfTests++;
+                }
+            }
+            // 8 lambda/anonymous-method cases for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form
+            // cases for each of the four new seams.
+            Check(selfTests == 9 * 8 + 2 * (16 + 1) + 2 * (16 + 2), "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+
+            var sep = Path.DirectorySeparatorChar;
+            var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
+                .Where(f => !f.Contains(sep + "bin" + sep, StringComparison.Ordinal) && !f.Contains(sep + "obj" + sep, StringComparison.Ordinal))
+                .OrderBy(f => f, StringComparer.Ordinal)
+                .Select(f => (Name: Path.GetRelativePath(root, f).Replace('\\', '/'), Text: File.ReadAllText(f))).ToArray();
+            Check(sources.Length > 0, "P3-29 seam hygiene: interfaces/ code found from the repository root", root);
+            foreach (var (seam, file, type, read, _) in seams)
+            {
+                var expected = file.Length > 0 ? new[] { file } : guardedFiles;
+                var found = sources.Select(s => (s.Name, Uses: SeamHygiene(s.Text, seam, type))).Where(s => s.Uses.Mentions > 0).ToArray();
+                Check(found.Select(s => s.Name).OrderBy(n => n, StringComparer.Ordinal).SequenceEqual(expected),
+                    "P3-29 seam hygiene: " + seam + " appears under interfaces/ only in " + string.Join(", ", expected), string.Join(", ", found.Select(s => s.Name)));
+                foreach (var (name, uses) in found)
+                    Check(uses.Clean, "P3-29 seam hygiene: " + name + " declares " + seam + " once without an initializer, reads it once as [" + read
+                        + "] outside any block lambda or anonymous method, never assigns it", uses.Detail);
+            }
+        }
+
         // 2f. MCP audit_verify (AuditVerifyTool.Run, in process): the catch-all forced by an actor list whose enumeration
         // throws (after the path checks and the Count check, inside Actors); the Outcome and stderr equal the hand-written
         // pre-P3-20 catch body.
@@ -541,7 +642,8 @@ internal static class InternalErrorDelegationTests
 
     // P3-27: ProbeUses plus Hygiene for a remaining CLI test seam, given its name, declared type (Action or
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
-    // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start);
+    // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
+    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -555,10 +657,15 @@ internal static class InternalErrorDelegationTests
         {
             var before = code[..use.Index];
             var after = code[(use.Index + use.Length)..];
-            var read = type == "Action"
-                ? System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;")
-                : System.Text.RegularExpressions.Regex.IsMatch(before, @"\bAlternativeGenerator\s*\.\s*Generate\s*\([^;{}]*\bnew\s+AlternativeOptions\s*\([^;{}]*,\s*$")
-                    && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\)\s*\)\s*;");
+            var read = type switch
+            {
+                "Action" => System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;")
+                    && !InBlockLambda(code, use.Index),
+                "Action<string>" => System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;")
+                    && !InBlockLambda(code, use.Index),
+                _ => System.Text.RegularExpressions.Regex.IsMatch(before, @"\bAlternativeGenerator\s*\.\s*Generate\s*\([^;{}]*\bnew\s+AlternativeOptions\s*\([^;{}]*,\s*$")
+                    && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\)\s*\)\s*;"),
+            };
             if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\binternal\s+static\s+" + System.Text.RegularExpressions.Regex.Escape(type) + @"\s*\?\s+$")
                 && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)"))
                 declarations++;
@@ -573,6 +680,24 @@ internal static class InternalErrorDelegationTests
         var detail = name + ": declarations " + declarations.ToString(CultureInfo.InvariantCulture) + " reads " + reads.ToString(CultureInfo.InvariantCulture)
             + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", others) + "]";
         return LexerGuard((clean, Math.Max(kept, declarations + reads + others.Count), detail), text, name);
+    }
+
+    // P3-29: true when the use at index (in literal-blanked, comment-stripped code) sits, at any depth, inside a block
+    // lambda `=> { ... }` or an anonymous method `delegate [(...)] { ... }`: every unmatched '{' enclosing the use is
+    // tested. Such a read runs only when the stored or passed delegate is invoked, so it is not an Action seam's read.
+    static bool InBlockLambda(string code, int index)
+    {
+        var depth = 0;
+        for (var i = index - 1; i >= 0; i--)
+        {
+            if (code[i] == '}') depth++;
+            else if (code[i] == '{')
+            {
+                if (depth > 0) { depth--; continue; }
+                if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
+            }
+        }
+        return false;
     }
 
     // P3-27: CodeOf does not model raw """ strings or interpolated verbatim @$"/$@" strings; a '"' and '//' inside one
