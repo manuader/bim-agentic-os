@@ -1763,9 +1763,9 @@ try {
             return ($segments -join '/')
         }
         function Test-P431McpGltf([string]$Path) {
-            $normal = $Path.Replace('\', '/')
+            $normal = ConvertTo-P431Path $Path
             $name = $normal.Substring($normal.LastIndexOf('/') + 1)
-            return ($normal.StartsWith('mcp/', [StringComparison]::OrdinalIgnoreCase) -and $name.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase))
+            return ($normal.StartsWith('mcp/', [StringComparison]::OrdinalIgnoreCase) -and ($name.Equals('Bim.Gltf', [StringComparison]::OrdinalIgnoreCase) -or $name.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)))
         }
         function Test-P431Object($Value) { return ($Value -is [Management.Automation.PSCustomObject]) }
         # (Path, Sha) of every entry of a JSON array property (sbom.json assemblies, manifest.json files); $null when unreadable.
@@ -1809,7 +1809,7 @@ try {
                 $entries = Get-P431Entries (Join-Path $Layout $pair[0]) $pair[1]
                 if ($null -eq $entries) { $entries = @() }
                 $lines = @($entries | Where-Object { $_.Path -ceq 'cli/Bim.Gltf.dll' })
-                $normalised = $lines.Count
+                $normalised = @($entries | Where-Object { (ConvertTo-P431Path $_.Path) -ceq 'cli/Bim.Gltf.dll' }).Count
                 if ($lines.Count -ne 1 -or $normalised -ne 1 -or $null -eq $sha -or $lines[0].Sha -cne $sha) {
                     $shown = @($lines | ForEach-Object { if ($null -eq $_.Sha) { '<none>' } else { $_.Sha } }) -join '/'
                     $missing.Add("$($pair[0]) line cli/Bim.Gltf.dll ($($lines.Count) lines, $normalised normalised, sha $shown, file $(if ($null -eq $sha) { '<none>' } else { $sha }))")

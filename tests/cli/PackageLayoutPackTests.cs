@@ -498,8 +498,10 @@ internal static class PackageLayoutPackTests
         }
         static bool IsMcpGltf(string relative)
         {
-            return relative.Replace('\\', '/').StartsWith("mcp/", StringComparison.OrdinalIgnoreCase)
-                && Path.GetFileName(relative).StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase);
+            var normal = Normal(relative);
+            var name = normal[(normal.LastIndexOf('/') + 1)..];
+            return normal.StartsWith("mcp/", StringComparison.OrdinalIgnoreCase)
+                && (name.Equals("Bim.Gltf", StringComparison.OrdinalIgnoreCase) || name.StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase));
         }
         // (path, sha256) of every entry of a JSON array property (sbom "assemblies", manifest "files"); null when unreadable.
         static List<(string Path, string? Sha)>? Entries(string file, string property)
@@ -556,7 +558,7 @@ internal static class PackageLayoutPackTests
             {
                 var entries = Entries(Path.Combine(layout, name), property) ?? [];
                 var lines = entries.Where(entry => entry.Path == "cli/Bim.Gltf.dll").ToList();
-                var normalised = lines.Count;
+                var normalised = entries.Count(entry => Normal(entry.Path) == "cli/Bim.Gltf.dll");
                 if (lines.Count != 1 || normalised != 1 || sha is null || lines[0].Sha != sha)
                     missing.Add(name + " line cli/Bim.Gltf.dll (" + lines.Count.ToString(CultureInfo.InvariantCulture) + " lines, " + normalised.ToString(CultureInfo.InvariantCulture) + " normalised, sha "
                         + string.Join("/", lines.Select(line => line.Sha ?? "<none>")) + ", file " + (sha ?? "<none>") + ")");
@@ -657,7 +659,7 @@ internal static class PackageLayoutPackTests
                 {
                     var planted = Path.Combine(copy, relative);
                     Directory.CreateDirectory(Path.GetDirectoryName(planted)!);
-                    File.Copy(Path.Combine(copy, "cli", "Bim.Gltf.dll"), planted);
+                    File.WriteAllText(planted, "planted");
                     var plantedFile = Leaks(copy);
                     var label = caught ? "a planted " + relative + " file in a copy of the layout is caught (and only it)" : "a planted " + relative + " file is no leak (not Bim.Gltf)";
                     var holds = caught ? Exactly(plantedFile, "file " + relative) : plantedFile.Count == 0;
