@@ -398,3 +398,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 - [ ] `git pull` (main is now defdcdc).
 - [ ] Optional decision (P6-35): a PDF form whose /Matrix × page matrix overflows now runs under the outer matrix with an operand-error warning. Alternative: skip the form's content entirely. Say "keep" (default) or "skip" in OWNER.md.
 - Still open: ADR0010 (P2-11), ADR0011 (P9-03), 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
+
+## Relay258 (2026-11-21, cloud)
+- Nothing new for you: P1-39, P5-33, P7-35 merged (main a794700, CI green). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` on Windows.
