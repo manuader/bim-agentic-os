@@ -2156,6 +2156,33 @@ static class MirrorDriftLoopChecks
     const string PerOsFloor = "p2-33-floor";
     static readonly string[] PerOsRequestsBefore = { "p2-33-levels", "p2-33-floor-types" };
 
+    // P2-36/P2-37: what one macOS seam run's lever did: how often PipeConnected ran (once per WriteRequest, so once per
+    // request line), the client socket's send buffer read before the set, the value read back after it, and any error.
+    sealed class LeverRecord
+    {
+        public int Calls;
+        public int Default = -1;
+        public int Set = -1;
+        public string Error = "";
+        public override string ToString() => "calls=" + Calls + " default=" + Default + " set=" + Set + " error=" + (Error.Length == 0 ? "<none>" : Error);
+    }
+
+    // P2-36/P2-37: the test-only lever (macOS): sets the connected client socket's SO_SNDBUF to numerator/denominator of
+    // its own default, reading it back; errors are recorded, not thrown.
+    static Action<System.IO.Pipes.PipeStream> SendBufferLever(int numerator, int denominator, LeverRecord record) => pipe =>
+    {
+        record.Calls++;
+        try
+        {
+            var property = typeof(Microsoft.Win32.SafeHandles.SafePipeHandle).GetProperty("PipeSocket", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+            if (property?.GetValue(pipe.SafePipeHandle) is not Socket socket) { record.Error = property is null ? "no SafePipeHandle.PipeSocket" : "PipeSocket is not a Socket"; return; }
+            record.Default = socket.SendBufferSize;
+            socket.SendBufferSize = (int)((long)record.Default * numerator / denominator);
+            record.Set = socket.SendBufferSize;
+        }
+        catch (Exception failure) { record.Error = failure.GetType().Name + ": " + failure.Message; }
+    };
+
     // P2-36: static pin of the connected-pipe seam RevitCommandService.PipeConnected ([ThreadStatic], null in production):
     // named only in RevitCommandsService.cs among the production sources and, comments stripped, exactly twice there (its
     // declaration without an initializer and the one read in WriteRequest); a planted =, +=, -= or ??= is caught.
@@ -2198,7 +2225,7 @@ static class MirrorDriftLoopChecks
         PipeConnectedPinned(root, (condition, name, detail) => Check(condition, name, detail));
         Check(RevitCommandService.PipeConnected is null, "the connected-pipe seam (P2-36) is null on the test thread before the run");
 
-        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-WriteProgress-PerOs.rvt", PerOsRequestsBefore.Length + 2, breakAfterBytes: MidArgsBreakBytes);
+        using var h = new Harness(root, dotnet, pwsh, cliDll, runDirectory, "Drift-Pipe-WriteProgress-PerOs.rvt", PerOsRequestsBefore.Length + (OperatingSystem.IsMacOS() ? 3 : 2), breakAfterBytes: MidArgsBreakBytes);
         Check(h.Pipe.StartsWith("bim-agentic-os-2025-", StringComparison.Ordinal) && h.Pipe.Length == "bim-agentic-os-2025-".Length + 6 && h.Pipe[^6..].All(char.IsAsciiDigit),
             "the harness exposes its pipe name: bim-agentic-os-2025- and six digits", h.Pipe);
         if (!h.WaitReady(out var notReady)) { Check(false, "fake add-in pipe ready with -BreakAfterBytes " + MidArgsBreakBytes + " on " + os, notReady); return; }
@@ -2219,27 +2246,17 @@ static class MirrorDriftLoopChecks
         RevitCommandResult? seam = null;
         var thrown = "";
         string? wrongPrefix = null;
-        // P2-36: on macOS only, the test-only lever RevitCommandService.PipeConnected (null in production) doubles the
-        // seam run's client socket send buffer (SO_SNDBUF) once connected, before the first byte is written; the value
-        // read back after the set is what the pin expects queued. The CLI process has no lever (default send buffer).
-        var lever = "";
-        int clientSendDefault = -1, clientSendRaised = -1, levered = 0;
+        // P2-36: on macOS only, the test-only lever RevitCommandService.PipeConnected (null in production; called once per
+        // WriteRequest, at its top, before that request line's first byte) doubles the seam run's client socket send
+        // buffer (SO_SNDBUF); the value read back after the set is what the pin expects queued. P2-37: a second macOS seam
+        // run, after the first, halves it instead (lowered). The CLI process has no lever (default send buffer).
+        var raisedLever = new LeverRecord();
+        var loweredLever = new LeverRecord();
+        var loweredReports = new List<(int Written, int Total, long Ms)>();
+        RevitCommandResult? loweredSeam = null;
         try
         {
-            if (OperatingSystem.IsMacOS())
-                RevitCommandService.PipeConnected = pipe =>
-                {
-                    levered++;
-                    try
-                    {
-                        var property = typeof(Microsoft.Win32.SafeHandles.SafePipeHandle).GetProperty("PipeSocket", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-                        if (property?.GetValue(pipe.SafePipeHandle) is not Socket socket) { lever = property is null ? "no SafePipeHandle.PipeSocket" : "PipeSocket is not a Socket"; return; }
-                        clientSendDefault = socket.SendBufferSize;
-                        socket.SendBufferSize = 2 * clientSendDefault;
-                        clientSendRaised = socket.SendBufferSize;
-                    }
-                    catch (Exception failure) { lever = failure.GetType().Name + ": " + failure.Message; }
-                };
+            if (OperatingSystem.IsMacOS()) RevitCommandService.PipeConnected = SendBufferLever(2, 1, raisedLever);
             if (!OperatingSystem.IsWindows())
             {
                 Environment.SetEnvironmentVariable("TMPDIR", UnixTemp);
@@ -2254,6 +2271,12 @@ static class MirrorDriftLoopChecks
             {
                 RevitCommandService.WriteProgress = (written, total) => reports.Add((written, total, clock.ElapsedMilliseconds));
                 seam = RevitCommandService.Run(h.Pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget()))));
+                if (OperatingSystem.IsMacOS())
+                {
+                    RevitCommandService.WriteProgress = (written, total) => loweredReports.Add((written, total, clock.ElapsedMilliseconds));
+                    RevitCommandService.PipeConnected = SendBufferLever(1, 2, loweredLever);
+                    loweredSeam = RevitCommandService.Run(h.Pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget()))));
+                }
             }
         }
         catch (Exception failure) { thrown = failure.GetType().Name + ": " + failure.Message; }
@@ -2271,7 +2294,9 @@ static class MirrorDriftLoopChecks
         var received = h.Received();
 
         var handed = reports.Count > 0 ? reports[^1].Written : -1;
-        var brokenLines = received.Skip(PerOsRequestsBefore.Length).ToArray();
+        // The CLI process's and the first seam run's broken-after lines; on macOS a third (the lowered seam run) follows.
+        var brokenLines = received.Skip(PerOsRequestsBefore.Length).Take(2).ToArray();
+        var extraLines = received.Skip(PerOsRequestsBefore.Length + 2).ToArray();
         static string[] Fields(string line) { var p = line.Split(':'); return p.Length == 4 && p[0] + ":" == MidArgsLogPrefix ? p : Array.Empty<string>(); }
         static int Read(string line) => Fields(line) is { Length: 4 } p && int.TryParse(p[1], NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : -1;
         static long Queued(string line) => Fields(line) is { Length: 4 } p && long.TryParse(p[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var q) ? q : long.MinValue;
@@ -2297,8 +2322,9 @@ static class MirrorDriftLoopChecks
         // IOException, exit 1 for the CLI process on all three OSes.
         Check(cli.Exit == 1 && Status(cli.Out) == "failed" && Text(cli.Out, "code") == "pipe_io_error" && Text(cli.Out, "field") == "pipe_name" && Text(cli.Out, "detail") == "IOException",
             "the CLI process's floor.create broken after " + MidArgsBreakBytes + " bytes: exit 1, pipe_io_error, field pipe_name, detail IOException on " + os, measured);
+        Check(extraLines.Length == (OperatingSystem.IsMacOS() ? 1 : 0) && extraLines.All(x => Read(x) == MidArgsBreakBytes), "the fake logged " + (OperatingSystem.IsMacOS() ? "one more broken-after line after reading exactly " + MidArgsBreakBytes + " bytes (the lowered seam run, P2-37)" : "nothing after the two broken-after lines") + " on " + os, string.Join(",", received));
         // The fake's InBufferSize field (on Unix the receive buffer of its socket end).
-        var inBuffers = brokenLines.Select(x => Fields(x) is { Length: 4 } p && int.TryParse(p[2], NumberStyles.None, CultureInfo.InvariantCulture, out var b) ? b : -1).Distinct().ToArray();
+        var inBuffers = brokenLines.Concat(extraLines).Select(x => Fields(x) is { Length: 4 } p && int.TryParse(p[2], NumberStyles.None, CultureInfo.InvariantCulture, out var b) ? b : -1).Distinct().ToArray();
         var inBuffer = inBuffers.Length == 1 ? inBuffers[0] : -1;
         if (OperatingSystem.IsWindows())
             Check(handed == MidArgsBreakBytes && handed < wireBytes && seamQueued == RevitCommandService.WriteProgressChunk && cliQueued == wireBytes - MidArgsBreakBytes,
@@ -2324,16 +2350,38 @@ static class MirrorDriftLoopChecks
             // handed % WriteProgressChunk == 0 assumes the raised send buffer is a multiple of the 1024-byte piece.
             // The fake raises its receive buffer relative to its own defaults (header), so the precondition is checked on
             // its own: a red there is a setup failure (a lever or SetReceiveBuffer sentinel), not a relation failure.
+            // P2-37: the raised value must also be a whole number of 1024-byte pieces (an odd kernel rounding is a setup
+            // red, not a relation red). A second seam run lowers the send buffer to half its default (also a multiple of the
+            // piece); its queued and handed move down the same way. Every value is logged once in a ::notice:: line.
             var sendBuffer = UnixSendBuffer();
-            var macDetail = measured + " in_buffer=" + inBuffer + " send_buffer=" + sendBuffer + " lever_calls=" + levered + " client_send_default=" + clientSendDefault
-                + " client_send_raised=" + clientSendRaised + " lever_error=" + (lever.Length == 0 ? "<none>" : lever);
-            var raised = clientSendRaised;
-            Check(levered == 1 && lever.Length == 0 && sendBuffer > 0 && clientSendDefault == sendBuffer && raised > sendBuffer && inBuffer > raised,
-                "macos precondition: the lever ran once and raised the seam client's send buffer above its default (== the default unix send buffer), and the fake's receive buffer (InBufferSize, both broken-after lines equal) is above the raised send buffer", macDetail);
-            Check(levered == 1 && lever.Length == 0 && sendBuffer > 0 && raised > sendBuffer && inBuffer > raised
-                && seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % RevitCommandService.WriteProgressChunk == 0 && handed < wireBytes
+            var raised = raisedLever.Set;
+            var lowered = loweredLever.Set;
+            var loweredHanded = loweredReports.Count > 0 ? loweredReports[^1].Written : -1;
+            var loweredQueued = extraLines.Length == 1 ? Queued(extraLines[0]) : long.MinValue;
+            var chunk = RevitCommandService.WriteProgressChunk;
+            var counts = "macos send buffer counts (P2-37): wire=" + wireBytes + " read=" + MidArgsBreakBytes + " in_buffer=" + inBuffer + " default=" + sendBuffer
+                + " raised=" + raised + " raised_queued=" + seamQueued + " raised_handed=" + handed + " lowered=" + lowered + " lowered_queued=" + loweredQueued
+                + " lowered_handed=" + loweredHanded + " cli_queued=" + cliQueued;
+            Console.WriteLine("::notice::drift-loop: " + counts);
+            var macDetail = measured + " | " + counts + " | raised_lever " + raisedLever + " | lowered_lever " + loweredLever + " lowered_reports=" + loweredReports.Count
+                + " lowered_line=" + (extraLines.Length == 1 ? extraLines[0] : "<none>")
+                + " lowered_seam_line=" + (loweredSeam?.Line is { } low ? (low.Length > 200 ? low[..200] + "..." : low) : "<none>");
+            var leversOk = raisedLever.Calls == 1 && raisedLever.Error.Length == 0 && loweredLever.Calls == 1 && loweredLever.Error.Length == 0;
+            var precondition = leversOk && sendBuffer > 0 && raisedLever.Default == sendBuffer && loweredLever.Default == sendBuffer
+                && raised > sendBuffer && raised % chunk == 0 && inBuffer > raised && lowered > 0 && lowered < sendBuffer && lowered % chunk == 0;
+            Check(precondition,
+                "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default and lowered (0 < lowered < default) are whole multiples of the " + chunk + "-byte piece, and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer", macDetail);
+            Check(precondition
+                && seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
                 && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
                 "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue", macDetail);
+            Check(precondition && loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
+                && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes)
+                && loweredQueued == lowered && loweredHanded == MidArgsBreakBytes + lowered && loweredHanded % chunk == 0
+                && loweredQueued < cliQueued && loweredHanded < handed,
+                "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways", macDetail);
+            // P2-37 deliberate probe red: records the measured counts as a failure annotation once; removed when green.
+            Check(false, "macos probe (P2-37): measured send buffer counts", counts);
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }

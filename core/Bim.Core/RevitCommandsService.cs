@@ -166,9 +166,9 @@ public static class RevitCommandService
     internal const int WriteProgressChunk = 1024;
 
     // P2-36: a connected-pipe test seam, null in production (nothing assigns it outside tests; per thread). Set: called
-    // once with the connected client pipe before the first request byte is written, so a test can size the client's
-    // socket buffers (the macOS send buffer); null: nothing happens. The bytes written are the same either way. Tests
-    // only (tests/mirror-journal).
+    // once per WriteRequest (so once per request line) with the connected client pipe, before that line's first byte is
+    // written, so a test can size the client's socket buffers (the macOS send buffer); null: nothing happens. The bytes
+    // written are the same either way. Tests only (tests/mirror-journal).
     [ThreadStatic] internal static Action<PipeStream>? PipeConnected;
 
     static void WriteRequest(PipeStream pipe, byte[] bytes)
