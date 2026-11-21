@@ -29,7 +29,9 @@ namespace Bim.Cli;
 // page is the deadline. A connect that throws before asking leaves the page uncut. So an add-in that accepts just before
 // the deadline and never replies ends the run at the deadline. Tests inject the clock and connectThenRead (the former
 // cutTransport and P1-30 connectTransport seams are retired; their fakes are adapters onto connectThenRead).
-// cutReads false never cuts nor measures: the configured transport serves every page.
+// cutReads false never cuts nor measures: the configured transport serves every page. P1-38: with cutReads true the
+// configured transport is never called (every page goes through connectThenRead), so it may be null (the CLI passes
+// null); cutReads false needs it (ArgumentNullException when it is null).
 internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 {
     public const string Code = "query_all_deadline_exceeded";
@@ -40,7 +42,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
 
     readonly string pipeName;
     readonly RevitCommandPolicy policy;
-    readonly Func<string, string, string?> transport;
+    readonly Func<string, string, string?>? transport;
     readonly TimeSpan readTimeout;
     readonly TimeSpan deadline;
     readonly Func<TimeSpan> elapsed;
@@ -50,10 +52,11 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     readonly bool cutReads;
     readonly RevitFileSystemProbe? probe;
 
-    public RevitDeadlineTransport(string pipeName, RevitCommandPolicy policy, Func<string, string, string?> transport, TimeSpan readTimeout, TimeSpan deadline,
+    public RevitDeadlineTransport(string pipeName, RevitCommandPolicy policy, Func<string, string, string?>? transport, TimeSpan readTimeout, TimeSpan deadline,
         Func<TimeSpan>? elapsed = null, string listing = CliListing, bool cutReads = true, RevitFileSystemProbe? probe = null,
         Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>>? connectThenRead = null)
     {
+        if (!cutReads) ArgumentNullException.ThrowIfNull(transport);
         this.pipeName = pipeName;
         this.policy = policy;
         this.transport = transport;
@@ -87,7 +90,7 @@ internal sealed class RevitDeadlineTransport : IRevitCommandTransport
     {
         var left = deadline - (elapsed() - start);
         if (left <= TimeSpan.Zero) return Exceeded();
-        if (!cutReads) return RevitCommandService.Run(pipeName, envelopeJson, policy, transport, probe).Line;
+        if (!cutReads) return RevitCommandService.Run(pipeName, envelopeJson, policy, transport!, probe).Line;
         var cutConnect = left < ConnectWait;
         // Decided only once connected (ReadAfter); a connect that throws first leaves the page uncut.
         var cut = false;

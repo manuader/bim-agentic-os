@@ -12,9 +12,15 @@ using Bim.Core;
 //      are refused typed in the RevitCommandResponse shape (field args[i], exit 1) before any file or pipe I/O: the
 //      envelope file does not exist, the pipe name may be bad and the stalled add-in pipe receives nothing. In range
 //      (1, 86400, 0030) with --all, in any order, the run goes on to the envelope read (listing-shape refusal).
-//   2. In process (RevitDeadlineTransport, injected clock and cut transport): a page due after the deadline is answered
-//      query_all_deadline_exceeded without being sent; a page whose time left is below the read timeout is read with
-//      the time left, and its pipe_read_timeout is reported as the deadline; above it, the configured transport is used.
+//   2. In process (RevitDeadlineTransport, injected clock and its one page seam connectThenRead; the P1-21..P1-31 fakes
+//      reach it through the Legacy adapter): a page due after the deadline is answered query_all_deadline_exceeded
+//      without being sent; a page whose time left is below the read timeout is read with the time left, and its
+//      pipe_read_timeout is reported as the deadline; above it, the configured read timeout is used.
+//   2g. P1-36: one page seam (static pin, no legacy seams). 2h. P1-37: ReadReplyLine's OnlyOnFaulted continuation
+//      (static pin). 2i. P1-38: PipeTransportWithReadTimeout kept for its production callers (static scan), the CLI
+//      passes no never-called transport, the Legacy adapter fails a named Check on an unmodelled cut connect, and
+//      StripComments reads @$ verbatim and raw string literals (mutation self-test).
+//   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -140,12 +146,18 @@ internal static class RevitCommandDeadlineTests
     // cut, connect(read, connectWait) for a page whose connect is cut) as one connectThenRead fake. Like those seams it
     // asks the read wait when the page's transport is made (these fakes move no clock in a connect): a connect wait under
     // the 5 s ConnectWait is the cut connect, a read under the configured timeout the cut read, else the configured one.
-    static Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>> Legacy(TimeSpan readTimeout, Func<string, string, string?> transport,
+    // P1-38: a cut connect the fake does not model (no connect given) fails the named Check LegacyUnmodelled and the page
+    // answers null (no_response) instead of throwing out of Run.
+    static Func<TimeSpan, Func<TimeSpan>, Func<string, string, string?>> Legacy(Action<bool, string, string> check, TimeSpan readTimeout, Func<string, string, string?> transport,
         Func<TimeSpan, Func<string, string, string?>> cut, Func<TimeSpan, TimeSpan, Func<string, string, string?>>? connect = null) => (wait, readAfter) =>
     {
         var read = readAfter();
         if (wait < Bim.Cli.RevitDeadlineTransport.ConnectWait)
-            return connect is null ? throw new InvalidOperationException("cut connect not modelled by this fake") : connect(read, wait);
+        {
+            if (connect is not null) return connect(read, wait);
+            check(false, LegacyUnmodelled, "connect wait " + N((long)wait.TotalMilliseconds) + " ms, read " + N((long)read.TotalMilliseconds) + " ms");
+            return (_, _) => null;
+        }
         return read < readTimeout ? cut(read) : transport;
     };
 
@@ -182,7 +194,7 @@ internal static class RevitCommandDeadlineTests
         string? Paging(string pipe, string line) { sent++; clock += TimeSpan.FromMinutes(1); return PageReply(line, model); }
         Func<string, string, string?> Cut(TimeSpan left) { cuts.Add(left); return Paging; }
         var slow = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromSeconds(30), TimeSpan.FromMinutes(3), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromSeconds(30), Paging, Cut));
+            connectThenRead: Legacy(check, TimeSpan.FromSeconds(30), Paging, Cut));
         var late = RevitElementQueryPaging.All(wallsText, slow);
         var lateJson = Node(late.ToJson());
         Check(!late.IsSuccess && Code(lateJson) == Exceeded && lateJson?["field"] is null && Pages(lateJson) == 3 && ElementCount(lateJson) == 0 && sent == 3 && cuts.Count == 0
@@ -191,26 +203,26 @@ internal static class RevitCommandDeadlineTests
         clock = TimeSpan.Zero; sent = 0; cuts.Clear();
         Func<string, string, string?> uncutUsed = (_, _) => throw new InvalidOperationException("uncut transport used");
         var cutting = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, uncutUsed, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(5) + TimeSpan.FromSeconds(30), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromMinutes(30), uncutUsed, Cut));
+            connectThenRead: Legacy(check, TimeSpan.FromMinutes(30), uncutUsed, Cut));
         var cutListing = RevitElementQueryPaging.All(wallsText, cutting);
         Check(!cutListing.IsSuccess && Code(Node(cutListing.ToJson())) == Exceeded && sent == 6
             && cuts.SequenceEqual(new[] { 330, 270, 210, 150, 90, 30 }.Select(s => TimeSpan.FromSeconds(s))),
             "each page under a read timeout above the time left is read with the time left (330 s, 270 s, ... 30 s)", string.Join(",", cuts.Select(c => N((long)c.TotalSeconds))));
         clock = TimeSpan.Zero; sent = 0;
         var stalledCut = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(2), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromMinutes(30), Paging, left => (_, _) => throw new RevitPipeReadTimeoutException(left)));
+            connectThenRead: Legacy(check, TimeSpan.FromMinutes(30), Paging, left => (_, _) => throw new RevitPipeReadTimeoutException(left)));
         var stalledCutJson = Node(RevitElementQueryPaging.All(wallsText, stalledCut).ToJson());
         Check(Code(stalledCutJson) == Exceeded && Pages(stalledCutJson) == 0 && ElementCount(stalledCutJson) == 0,
             "a cut page's pipe_read_timeout is reported as query_all_deadline_exceeded", stalledCutJson?.ToJsonString() ?? "");
         // A cut page's failure other than its read timeout passes through unchanged (not reported as the deadline).
         clock = TimeSpan.Zero; sent = 0; cuts.Clear();
         var closedCut = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(2), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromMinutes(30), Paging, left => { cuts.Add(left); return (_, _) => null; }));
+            connectThenRead: Legacy(check, TimeSpan.FromMinutes(30), Paging, left => { cuts.Add(left); return (_, _) => null; }));
         var closedCutJson = Node(RevitElementQueryPaging.All(wallsText, closedCut).ToJson());
         Check(Code(closedCutJson) == RevitCommandCodes.NoResponse && Pages(closedCutJson) == 0 && ElementCount(closedCutJson) == 0 && cuts.Count == 1,
             "a cut page whose pipe closes without a reply stays no_response", closedCutJson?.ToJsonString() ?? "");
         var brokenCut = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromMinutes(30), TimeSpan.FromMinutes(2), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromMinutes(30), Paging, left => (_, _) => throw new IOException("broken pipe")));
+            connectThenRead: Legacy(check, TimeSpan.FromMinutes(30), Paging, left => (_, _) => throw new IOException("broken pipe")));
         var brokenCutJson = Node(RevitElementQueryPaging.All(wallsText, brokenCut).ToJson());
         Check(Code(brokenCutJson) == RevitCommandCodes.PipeIoError && Pages(brokenCutJson) == 0 && ElementCount(brokenCutJson) == 0,
             "a cut page whose pipe fails with an IOException stays pipe_io_error", brokenCutJson?.ToJsonString() ?? "");
@@ -218,14 +230,14 @@ internal static class RevitCommandDeadlineTests
         clock = TimeSpan.Zero; sent = 0; cuts.Clear();
         Func<string, string, string?> sixtyTimeout = (_, _) => throw new RevitPipeReadTimeoutException(TimeSpan.FromSeconds(60));
         var equalLeft = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, sixtyTimeout,
-            TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60), () => clock, connectThenRead: Legacy(TimeSpan.FromSeconds(60), sixtyTimeout, Cut));
+            TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(60), () => clock, connectThenRead: Legacy(check, TimeSpan.FromSeconds(60), sixtyTimeout, Cut));
         var equalLeftJson = Node(RevitElementQueryPaging.All(wallsText, equalLeft).ToJson());
         Check(Code(equalLeftJson) == RevitCommandCodes.PipeReadTimeout && equalLeftJson?["detail"]?.GetValue<string>() is { } equalDetail && equalDetail.Contains("60000 ms", StringComparison.Ordinal)
             && Pages(equalLeftJson) == 0 && cuts.Count == 0,
             "time left equal to the read timeout is not cut: pipe_read_timeout, not query_all_deadline_exceeded", equalLeftJson?.ToJsonString() ?? "");
         clock = TimeSpan.Zero; sent = 0;
         var roomy = new Bim.Cli.RevitDeadlineTransport(InProcessPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), () => clock,
-            connectThenRead: Legacy(TimeSpan.FromSeconds(30), Paging, Cut));
+            connectThenRead: Legacy(check, TimeSpan.FromSeconds(30), Paging, Cut));
         var roomyListing = RevitElementQueryPaging.All(wallsText, roomy);
         var undeadlined = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(InProcessPipe, RevitCommandPolicy.None, Paging));
         Check(roomyListing.IsSuccess && roomyListing.Elements.Count == 23 && roomyListing.ToJson() == undeadlined.ToJson(),
@@ -244,6 +256,9 @@ internal static class RevitCommandDeadlineTests
 
         // ---- 2h. P1-37: ReadReplyLine's OnlyOnFaulted continuation pinned statically ----
         ContinuationPinned(root, check);
+
+        // ---- 2i. P1-38: no never-called CLI transport, PipeTransportWithReadTimeout callers, Legacy and StripComments ----
+        ConfiguredTransportTidy(root, wallsText, model, check);
 
         // A .NET pipe on Unix is a Unix domain socket under Path.GetTempPath(), whose path must fit 108 characters;
         // verify.ps1 points TMPDIR at a long evidence directory, so this section (and the CLI it starts) uses /tmp/.
@@ -380,7 +395,7 @@ internal static class RevitCommandDeadlineTests
             clock = TimeSpan.Zero; sent = 0; waits.Clear();
             Func<string, string, string?> configured = (pipe, line) => Read("transport", readTimeout, duration, rows)(pipe, line);
             var transport = new Bim.Cli.RevitDeadlineTransport(RacePipe, RevitCommandPolicy.None, configured, readTimeout, deadline, () => clock,
-                connectThenRead: Legacy(readTimeout, configured, left => Read("cut", left, duration, rows),
+                connectThenRead: Legacy(check, readTimeout, configured, left => Read("cut", left, duration, rows),
                     (read, connect) => Read("connect " + Label(connect) + " read", read, duration, rows)));
             var json = RevitElementQueryPaging.All(wallsText, transport).ToJson();
             return (json, Node(json));
@@ -781,7 +796,20 @@ internal static class RevitCommandDeadlineTests
             }
             if (c == '"' || c == '\'')
             {
-                var verbatim = c == '"' && i > 0 && source[i - 1] == '@';
+                // P1-38: @"...", $@"..." and @$"..." are verbatim; a run of three or more quotes opens a raw literal ($
+                // prefixes included), closed by the same run and kept whole, so a // inside it is no comment.
+                var previous = i > 0 ? source[i - 1] : '\0';
+                var verbatim = c == '"' && (previous == '@' || (previous == '$' && i > 1 && source[i - 2] == '@'));
+                var quotes = 0;
+                while (c == '"' && !verbatim && i + quotes < source.Length && source[i + quotes] == '"') quotes++;
+                if (quotes >= 3)
+                {
+                    var close = source.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
+                    var stop = close < 0 ? source.Length : close + quotes;
+                    text.Append(source, i, stop - i);
+                    i = stop;
+                    continue;
+                }
                 text.Append(c);
                 i++;
                 while (i < source.Length)
@@ -965,6 +993,155 @@ internal static class RevitCommandDeadlineTests
         };
         foreach (var (label, mutant) in mutants)
             check(mutant != Clean && ContinuationProblems(mutant).Length > 0, "P1-37 mutation self-test: the continuation check flags a " + label, string.Join("; ", ContinuationProblems(mutant)));
+    }
+
+    // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
+    // (a) A static caller scan (comment- and literal-stripped, every .cs file outside bin, obj and dot directories) lists
+    // every file naming RevitCommandService.PipeTransportWithReadTimeout. It is KEPT: production code calls it (the CLI
+    // --read-timeout-seconds transport, interfaces/cli/RevitCommandOptions.cs, and the MCP server read timeout,
+    // interfaces/mcp/McpServer.cs), and that exact production caller set is the pinned reason; RevitDeadlineTransport.cs
+    // is not among them. (b) The CLI builds its RevitDeadlineTransport (always cutReads true, every page through
+    // connectThenRead) with a null configured transport instead of one it never calls; the constructor refuses a null
+    // transport only with cutReads false (ArgumentNullException naming transport), and a null-transport listing within
+    // its deadline is byte-equal to RevitServiceTransport paging. (c) The Legacy adapter given a cut connect it does not
+    // model fails a named Check and answers no_response (null) instead of throwing out of Run. (d) StripComments reads
+    // @$"..." as verbatim and a raw string literal ("""...""", any $ prefix, any quote run) as one literal, so a // inside
+    // it is no comment and code after it is not hidden (mutation self-test).
+    static readonly string[] ReadTimeoutHelperProductionCallers = { "interfaces/cli/RevitCommandOptions.cs", "interfaces/mcp/McpServer.cs" };
+    const string ReadTimeoutHelperDefinition = "core/Bim.Core/RevitCommandsService.cs";
+    const string LegacyUnmodelled = "P1-38 Legacy adapter: every cut connect a fake meets is modelled by that fake";
+
+    static List<string> ReadTimeoutHelperReferences(string root)
+    {
+        var found = new List<string>();
+        foreach (var file in Directory.EnumerateFiles(root, "*.cs", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }))
+        {
+            var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
+            if (relative.Split('/').Any(part => part is "bin" or "obj" || part.StartsWith('.'))) continue;
+            var code = StripCommentsAndLiterals(File.ReadAllText(file).ReplaceLineEndings("\n"));
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPipeTransportWithReadTimeout\b")) found.Add(relative);
+        }
+        found.Sort(StringComparer.Ordinal);
+        return found;
+    }
+
+    // The top-level arguments of the first `call` (ending in '(') in comment- and literal-stripped code; empty if absent.
+    static string[] CallArguments(string code, string call)
+    {
+        var at = code.IndexOf(call, StringComparison.Ordinal);
+        if (at < 0) return Array.Empty<string>();
+        var arguments = new List<string>();
+        var from = at + call.Length;
+        var depth = 0;
+        for (var i = from; i < code.Length; i++)
+        {
+            var c = code[i];
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}')
+            {
+                if (depth-- > 0) continue;
+                arguments.Add(code[from..i].Trim());
+                return arguments.ToArray();
+            }
+            else if (c == ',' && depth == 0) { arguments.Add(code[from..i].Trim()); from = i + 1; }
+        }
+        return Array.Empty<string>();
+    }
+
+    static void ConfiguredTransportTidy(string root, string wallsText, long[] model, Action<bool, string, string> check)
+    {
+        // (a) PipeTransportWithReadTimeout callers.
+        var references = ReadTimeoutHelperReferences(root);
+        var production = references.Where(file => !file.StartsWith("tests/", StringComparison.Ordinal) && file != ReadTimeoutHelperDefinition).ToArray();
+        var listed = "references: " + string.Join(", ", references);
+        check(references.Contains(ReadTimeoutHelperDefinition) && production.SequenceEqual(ReadTimeoutHelperProductionCallers),
+            "P1-38 static: RevitCommandService.PipeTransportWithReadTimeout is kept because production calls it (exactly RevitCommandOptions.cs and McpServer.cs)", listed);
+        check(!references.Contains("interfaces/cli/RevitDeadlineTransport.cs") && references.Any(file => file.StartsWith("tests/", StringComparison.Ordinal)),
+            "P1-38 static: RevitDeadlineTransport.cs does not name PipeTransportWithReadTimeout; tests still do", listed);
+
+        // (b) The CLI passes no never-called transport.
+        var program = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
+        var built = System.Text.RegularExpressions.Regex.Matches(program, @"\bnew\s+RevitDeadlineTransport\s*\(").Count;
+        var cliArguments = CallArguments(program, "new RevitDeadlineTransport(");
+        check(built == 1 && cliArguments.Length == 5 && cliArguments[2] == "null" && cliArguments[3] == "revitOptions.ReadTimeout" && !cliArguments.Any(a => a.Contains("cutReads", StringComparison.Ordinal)),
+            "P1-38 static: the CLI builds its one RevitDeadlineTransport with a null configured transport (cutReads true: never called) and its configured read timeout",
+            N(built) + " built; arguments: " + string.Join(" | ", cliArguments));
+        const string TidyPipe = "bim-agentic-os-2025-3838";
+        string? Paging(string pipe, string line) => PageReply(line, model);
+        var waits = new List<(TimeSpan Connect, TimeSpan Read)>();
+        var clock = TimeSpan.Zero;
+        var nullConfigured = new Bim.Cli.RevitDeadlineTransport(TidyPipe, RevitCommandPolicy.None, null, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), () => clock,
+            connectThenRead: (wait, readAfter) => { waits.Add((wait, readAfter())); return Paging; });
+        var nullListing = RevitElementQueryPaging.All(wallsText, nullConfigured).ToJson();
+        var direct = RevitElementQueryPaging.All(wallsText, new RevitServiceTransport(TidyPipe, RevitCommandPolicy.None, Paging)).ToJson();
+        check(nullListing == direct && waits.Count == 23 && waits.All(w => w.Connect == Bim.Cli.RevitDeadlineTransport.ConnectWait && w.Read == TimeSpan.FromSeconds(30)),
+            "P1-38 a null configured transport with cutReads true lists every page through connectThenRead, byte-equal to RevitServiceTransport paging",
+            N(waits.Count) + " pages; " + (nullListing.Length > 200 ? nullListing[..200] : nullListing));
+        Exception? refused = null;
+        try { _ = new Bim.Cli.RevitDeadlineTransport(TidyPipe, RevitCommandPolicy.None, null, TimeSpan.FromSeconds(30), TimeSpan.FromHours(1), () => clock, cutReads: false); }
+        catch (Exception error) { refused = error; }
+        check(refused is ArgumentNullException { ParamName: "transport" }, "P1-38 cutReads false (pages through the configured transport) refuses a null transport when built (ArgumentNullException transport)",
+            refused is null ? "no exception" : refused.GetType().Name + ": " + refused.Message);
+
+        // (c) The Legacy adapter's unmodelled cut connect.
+        var recorded = new List<(bool Ok, string Name, string Detail)>();
+        void Record(bool ok, string name, string detail) => recorded.Add((ok, name, detail));
+        string? direct3 = "unset";
+        Exception? thrown = null;
+        try { direct3 = Legacy(Record, TimeSpan.FromSeconds(30), (_, _) => "configured", _ => (_, _) => "cut")(TimeSpan.FromSeconds(1), () => TimeSpan.FromSeconds(1))(TidyPipe, "line"); }
+        catch (Exception error) { thrown = error; }
+        check(thrown is null && direct3 is null && recorded.Count == 1 && !recorded[0].Ok && recorded[0].Name == LegacyUnmodelled,
+            "P1-38 the Legacy adapter given an unmodelled cut connect fails the named Check '" + LegacyUnmodelled + "' and answers null instead of throwing",
+            (thrown is null ? "no throw" : "threw " + thrown.GetType().Name + ": " + thrown.Message) + "; line " + (direct3 ?? "null") + "; checks "
+            + string.Join(" / ", recorded.Select(r => (r.Ok ? "pass " : "fail ") + r.Name + " | " + r.Detail)));
+        recorded.Clear();
+        string? listing3 = null;
+        thrown = null;
+        try
+        {
+            var cutConnect = new Bim.Cli.RevitDeadlineTransport(TidyPipe, RevitCommandPolicy.None, Paging, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(3), () => clock,
+                connectThenRead: Legacy(Record, TimeSpan.FromSeconds(30), Paging, _ => Paging));
+            listing3 = RevitElementQueryPaging.All(wallsText, cutConnect).ToJson();
+        }
+        catch (Exception error) { thrown = error; }
+        var listing3Json = listing3 is null ? null : Node(listing3);
+        check(thrown is null && Code(listing3Json) == RevitCommandCodes.NoResponse && Pages(listing3Json) == 0 && recorded.Count == 1 && recorded[0].Name == LegacyUnmodelled && !recorded[0].Ok,
+            "P1-38 a deadline page whose cut connect a Legacy fake does not model ends no_response with the named failed Check, not an exception out of Run",
+            (thrown is null ? "no throw" : "threw " + thrown.GetType().Name) + "; " + (listing3 ?? "no listing") + "; checks " + N(recorded.Count));
+        recorded.Clear();
+        var modelled = Legacy(Record, TimeSpan.FromSeconds(30), (_, _) => "configured", _ => (_, _) => "cut")(Bim.Cli.RevitDeadlineTransport.ConnectWait, () => TimeSpan.FromSeconds(30))(TidyPipe, "line");
+        check(modelled == "configured" && recorded.Count == 0, "P1-38 the Legacy adapter records no Check for a modelled page", (modelled ?? "null") + " " + N(recorded.Count));
+
+        // (d) StripComments: @$ verbatim and raw string literals (mutation self-test on SeamProblems).
+        const string Head = "class T\n{\n    public string? Send(string line)\n    {\n        var pipe = connectThenRead(wait, ReadAfter);\n";
+        const string Tail = "        return pipe(line);\n    }\n}\n";
+        var cleans = new (string Label, string Body)[]
+        {
+            ("@$ verbatim string ending in a backslash", "        var p = @$\"{root}\\\"; // connectTransport\n"),
+            ("$@ verbatim string ending in a backslash", "        var p = $@\"{root}\\\"; // connectTransport\n"),
+            ("@$ verbatim string with a doubled quote", "        var p = @$\"say \"\"hi\"\" {root}\\\"; // measured\n"),
+            ("multi-line raw string with a lone quote", "        var r = \"\"\"\n            say \"hi\n            \"\"\"; // measured\n"),
+            ("interpolated raw string", "        var r = $$\"\"\"\n            {{root}} \"\n            \"\"\"; // cutTransport\n"),
+            ("single-line raw string with a lone quote", "        var r = \"\"\"a \" b\"\"\"; // measured\n"),
+            ("four-quote raw string holding three quotes", "        var r = \"\"\"\"\n            has \"\"\" inside \"\n            \"\"\"\"; // measured\n"),
+        };
+        foreach (var (label, body) in cleans)
+        {
+            var problems = SeamProblems(Head + body + Tail);
+            check(problems.Length == 0, "P1-38 StripComments mutation self-test: a // after a " + label + " is a comment (no seam flagged)", string.Join("; ", problems));
+        }
+        var mutants = new (string Label, string Body)[]
+        {
+            ("@$ verbatim string ending in a backslash", "        var p = @$\"{root}\\\" + \"//\"; var c = cutTransport;\n"),
+            ("multi-line raw string with a lone quote", "        var r = \"\"\"\n            say \"hi\n            \"\"\" + \"//\"; var c = cutTransport;\n"),
+            ("interpolated raw string", "        var r = $\"\"\"\n            {root} \"\n            \"\"\" + \"//\"; var c = connectTransport;\n"),
+            ("four-quote raw string holding three quotes", "        var r = \"\"\"\"\n            has \"\"\" inside \"\n            \"\"\"\" + \"//\"; var c = measured;\n"),
+        };
+        foreach (var (label, body) in mutants)
+        {
+            var problems = SeamProblems(Head + body + Tail);
+            check(problems.Length > 0, "P1-38 StripComments mutation self-test: a seam in code after a " + label + " (followed by a \"//\" string) is flagged", "no problem flagged");
+        }
     }
 
     // ---- 3e. P1-37: ReadReplyLine's abandoned read on a real pipe ----
@@ -1170,7 +1347,7 @@ internal static class RevitCommandDeadlineTests
             calls.Clear();
             Func<string, string, string?> configured = (pipe, line) => { calls.Add("transport"); throw error; };
             var seam = new Bim.Cli.RevitDeadlineTransport(SeamPipe, RevitCommandPolicy.None, configured, readTimeout, deadline, () => TimeSpan.Zero, cutReads: cutReads,
-                connectThenRead: Legacy(readTimeout, configured, left => { calls.Add("cut " + Label(left)); return Throws(error); },
+                connectThenRead: Legacy(check, readTimeout, configured, left => { calls.Add("cut " + Label(left)); return Throws(error); },
                     (read, connect) => { calls.Add("connect " + Label(read) + "/" + Label(connect)); return Throws(error); }));
             return RevitElementQueryPaging.All(wallsText, seam).ToJson();
         }
