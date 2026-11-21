@@ -406,22 +406,21 @@ internal static class DeletedCwdPathTests
     // verb that reaches its exclusive CreateNew write gets EACCES there, the verb's typed output_io_error with detail
     // UnauthorizedAccessException (audit-verify --write-anchor of a clean empty log). The reason is pinned as facts measured
     // in the same locked state. Linux only (counted SKIP elsewhere), skipped when a mode-000 directory stays listable (root).
-    const string Measure35 = "P10-35 probe: to be measured";
-
     static void LinuxUnsearchable(string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
     {
         var dummy = Path.Combine(scratch, "p10-35-dummy.json");
         File.WriteAllText(dummy, "{}\n", new UTF8Encoding(false));
         var log = Path.Combine(scratch, "p10-35-empty.jsonl");
         File.WriteAllBytes(log, Array.Empty<byte>());
-        // (verb, arguments with the relative output, the literal line). <scratch> stands for the scratch directory.
+        // (verb, arguments with the relative output, the literal line as measured in run 44892086261; <scratch> stands for the
+        // scratch directory). Each equals the same run with an absolute output (P10-32's reference): the input is refused first.
         var cases = new List<(string Verb, string[] Arguments, string Expected)>
         {
-            ("generate-prototypes", new[] { "generate-prototypes", dummy, RelativeOutput }, Measure35),
-            ("generate-typology", new[] { "generate-typology", dummy, RelativeOutput }, Measure35),
-            ("plan-layouts", new[] { "plan-layouts", dummy, RelativeOutput }, Measure35),
-            ("export-gltf", new[] { "export-gltf", dummy, "relative-output.glb" }, Measure35),
-            ("bcf-export", new[] { "bcf-export", dummy, "relative-output.bcfzip" }, Measure35),
+            ("generate-prototypes", new[] { "generate-prototypes", dummy, RelativeOutput }, """{"status":"failed","code":"generate_prototypes_request_invalid","detail":"typology"}"""),
+            ("generate-typology", new[] { "generate-typology", dummy, RelativeOutput }, """{"status":"failed","code":"generate_typology_request_invalid","detail":"pack"}"""),
+            ("plan-layouts", new[] { "plan-layouts", dummy, RelativeOutput }, """{"status":"failed","code":"plan_layouts_brief_invalid","detail":"version_unsupported at brief_version"}"""),
+            ("export-gltf", new[] { "export-gltf", dummy, "relative-output.glb" }, """{"status":"failed","code":"bim_ir_invalid","detail":"Elements is null"}"""),
+            ("bcf-export", new[] { "bcf-export", dummy, "relative-output.bcfzip" }, """{"status":"failed","code":"bcf_export_input_invalid","detail":"$.kind"}"""),
             ("audit-verify --write-anchor (clean empty log)", new[] { "audit-verify", log, "--write-anchor", RelativeOutput },
                 JsonSerializer.Serialize(new { status = "failed", code = "output_io_error", detail = "UnauthorizedAccessException" })),
         };
