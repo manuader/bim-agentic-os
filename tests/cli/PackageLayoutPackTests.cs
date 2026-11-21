@@ -702,6 +702,11 @@ internal static class PackageLayoutPackTests
                 var root = document.RootElement;
                 if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("libraries", out var libraries) || libraries.ValueKind != JsonValueKind.Object) return null;
                 var escaping = new List<string>();
+                if (root.TryGetProperty("targets", out var targets) && targets.ValueKind == JsonValueKind.Object)
+                    foreach (var target in targets.EnumerateObject().Where(target => target.Value.ValueKind == JsonValueKind.Object))
+                        foreach (var entry in target.Value.EnumerateObject().Where(entry => entry.Value.ValueKind == JsonValueKind.Object))
+                            if (entry.Value.TryGetProperty("runtime", out var runtime) && runtime.ValueKind == JsonValueKind.Object)
+                                escaping.AddRange(runtime.EnumerateObject().Where(asset => Normal(asset.Name) is null).Select(asset => "runtime " + entry.Name + " escaping path " + asset.Name));
                 return escaping;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
