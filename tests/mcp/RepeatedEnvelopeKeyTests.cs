@@ -157,6 +157,7 @@ internal static class RepeatedEnvelopeKeyTests
         }
 
         RunP10_34(root, check);
+        RunP10_36(root, check);
     }
 
     public const string EnvelopeNotText = "invalid_request: member name is not valid text";
@@ -317,6 +318,243 @@ internal static class RepeatedEnvelopeKeyTests
             Check(paramsText > 0 && paramsRepeat > paramsText && nameRequired > paramsRepeat && nameText > nameRequired && lookup > nameText,
                 "CallTool checks params member names as text before repeated params members and the name text after name required, before the tool lookup | "
                 + string.Join(" ", new[] { paramsText, paramsRepeat, nameRequired, nameText, lookup }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
+        }
+    }
+
+    public const string LineNotText = "parse_error: line is not valid text";
+
+    // P10-36: lone surrogates in the params of the other methods, inside _meta, as raw (unescaped) chars in the line
+    // given to Handle, and through the real Release Bim.Mcp.dll over stdio. Oracle, through McpServer.Handle with a
+    // counting Revit transport, then the real process:
+    //   1. Measurement (the probe): each case's outcome is reported in the failure message.
+    //   2. After the fix: a params object member name that is not valid text on initialize, ping or tools/list is -32602
+    //      "invalid_params: params member name is not valid text" with the id (the tools/call refusal of P10-34). A line
+    //      holding an unpaired surrogate char (raw, not a \u escape; anywhere, also outside strings or in a notification)
+    //      is not JSON text: -32700 "parse_error: line is not valid text" with id null, checked after request_too_large,
+    //      before parsing (it was internal_error). Pinned as measured, with the reason: a lone surrogate inside _meta
+    //      (names or values; tools/call, ping, initialize) is accepted, since _meta is never read, compared or echoed; a
+    //      notification's params are never read (no response); an unknown method's params are never read (-32601).
+    //   3. Exact bytes: the new refusals, the echoed id of a valid surrogate pair (escaped and raw), well-formed neighbours.
+    //   4. The real Release Bim.Mcp.dll over stdio answers the P10-34 refusals and the new -32602 byte for byte; stdin is
+    //      UTF-8 decoded with replacement, so WTF-8 lone-surrogate bytes (ED A0 80) become three U+FFFD and are valid text
+    //      (pinned as measured); a raw UTF-8 surrogate pair id is echoed like the escaped one.
+    //   5. Static: Handle checks the line as text after the size check and before JsonDocument.Parse; Dispatch checks
+    //      the params names of the other methods after the notification return.
+    static void RunP10_36(string root, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "P10-36 lone surrogates in other params and the raw line: " + name);
+        static string Short(string text) => text.Length > 900 ? text[..900] + "..." : text;
+        var sends = 0;
+        var server = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { sends++; return null; }, null);
+        var lone = new string((char)0xD800, 1);
+        var loneLow = new string((char)0xDC00, 1);
+        var pair = "\U0001F600";
+        static string Request(string id, string method, string parameters) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"" + method + "\",\"params\":" + parameters + "}";
+        const string Init = "\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"p10-36\",\"version\":\"0\"}";
+
+        static string Outcome(string? response)
+        {
+            if (response is null) return "none";
+            var node = JsonNode.Parse(response)!.AsObject();
+            var id = node["id"]?.ToJsonString() ?? "null";
+            if (node["error"] is JsonObject error)
+                return error["code"]!.GetValue<int>().ToString(CultureInfo.InvariantCulture) + ":" + error["message"]!.GetValue<string>() + "@" + id;
+            if (node["result"] is JsonObject result)
+                return "result@" + id + ":" + (result["content"]?[0]?["text"]?.GetValue<string>() ?? result.ToJsonString());
+            return "other:" + response;
+        }
+        string Safe(string line)
+        {
+            try { return Outcome(server.Handle(line)); }
+            catch (Exception error) { return "threw " + error.GetType().Name + ": " + error.Message; }
+        }
+
+        var initialized = Safe(Request("90", "initialize", "{" + Init + "}"));
+        var listed = Safe("""{"jsonrpc":"2.0","id":91,"method":"tools/list"}""");
+        Check(initialized.StartsWith("result@90:{\"protocolVersion\":", StringComparison.Ordinal) && listed.StartsWith("result@91:{\"tools\":[", StringComparison.Ordinal),
+            "fixture: initialize and tools/list answer | " + Short(initialized) + " / " + Short(listed));
+        string As(string outcome, string id) => outcome[..outcome.IndexOf('@')] + "@" + id + outcome[outcome.IndexOf(':')..];
+        static string UnknownTool(string id) => "result@" + id + ":{\"status\":\"failed\",\"code\":\"unknown_tool\"}";
+
+        var cases = new List<(string Label, string Line, string Expected)>
+        {
+            // ---- params member names of the other methods: -32602 ----
+            ("O1 ping params lone name", Request("1", "ping", """{"\ud800":1}"""), "-32602:" + ParamsNotText + "@1"),
+            ("O2 initialize params lone name", Request("2", "initialize", "{" + Init + ",\"\\ud800\":1}"), "-32602:" + ParamsNotText + "@2"),
+            ("O3 tools/list params lone low name", Request("3", "tools/list", """{"\udc00":1}"""), "-32602:" + ParamsNotText + "@3"),
+            ("O4 tools/list params lone name twice", Request("\"l\"", "tools/list", """{"cursor":"x","\ud800":1,"\ud800":2}"""), "-32602:" + ParamsNotText + "@\"l\""),
+            ("O5 initialize params lone name first", Request("4", "initialize", "{\"\\udc00\":1," + Init + "}"), "-32602:" + ParamsNotText + "@4"),
+            // pinned as measured: never read
+            ("O6 notification params lone name", """{"jsonrpc":"2.0","method":"notifications/initialized","params":{"\ud800":1}}""", "none"),
+            ("O7 unknown method params lone name", Request("6", "resources/list", """{"\ud800":1}"""), "-32601:method_not_found@6"),
+            // ---- inside _meta: pinned as measured (accepted, never read) ----
+            ("M1 tools/call _meta lone name", Request("10", "tools/call", """{"name":"p10_36_unknown","arguments":{},"_meta":{"\ud800":1}}"""), UnknownTool("10")),
+            ("M2 tools/call _meta progressToken lone", Request("11", "tools/call", """{"name":"p10_36_unknown","_meta":{"progressToken":"\ud800"}}"""), UnknownTool("11")),
+            ("M3 ping _meta lone name", Request("12", "ping", """{"_meta":{"\ud800":1}}"""), "result@12:{}"),
+            ("M4 initialize _meta lone value", Request("13", "initialize", "{" + Init + ",\"_meta\":{\"progressToken\":\"\\udc00\"}}"), As(initialized, "13")),
+            ("M5 tools/list _meta lone name", Request("14", "tools/list", """{"_meta":{"\udc00":"\ud800"}}"""), As(listed, "14")),
+            // ---- a raw (unescaped) unpaired surrogate char in the line: -32700 ----
+            ("R1 raw lone in envelope name", "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"ping\",\"" + lone + "\":1}", "-32700:" + LineNotText + "@null"),
+            ("R2 raw lone low in method", "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"ping" + loneLow + "\"}", "-32700:" + LineNotText + "@null"),
+            ("R3 raw lone in id", "{\"jsonrpc\":\"2.0\",\"id\":\"" + lone + "\",\"method\":\"ping\"}", "-32700:" + LineNotText + "@null"),
+            ("R4 raw lone in argument name", Request("23", "tools/call", "{\"name\":\"validate\",\"arguments\":{\"" + lone + "\":1}}"), "-32700:" + LineNotText + "@null"),
+            ("R5 raw lone in ping params name", Request("24", "ping", "{\"" + lone + "\":1}"), "-32700:" + LineNotText + "@null"),
+            ("R6 raw lone in _meta value", Request("25", "tools/call", "{\"name\":\"p10_36_unknown\",\"_meta\":{\"progressToken\":\"" + lone + "\"}}"), "-32700:" + LineNotText + "@null"),
+            ("R7 raw lone after the object", """{"jsonrpc":"2.0","id":26,"method":"ping"}""" + lone, "-32700:" + LineNotText + "@null"),
+            ("R8 raw lone in a notification", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"" + lone + "\":1}", "-32700:" + LineNotText + "@null"),
+            ("R9 raw reversed pair in name", "{\"jsonrpc\":\"2.0\",\"id\":28,\"method\":\"ping\",\"" + loneLow + lone + "\":1}", "-32700:" + LineNotText + "@null"),
+            ("R10 raw lone in a tools/call name", Request("29", "tools/call", "{\"name\":\"validate" + lone + "\",\"arguments\":{\"project\":{}}}"), "-32700:" + LineNotText + "@null"),
+            // raw valid pairs stay valid text
+            ("W1 raw pair envelope name", "{\"jsonrpc\":\"2.0\",\"id\":30,\"method\":\"ping\",\"" + pair + "\":1}", "result@30:{}"),
+            ("W2 raw pair method", "{\"jsonrpc\":\"2.0\",\"id\":31,\"method\":\"ping" + pair + "\"}", "-32601:method_not_found@31"),
+            ("W3 raw pair ping params name", Request("32", "ping", "{\"" + pair + "\":1}"), "result@32:{}"),
+            ("W4 escaped pair ping params name", Request("33", "ping", """{"\ud83d\ude00":1}"""), "result@33:{}"),
+        };
+
+        var measured = new List<string>();
+        var bad = new List<string>();
+        foreach (var (label, line, expected) in cases)
+        {
+            var outcome = Safe(line);
+            measured.Add(label + " => " + (outcome.Length > 160 ? outcome[..160] + "..." : outcome));
+            if (outcome != expected) bad.Add(label + " (expected " + expected + ")");
+        }
+        Check(bad.Count == 0 && sends == 0,
+            "lone surrogates in other params, _meta and the raw line give one documented outcome, no transport send (sends "
+            + sends.ToString(CultureInfo.InvariantCulture) + ") | failing " + bad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", bad)
+            + " | measured: " + string.Join(" ; ", measured));
+
+        // ---- 3. exact bytes ----
+        const string PairIdEcho = """{"jsonrpc":"2.0","id":"\uD83D\uDE00","result":{}}""";
+        const string PingParamsRefusal = """{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"invalid_params: params member name is not valid text"}}""";
+        const string RawLineRefusal = """{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse_error: line is not valid text"}}""";
+        {
+            var exact = new List<(string Label, string Line, string Expected)>
+            {
+                ("-32602 ping params name not text", Request("1", "ping", """{"\ud800":1}"""), PingParamsRefusal),
+                ("-32602 tools/list params name not text", Request("\"t\"", "tools/list", """{"\udc00":1}"""),
+                    """{"jsonrpc":"2.0","id":"t","error":{"code":-32602,"message":"invalid_params: params member name is not valid text"}}"""),
+                ("-32700 raw lone surrogate", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"ping\",\"" + lone + "\":1}", RawLineRefusal),
+                ("escaped surrogate pair id", """{"jsonrpc":"2.0","id":"\ud83d\ude00","method":"ping"}""", PairIdEcho),
+                ("escaped surrogate pair id, upper hex", """{"jsonrpc":"2.0","id":"\uD83D\uDE00","method":"ping"}""", PairIdEcho),
+                ("raw surrogate pair id", "{\"jsonrpc\":\"2.0\",\"id\":\"" + pair + "\",\"method\":\"ping\"}", PairIdEcho),
+                ("ping with empty params", Request("40", "ping", "{}"), """{"jsonrpc":"2.0","id":40,"result":{}}"""),
+                ("ping with a params member", Request("41", "ping", """{"x":1,"_meta":{"progressToken":1}}"""), """{"jsonrpc":"2.0","id":41,"result":{}}"""),
+                ("ping with array params", Request("42", "ping", "[1]"), """{"jsonrpc":"2.0","id":42,"result":{}}"""),
+                ("malformed JSON", """{"jsonrpc":"2.0","id":43,""", """{"jsonrpc":"2.0","id":null,"error":{"code":-32700,"message":"parse_error"}}"""),
+                ("raw U+FFFD in a member name", "{\"jsonrpc\":\"2.0\",\"id\":44,\"method\":\"ping\",\"\uFFFD\":1}", """{"jsonrpc":"2.0","id":44,"result":{}}"""),
+            };
+            var differing = new List<string>();
+            foreach (var (label, line, expected) in exact)
+            {
+                string response;
+                try { response = server.Handle(line) ?? "none"; }
+                catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                if (response != expected) differing.Add(label + " => " + response);
+            }
+            Check(differing.Count == 0, "refusal, surrogate-pair id and well-formed response bytes are exact | " + string.Join(" ; ", differing));
+            var plainInit = server.Handle(Request("50", "initialize", "{" + Init + "}"));
+            var metaInit = server.Handle(Request("50", "initialize", "{" + Init + ",\"_meta\":{\"\\ud800\":1}}"));
+            Check(plainInit is not null && plainInit == metaInit, "initialize with a lone surrogate inside _meta answers the plain initialize bytes | " + Short(metaInit ?? "none"));
+            var plainList = server.Handle("""{"jsonrpc":"2.0","id":51,"method":"tools/list"}""");
+            var cursorList = server.Handle(Request("51", "tools/list", """{"cursor":"x"}"""));
+            Check(plainList is not null && plainList == cursorList, "tools/list with a valid params object answers the plain tools/list bytes");
+        }
+
+        // ---- 4. the real Release Bim.Mcp.dll over stdio ----
+        {
+            var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
+            Check(File.Exists(mcpDll), "fixture: the Release Bim.Mcp.dll exists (" + mcpDll + ")");
+            var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
+            static byte[] Ascii(string text) => System.Text.Encoding.UTF8.GetBytes(text);
+            byte[] Concat(params byte[][] parts) => parts.SelectMany(part => part).ToArray();
+            var wtf8Lone = new byte[] { 0xED, 0xA0, 0x80 };
+            var utf8Pair = new byte[] { 0xF0, 0x9F, 0x98, 0x80 };
+            var replaced = "\uFFFD\uFFFD\uFFFD";
+            var lines = new List<(string Label, byte[] Line, string Expected)>
+            {
+                // P10-34 refusals (exact bytes pinned in RunP10_34)
+                ("-32600 repeated member", Ascii("""{"jsonrpc":"2.0","id":6,"method":"ping","method":"tools/list"}"""),
+                    """{"jsonrpc":"2.0","id":6,"error":{"code":-32600,"message":"invalid_request: repeated member method"}}"""),
+                ("-32600 repeated id", Ascii("""{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}"""),
+                    """{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid_request: repeated member id"}}"""),
+                ("-32602 repeated params member", Ascii(Request("20", "tools/call", """{"name":"p10_33_unknown","name":"validate","arguments":{"project":{}}}""")),
+                    """{"jsonrpc":"2.0","id":20,"error":{"code":-32602,"message":"invalid_params: repeated params member name"}}"""),
+                ("-32600 member name not text", Ascii("""{"jsonrpc":"2.0","id":1,"method":"ping","\ud800":1}"""),
+                    """{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid_request: member name is not valid text"}}"""),
+                ("-32600 method not text", Ascii("""{"jsonrpc":"2.0","id":"m","method":"\ud800"}"""),
+                    """{"jsonrpc":"2.0","id":"m","error":{"code":-32600,"message":"invalid_request: method is not valid text"}}"""),
+                ("-32602 params member name not text", Ascii(Request("21", "tools/call", """{"name":"validate","\ud800":1}""")),
+                    """{"jsonrpc":"2.0","id":21,"error":{"code":-32602,"message":"invalid_params: params member name is not valid text"}}"""),
+                ("-32602 name not text", Ascii(Request("22", "tools/call", """{"name":"\ud800"}""")),
+                    """{"jsonrpc":"2.0","id":22,"error":{"code":-32602,"message":"invalid_params: name is not valid text"}}"""),
+                // P10-36
+                ("-32602 ping params name not text", Ascii(Request("1", "ping", """{"\ud800":1}""")), PingParamsRefusal),
+                ("escaped surrogate pair id", Ascii("""{"jsonrpc":"2.0","id":"\ud83d\ude00","method":"ping"}"""), PairIdEcho),
+                ("raw UTF-8 surrogate pair id", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":\""), utf8Pair, Ascii("\",\"method\":\"ping\"}")), PairIdEcho),
+                ("WTF-8 lone surrogate member name", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"ping\",\""), wtf8Lone, Ascii("\":1}")), """{"jsonrpc":"2.0","id":60,"result":{}}"""),
+                ("WTF-8 lone surrogate in method", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"ping"), wtf8Lone, Ascii("\"}")),
+                    """{"jsonrpc":"2.0","id":61,"error":{"code":-32601,"message":"method_not_found"}}"""),
+                ("WTF-8 lone surrogate id", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":\""), wtf8Lone, Ascii("\",\"method\":\"ping\"}")),
+                    "{\"jsonrpc\":\"2.0\",\"id\":\"" + replaced + "\",\"result\":{}}"),
+                ("ping", Ascii("""{"jsonrpc":"2.0","id":62,"method":"ping"}"""), """{"jsonrpc":"2.0","id":62,"result":{}}"""),
+            };
+            var stdin = lines.SelectMany(line => line.Line.Concat(new byte[] { (byte)'\n' })).ToArray();
+            byte[] stdout = [];
+            var stderr = "";
+            var exit = -1;
+            try
+            {
+                var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                start.ArgumentList.Add(mcpDll);
+                using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: " + dotnet);
+                using var collected = new MemoryStream();
+                var reading = process.StandardOutput.BaseStream.CopyToAsync(collected);
+                var errors = process.StandardError.ReadToEndAsync();
+                try { process.StandardInput.BaseStream.Write(stdin); process.StandardInput.BaseStream.Flush(); process.StandardInput.Close(); } catch (IOException) { }
+                if (!process.WaitForExit(120000)) { process.Kill(true); stderr = "<timed out>"; }
+                else
+                {
+                    process.WaitForExit();
+                    reading.Wait();
+                    stdout = collected.ToArray();
+                    stderr = errors.Result;
+                    exit = process.ExitCode;
+                }
+            }
+            catch (Exception error) { stderr = "threw " + error.GetType().Name + ": " + error.Message; }
+            var expectedBytes = System.Text.Encoding.UTF8.GetBytes(string.Concat(lines.Select(line => line.Expected + "\n")));
+            var got = System.Text.Encoding.UTF8.GetString(stdout).Split('\n');
+            var differing = new List<string>();
+            for (var i = 0; i < lines.Count; i++)
+                if (i >= got.Length || got[i] != lines[i].Expected) differing.Add(lines[i].Label + " => " + (i < got.Length ? got[i] : "<missing>"));
+            Check(exit == 0 && stdout.AsSpan().SequenceEqual(expectedBytes),
+                "the real Bim.Mcp.dll over stdio answers the P10-34 and P10-36 lines byte for byte (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
+                + stdout.Length.ToString(CultureInfo.InvariantCulture) + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | differing: "
+                + string.Join(" ; ", differing) + " | hex of the WTF-8 id line: " + (got.Length > 12 ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(got[12])) : "-") + " | stderr: " + Short(stderr));
+        }
+
+        // ---- 5. static ----
+        {
+            var source = DocUpdateLinkTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")));
+            string Body(string start, string next)
+            {
+                var from = source.IndexOf(start, StringComparison.Ordinal);
+                var to = from < 0 ? -1 : source.IndexOf(next, from, StringComparison.Ordinal);
+                return from < 0 || to < 0 ? "" : source[from..to];
+            }
+            var handle = Body("public string? Handle(", "public static void Run(");
+            var size = handle.IndexOf("request_too_large", StringComparison.Ordinal);
+            var text = handle.IndexOf("line is not valid text", StringComparison.Ordinal);
+            var parse = handle.IndexOf("JsonDocument.Parse(", StringComparison.Ordinal);
+            Check(size > 0 && text > size && parse > text, "Handle checks the line as text after the size check and before parsing | "
+                + string.Join(" ", new[] { size, text, parse }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
+            var dispatch = Body("string? Dispatch(", "static JsonObject Initialize(");
+            var notification = dispatch.IndexOf("if (!hasId) return null;", StringComparison.Ordinal);
+            var paramsText = dispatch.IndexOf("params member name is not valid text", StringComparison.Ordinal);
+            var switchAt = dispatch.IndexOf("switch (method)", StringComparison.Ordinal);
+            Check(notification > 0 && paramsText > notification && switchAt > paramsText, "Dispatch checks other methods' params names as text after the notification return, before the method switch | "
+                + string.Join(" ", new[] { notification, paramsText, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
         }
     }
 }
