@@ -12,6 +12,12 @@ namespace Bim.Cad;
 // Paper-space and invisible flags are inherited from enclosing INSERTs. A MINSERT array places the block once per cell
 // (row-major), each cell's insert-path element written "key[row,column]"; every cell counts against MaxWork, its
 // entities against MaxEntities.
+// P6-34: a block's z axis is followed to first order. Every placement carries, next to its XY transform, where one
+// unit of block z lands in world XY (zero at the top level and under exact +-Z normals); a nested INSERT's insertion
+// height (DxfInsert.Elevation) shifts its placement by that much, and its own normal's horizontal part (ZAxisXY,
+// through the XY transform) plus the enclosing z direction times its ZAxisZ becomes its block's. Under near +-Z
+// normals this keeps nested elevations within 1e-6 of ezdxf; the z of leaf entities (LWPOLYLINE group 38, LINE and
+// TEXT z) and of ATTRIBs is still dropped.
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -55,7 +61,7 @@ public static class DxfExploder
             Warnings.Add(new DxfWarning(code, line, message));
         }
 
-        public void Emit(DxfEntity entity, Affine transform, IReadOnlyList<string> path, string? inheritedLayer, bool inheritedPaper, bool inheritedInvisible, int depth)
+        public void Emit(DxfEntity entity, Affine transform, IReadOnlyList<string> path, string? inheritedLayer, bool inheritedPaper, bool inheritedInvisible, int depth, Point2 zToXY = default)
         {
             var source = entity.Provenance;
             Spend(source.Line);
@@ -80,13 +86,16 @@ public static class DxfExploder
                 if (depth + 1 > options.MaxDepth)
                     throw new DxfFormatException("explode-limit", source.Line, "block nesting deeper than " + options.MaxDepth.ToString(CultureInfo.InvariantCulture));
                 var key = source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture);
+                // The insertion's height moves the placement by zToXY times it; the block's z direction in world XY.
+                var placed = zToXY.X != 0 || zToXY.Y != 0 ? Affine.Translate(zToXY * insert.Elevation).Compose(transform) : transform;
+                var blockZ = transform.ApplyVector(insert.ZAxisXY) + zToXY * insert.ZAxisZ;
                 if (!insert.IsArray)
                 {
                     var local = Affine.Translate(insert.Insertion)
                         .Compose(Affine.Rotate(insert.RotationDegrees))
                         .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
                         .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
-                    EmitBlock(insert, block, key, transform, transform.Compose(local), path.Append(key).ToArray(), layer, paper, invisible, depth);
+                    EmitBlock(insert, block, key, transform, placed.Compose(local), blockZ, path.Append(key).ToArray(), layer, paper, invisible, depth);
                     return;
                 }
                 // MINSERT: one placement per cell, row by row; every cell after the first also counts as visited work.
@@ -104,7 +113,7 @@ public static class DxfExploder
                             .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
                         // ATTRIBs are placed for cell (0,0); other cells shift them by the rotated cell offset.
                         var attributes = transform.Compose(Affine.Translate(rotation.ApplyVector(offset)));
-                        EmitBlock(insert, block, key, attributes, transform.Compose(local), path.Append(DxfInsertPath.Cell(key, row, column)).ToArray(), layer, paper, invisible, depth);
+                        EmitBlock(insert, block, key, attributes, placed.Compose(local), blockZ, path.Append(DxfInsertPath.Cell(key, row, column)).ToArray(), layer, paper, invisible, depth);
                     }
                 }
                 return;
@@ -115,13 +124,13 @@ public static class DxfExploder
         // Emits one placement of a block: its entities through world, then the INSERT's ATTRIBs (already in the
         // coordinates the INSERT lives in, moved by attributeTransform) and the block's constant ATTDEFs.
         // InsertHandle of the emitted attributes is the INSERT's bare key, also for MINSERT cells.
-        private void EmitBlock(DxfInsert insert, DxfBlock block, string key, Affine attributeTransform, Affine world, string[] childPath, string layer, bool paper, bool invisible, int depth)
+        private void EmitBlock(DxfInsert insert, DxfBlock block, string key, Affine attributeTransform, Affine world, Point2 blockZ, string[] childPath, string layer, bool paper, bool invisible, int depth)
         {
             stack.Add(block.Name);
             foreach (var child in block.Entities)
             {
                 if (child is DxfAttribute { IsDefinition: true }) continue;
-                Emit(child, world, childPath, layer, paper, invisible, depth + 1);
+                Emit(child, world, childPath, layer, paper, invisible, depth + 1, blockZ);
             }
             stack.RemoveAt(stack.Count - 1);
             // ATTRIBs are already placed in the coordinates the INSERT itself lives in. Of the block's ATTDEFs only

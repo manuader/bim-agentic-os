@@ -497,6 +497,8 @@ public static class DxfReader
                         var rowSpacing = r.First(45) is { } gt ? DxfValues.Number(gt) : 0;
                         var frame = OcsFrame.Read(r);
                         if (!frame.IsHorizontal) return NotPlanar(p, state, frame);
+                        // P6-34: the insertion's world height and the normal's horizontal part, for nested inserts.
+                        var height = frame.ToWorld(insertion.X, insertion.Y, r.First(30) is { } gh ? DxfValues.Number(gh) : 0).Z;
                         insertion = frame.Place(insertion, r, 30);
                         if (frame.Kind == OcsKind.Mirrored) { rotation = -rotation; sx = -sx; columnSpacing = -columnSpacing; }
                         return new DxfInsert(p, name, insertion, sx, sy, DxfValues.NormaliseDegrees(rotation))
@@ -505,6 +507,9 @@ public static class DxfReader
                             Rows = rows,
                             ColumnSpacing = columnSpacing,
                             RowSpacing = rowSpacing,
+                            Elevation = height,
+                            ZAxisXY = frame.Exact ? default : new Point2(frame.Normal.X, frame.Normal.Y),
+                            ZAxisZ = frame.Normal.Z,
                         };
                     }
                 default:
