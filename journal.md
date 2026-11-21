@@ -1999,3 +1999,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay259
 - 2026-11-21T07:53:23Z lock taken (session_014pxpsQYssfCaNQg4QEzvZT relay259; was FREE, relay258 released 2026-11-21T07:24:52Z)
+
+## Relay260
+- 2026-11-21T08:52:41Z lock taken over (session_014pxpsBhoMipAg7 relay260; relay259 TAKEN since 2026-11-21T07:53:23Z, no heartbeat for 59 min > 45 min; its branches relay259-P2-38/P3-29/P4-32 on origin will be continued)
