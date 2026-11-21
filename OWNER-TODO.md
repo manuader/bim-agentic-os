@@ -419,3 +419,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay264 (2026-11-21)
 - [ ] `git pull` (main is now 6ea3c08). No new owner action; ADR0010/ADR0011 decisions and the -Catalogue run remain open (see above).
+
+## Relay265 (2026-11-21)
+- [ ] `git pull` (main is now e6cdf02). No new owner action. P6-36 changed DXF explode geometry only under near-±Z (tilted-normal) inserts; exact ±Z drawings are byte-unchanged. ADR0010/ADR0011 decisions and the -Catalogue run remain open (see above).
