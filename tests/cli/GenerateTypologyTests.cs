@@ -2231,6 +2231,12 @@ internal static class GenerateTypologyTests
     //   d. A disposed stdout behind a CountingWriter: for b and c the attempts are exactly the lines above (one each),
     //      exit 1, nothing escapes, stderr as above (an ObjectDisposedException diagnostic for c).
     //   Controls: an unbounded budget gives the real process's success and refusal bytes, stderr unwritten.
+    //   P3-34: c's per-line budget is also cut at the full line (k = all of it, as P7-34 for generate-prototypes): stdout is
+    //   the whole line without its newline directly followed by the whole typed line with its newline, so for the success
+    //   line a complete success JSON is on stdout while the exit is 1 and no file exists (pinned: the exit code decides).
+    //   StderrWriteProblems' documented limits are self-tested (both rejected, the safe side): a Console.Error named inside
+    //   the guarded write's own argument, and an argument nested deeper than four parentheses; an argument exactly four
+    //   deep is accepted. The docs/contracts P3-31 section's P3-32 / P3-34 wording is checked.
     static void PartialWriteRun(string root, string scratch, string cliDll, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "P3-31 " + name, detail);
@@ -2240,6 +2246,7 @@ internal static class GenerateTypologyTests
         var nl = Environment.NewLine;
         void Check32(bool condition, string name, string detail = "") => check(condition, "P3-32 " + name, detail);
         static string Escape(string text) => text.Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal);
+        void Check34(bool condition, string name, string detail = "") => check(condition, "P3-34 " + name, detail);
 
         // P3-32: the writer helpers' WriteLine() and Write(char[], int, int) are one attempt each (self-test); without the
         // overrides TextWriter would split them into one Write(char) per character.
@@ -2480,6 +2487,24 @@ internal static class GenerateTypologyTests
                 }
                 foreach (var (label, source) in rejected)
                     Check32(StderrWriteProblems(source).Count > 0, "self-test: the stderr pin rejects " + label);
+
+                // P3-34: the pin's documented limits. Each is a guarded write the pin still rejects (a false positive on the
+                // safe side: a product change in that shape must be restructured, never accepted unguarded).
+                {
+                    var problems = StderrWriteProblems(Wrap("try { Console.Error.WriteLine(a(b(c(d)))); } catch (Exception) { }"));
+                    Check34(problems.Count == 0, "self-test: the stderr pin accepts a guarded write whose argument nests four parentheses deep (the regex's limit)", "problems [" + string.Join("; ", problems) + "]");
+                }
+                foreach (var (label, source, expected) in new (string, string, string)[]
+                {
+                    ("a guarded write whose argument nests five parentheses deep (deeper than the four levels Arguments matches)", Wrap("try { Console.Error.WriteLine(a(b(c(d(e))))); } catch (Exception) { }"), "1 Console.Error uses but 0 "),
+                    ("a guarded write whose argument reads Console.Error (Console.Error.NewLine: two uses, one guarded shape)", Wrap("try { Console.Error.WriteLine(Console.Error.NewLine); } catch (Exception) { }"), "2 Console.Error uses but 1 "),
+                    ("a guarded write whose argument passes Console.Error itself", Wrap("try { Console.Error.WriteLine(Describe(Console.Error)); } catch (Exception) { }"), "2 Console.Error uses but 1 "),
+                })
+                {
+                    var problems = StderrWriteProblems(source);
+                    Check34(problems.Count == 1 && problems[0].StartsWith(expected, StringComparison.Ordinal),
+                        "self-test (documented limit, rejected on the safe side): the stderr pin rejects " + label, "problems [" + string.Join("; ", problems) + "]");
+                }
             }
 
             // ---- b. catch (Refusal): the typed refusals of the real process, cut part-way ----
@@ -2583,7 +2608,7 @@ internal static class GenerateTypologyTests
                 {
                     var diagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-typology", sample);
                     foreach (var perLine in new[] { false, true })
-                        foreach (var k in perLine ? new[] { 1, line.Length / 2 } : Cuts(line.Length))
+                        foreach (var k in perLine ? new[] { 1, line.Length / 2, line.Length } : Cuts(line.Length))
                         {
                             var output = Output();
                             byte[]? seen = null;
@@ -2597,6 +2622,14 @@ internal static class GenerateTypologyTests
                                 + " chars: stdout the truncated line" + (perLine ? " then the typed line's first " + k.ToString(CultureInfo.InvariantCulture) + " chars" : "")
                                 + ", the line then the typed line attempted once each, stderr the stdout exception's diagnostic once, exit 1, nothing escapes, no file" + (pin is not null ? " (the written file deleted)" : ""),
                                 D(r) + " seen " + (seen is null ? "<none>" : Hex(seen)));
+                            // P3-34 (as P7-34): the per-line budget cut at the full line.
+                            if (perLine && k == line.Length)
+                                Check34(Contained(r) && r.Out is PartialWriter { Rejected: 1 } && typedPart == envelope.Line + nl && TextOf(r) == line + envelope.Line + nl
+                                    && (pin is null || (line.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && line.EndsWith('}'))) && !File.Exists(output),
+                                    "pinned: the " + label + " line + stdout " + kind + " after a per-line budget of all " + line.Length.ToString(CultureInfo.InvariantCulture)
+                                    + " chars: stdout the whole line without its newline directly followed by the whole typed line with its newline, exit 1, no file"
+                                    + (pin is not null ? ": a complete success JSON object is on stdout while exit is 1 and no file exists (the exit code decides)" : ""),
+                                    D(r));
                         }
                 }
                 {
@@ -2607,6 +2640,18 @@ internal static class GenerateTypologyTests
                 }
             }
             Check(AllNull(), "the seams are null after the section");
+
+            // P3-34: the contract wording (docs/contracts/module-contracts.md, the P3-31 section and its P3-32 / P3-34 paragraphs).
+            var contracts = File.ReadAllText(Path.Combine(root, "docs", "contracts", "module-contracts.md"));
+            var heading = contracts.IndexOf("## generate-typology Document catch-all and partial stdout (P3-31)", StringComparison.Ordinal);
+            var next = heading < 0 ? -1 : contracts.IndexOf("\n## ", heading + 1, StringComparison.Ordinal);
+            var sectionText = heading < 0 ? "" : next < 0 ? contracts[heading..] : contracts[heading..next];
+            Check34(sectionText.Contains("after a partial `generate-typology` stdout write the exit code, not a parse of stdout, is authoritative", StringComparison.Ordinal)
+                && sectionText.Contains("so neither record stands alone", StringComparison.Ordinal)
+                && sectionText.Contains("P3-34: a per-line budget cut at the full success line", StringComparison.Ordinal)
+                && sectionText.Contains("the real Release `Bim.Mcp.dll` process over stdio", StringComparison.Ordinal),
+                "docs/contracts/module-contracts.md: the generate-typology partial-stdout section states that the exit code, not a parse of stdout, is authoritative, that neither record stands alone, the full-line cut and the real-process stdio result",
+                sectionText.Length == 0 ? "section not found" : sectionText);
         }
         finally
         {
@@ -2621,6 +2666,12 @@ internal static class GenerateTypologyTests
     // as the only statement of its try with an empty unfiltered catch; anything else (a bare write, a filtered,
     // narrowed or rethrowing catch, a finally, Write / WriteLineAsync / Flush, an alias, a second write in the try),
     // OpenStandardError, SetError or using static Console is a problem.
+    // P3-34, documented limits (self-tested in section 14, both on the safe side: the pin rejects, never accepts):
+    //   - a Console.Error named inside the guarded write's own argument (WriteLine(Console.Error.NewLine), or passing
+    //     Console.Error to a helper) counts as a second use that no guarded shape owns, so a correctly guarded write is
+    //     rejected (a false positive);
+    //   - Arguments balances at most four levels of parentheses (WriteLine(a(b(c(d)))) is accepted); a deeper argument
+    //     does not match the guarded shape, so that write is rejected too.
     static List<string> StderrWriteProblems(string source)
     {
         var code = ApplyIntentTests.CodeOf(source);
