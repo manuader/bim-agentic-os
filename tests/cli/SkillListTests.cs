@@ -90,6 +90,17 @@ using Bim.Core;
 //      (both verbs); on Linux skill-list with stdout >/dev/full exits 1 with empty stderr. Static: both Run bodies pinned;
 //      documented deltas CommandDeltaP533 and ResolveDeltaP533 reversed give the pre-P5-33 files (SHA-256), and section 13
 //      reads SkillListCommand.cs with CommandDeltaP533 reversed; RejectingWriter is declared only in the shared file.
+//  16. P5-34 ambiguous, conflict and drifted-lock twice-read: over a generated package whose skills hold xx.p534a.pack and
+//      xx.p534b.pack (distinct codes, both Fixture Country / Fixture Town: alias_overlap) and xx.p534d.one and
+//      xx.p534d.two (both claiming code xx.p534d, Twin Town: claim_duplicate), all pinned in an outside lock,
+//      jurisdiction-resolve under --lock runs twice in process (APP_CONTEXT_BASE_DIRECTORY override, restored; negative
+//      control skill_lock_missing) and twice as real processes and prints byte-identical, literally pinned lines:
+//      jurisdiction_ambiguous by metadata over the overlap, by code over the duplicate and by metadata over the duplicate,
+//      the code route success on an overlapping pack; jurisdiction_conflict is pinned in process from
+//      JurisdictionRegistry.Select (code with a mismatched country or municipality) and its CLI unreachability as the
+//      jurisdiction_resolve_usage line (--code with --country or --municipality is a usage refusal, exit 1); then the
+//      xx.p534a.pack sidecar's note is edited after pinning and both a metadata and a code selection over that drifted
+//      lock print the literal skill_lock_drift line on xx.p534a.pack.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -450,6 +461,9 @@ internal static class SkillListTests
 
         // ---- 15. P5-33 a throwing stdout in skill-list and a throwing stderr in jurisdiction-resolve ----
         StdoutFailure(root, scratch, dotnet, cliDll, check);
+
+        // ---- 16. P5-34 ambiguous, conflict and drifted-lock twice-read under --lock ----
+        AmbiguityTwiceRead(scratch, dotnet, cliDll, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -996,8 +1010,11 @@ internal static class SkillListTests
         RefusedTwice("sidecar json_invalid", repinned, JurisdictionCodes.JsonInvalid, Pack + "/jurisdiction.json");
         var malformed = JurisdictionRegistry.LoadLocked(skills, repinned);
         var malformedLine = malformed.Refusal is { } malformedRefusal ? Failed(malformedRefusal) : "<no refusal>";
-        Check(malformedLine.StartsWith("{\"status\":\"failed\",\"code\":\"json_invalid\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"", StringComparison.Ordinal),
-            "sidecar json_invalid: the in-process LoadLocked refusal line is json_invalid at " + Pack + "/jurisdiction.json", malformedLine);
+        // P5-34: tightened from a StartsWith prefix to the whole line; the detail is "$: " + the documented .NET 8
+        // System.Text.Json message for this truncated text (the one section 14 checks against JsonDocument.Parse).
+        const string MalformedPinned = "{\"status\":\"failed\",\"code\":\"json_invalid\",\"subject\":\"" + Pack + "/jurisdiction.json\",\"detail\":\"$: Expected start of a property name or value, but instead reached end of data. LineNumber: 0 | BytePositionInLine: 29.\"}";
+        Check(malformedLine == MalformedPinned,
+            "sidecar json_invalid: the in-process LoadLocked refusal line is the pinned json_invalid at " + Pack + "/jurisdiction.json with the documented System.Text.Json message", malformedLine + " | pinned " + MalformedPinned);
         Phase("sidecar json_invalid", repinned, 1, malformedLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
@@ -1118,6 +1135,9 @@ internal static class SkillListTests
         // ordinal order). The json_invalid message is the .NET 8 System.Text.Json text first observed in P5-30 run 44731149194.
         const string UnknownLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_unknown\",\"subject\":\"fixture country/nowhere else\",\"detail\":\"no registered jurisdiction matches; registered: xx.p532, xx.p532s\"}";
         const string StubRefusedLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_stub_refused\",\"subject\":\"xx.p532s\",\"detail\":\"jurisdiction xx.p532s is a stub example pack (xx.p532s.pack), not real law; pass allowStub to use it\"}";
+        // P5-34: aliased on purpose, not a missing pin. JurisdictionRegistry.Select refuses a stub after either route has
+        // matched it, with the claim's code as subject and no mention of the route, so the by-metadata refusal is the same
+        // bytes as the by-code one.
         const string StubRefusedByMetadataLine = StubRefusedLine;
         Case("selection success", lockPath, new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 0, Succeeded(Code, Pack, false));
         Case("selection success (accents, case and spacing folded)", lockPath, new[] { "--country", "  FIXTURE  country ", "--municipality", "f\u00EDxture town" }, 0, Succeeded(Code, Pack, false));
@@ -1149,6 +1169,170 @@ internal static class SkillListTests
         Case("json_invalid under allow-stub", repinned, new[] { "--code", StubCode, "--allow-stub" }, 1, jsonInvalidLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
+    }
+
+    // Section 16 (P5-34): see oracle 16 in the header.
+    static void AmbiguityTwiceRead(string scratch, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-34 ambiguity twice-read: " + name, detail);
+        const string PackA = "xx.p534a.pack";
+        const string CodeA = "xx.p534a";
+        const string PackB = "xx.p534b.pack";
+        const string CodeB = "xx.p534b";
+        const string DuplicateOne = "xx.p534d.one";
+        const string DuplicateTwo = "xx.p534d.two";
+        const string DuplicateCode = "xx.p534d";
+        var package = Path.Combine(scratch, "p534-pkg");
+        var packageCli = Path.Combine(package, "cli");
+        CopyDirectory(Path.GetDirectoryName(cliDll)!, packageCli);
+        File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
+        var skills = Path.Combine(package, "skills");
+        static string Manifest(string id) =>
+            "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n";
+        static string Sidecar(string code, string pack, string municipality, string note) =>
+            "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":false,\"note\":\"" + note + "\"}\n";
+        var packs = new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") };
+        foreach (var (id, code, municipality) in packs)
+        {
+            Directory.CreateDirectory(Path.Combine(skills, id));
+            File.WriteAllText(Path.Combine(skills, id, "skill.json"), Manifest(id), new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(skills, id, "jurisdiction.json"), Sidecar(code, id, municipality, "fictitious test fixture"), new UTF8Encoding(false));
+        }
+        var lockPath = Path.Combine(scratch, "p534.skills.lock.json");
+        File.WriteAllBytes(lockPath, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { PackA, PackB, DuplicateOne, DuplicateTwo })));
+        var packageDll = Path.Combine(packageCli, "Bim.Cli.dll");
+
+        (int Exit, string Out, string Err) Child(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(packageDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result.ReplaceLineEndings(" ").Trim());
+        }
+        // In process with AppContext.BaseDirectory read from baseDirectory for the run (null: unchanged); globals restored.
+        (int Exit, string Out, string Err) Inline(string[] arguments, string? baseDirectory)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var previousBase = AppContext.GetData("APP_CONTEXT_BASE_DIRECTORY");
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var exit = -1;
+            var thrown = "";
+            var seen = "";
+            try
+            {
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", baseDirectory);
+                seen = AppContext.BaseDirectory;
+                Environment.ExitCode = 0;
+                Console.SetOut(capturedOut);
+                Console.SetError(capturedError);
+                Bim.Cli.JurisdictionResolveCommand.Run(arguments);
+            }
+            catch (Exception failure) { thrown = " threw " + failure.GetType().Name + ": " + failure.Message; }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+                if (baseDirectory is not null) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previousBase);
+            }
+            if (baseDirectory is not null)
+                Check(seen == baseDirectory, "sentinel: override visible during the run", seen + " != " + baseDirectory);
+            return (exit, capturedOut.ToString(), (capturedError.ToString().Trim() + thrown).Trim());
+        }
+        static string D((int Exit, string Out, string Err) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out.Length > 600 ? r.Out[..600] + "..." : r.Out) + (r.Err.Length > 0 ? " stderr " + r.Err : "");
+        static string Failed(JurisdictionIssue issue) => JsonSerializer.Serialize(new { status = "failed", code = issue.Code, subject = issue.Subject, detail = issue.Detail });
+
+        var originalBase = AppContext.BaseDirectory;
+        var packageBase = packageCli + Path.DirectorySeparatorChar;
+        string[] runNames = { "in process #1", "in process #2", "process #1", "process #2" };
+        void Case(string label, string[] selection, int exit, string line)
+        {
+            var digest = TreeDigest(skills);
+            var lockBytes = File.ReadAllBytes(lockPath);
+            var arguments = new[] { "jurisdiction-resolve" }.Concat(selection).Concat(new[] { "--lock", lockPath }).ToArray();
+            var runs = new[] { Inline(arguments, packageBase), Inline(arguments, packageBase), Child(arguments), Child(arguments) };
+            for (var index = 0; index < runs.Length; index++)
+                Check(runs[index].Exit == exit && runs[index].Out == line + Environment.NewLine && runs[index].Err.Length == 0,
+                    label + ": " + string.Join(" ", selection) + " --lock " + runNames[index] + " prints the pinned line (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", nothing on stderr)",
+                    D(runs[index]) + " | expected " + JsonSerializer.Serialize(line + Environment.NewLine));
+            Check(runs.All(run => run.Exit == runs[0].Exit && run.Out == runs[0].Out && run.Err == runs[0].Err),
+                label + ": twice in process and twice as a real process print byte-identical output", string.Join(" || ", runs.Select(D)));
+            Check(TreeDigest(skills) == digest && File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), label + ": the generated skills tree and the lock are unchanged by every run");
+        }
+
+        // The registry behind the lines: four claims, the overlap and the duplicate reported as issues (dropped from every
+        // success envelope), and two reads of the same inputs are unequal registries (P5-27).
+        var first = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        var second = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        Check(first.Registry is { } a && second.Registry is { } b && !ReferenceEquals(a, b) && !a.Equals(b) && first != second
+            && a.Claims.Select(claim => claim.Code + " " + claim.Pack).SequenceEqual(new[] { CodeA + " " + PackA, CodeB + " " + PackB, DuplicateCode + " " + DuplicateOne, DuplicateCode + " " + DuplicateTwo })
+            && a.Claims.Select(claim => (claim.Code, claim.Pack)).SequenceEqual(b.Claims.Select(claim => (claim.Code, claim.Pack)))
+            && a.Issues.Select(issue => issue.Code + " " + issue.Subject).SequenceEqual(new[] { JurisdictionCodes.AliasOverlap + " " + CodeA + " " + CodeB, JurisdictionCodes.ClaimDuplicate + " " + DuplicateCode }),
+            "two in-process LoadLocked reads succeed with the four claims, report alias_overlap and claim_duplicate, and are unequal registries (P5-27)",
+            (first.Refusal?.ToString() ?? "") + " / " + string.Join(", ", first.Registry?.Claims.Select(claim => claim.Code + " " + claim.Pack) ?? Array.Empty<string>())
+            + " / " + string.Join(", ", first.Registry?.Issues.Select(issue => issue.Code + " " + issue.Subject) ?? Array.Empty<string>()));
+        var unoverridden = Inline(new[] { "jurisdiction-resolve", "--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath }, null);
+        Check(unoverridden.Exit == 1 && unoverridden.Err.Length == 0
+            && unoverridden.Out.StartsWith("{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockMissing + "\",\"subject\":\"xx.p534", StringComparison.Ordinal),
+            "negative control: in process with the original base directory the selection under the lock is skill_lock_missing (the override is load-bearing)", D(unoverridden));
+
+        // Derived from JurisdictionRegistry.SelectAny: metadata matches list "code (pack)" in claim order (code, then pack,
+        // ordinal) under the normalised "country/municipality" subject; a duplicated code lists its packs.
+        const string AmbiguousByMetadataLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"fixture country/fixture town\",\"detail\":\"matches xx.p534a (xx.p534a.pack), xx.p534b (xx.p534b.pack)\"}";
+        const string AmbiguousByCodeLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"xx.p534d\",\"detail\":\"claimed by xx.p534d.one, xx.p534d.two\"}";
+        const string AmbiguousDuplicateByMetadataLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"fixture country/twin town\",\"detail\":\"matches xx.p534d (xx.p534d.one), xx.p534d (xx.p534d.two)\"}";
+        const string OverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534a\",\"pack\":\"xx.p534a.pack\",\"version\":\"1.2.3\",\"stub\":false}";
+        const string UsageLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_resolve_usage\",\"detail\":\"usage: jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub]\"}";
+        const string ConflictCountryLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_conflict\",\"subject\":\"xx.p534a\",\"detail\":\"country Other Country does not match jurisdiction xx.p534a\"}";
+        const string ConflictMunicipalityLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_conflict\",\"subject\":\"xx.p534a\",\"detail\":\"municipality Other Town does not match jurisdiction xx.p534a\"}";
+        Case("ambiguous by metadata (alias overlap)", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, AmbiguousByMetadataLine);
+        Case("ambiguous by code (claim duplicate)", new[] { "--code", DuplicateCode }, 1, AmbiguousByCodeLine);
+        Case("ambiguous by metadata (claim duplicate)", new[] { "--country", "Fixture Country", "--municipality", "Twin Town" }, 1, AmbiguousDuplicateByMetadataLine);
+        Case("code route success on an overlapping pack", new[] { "--code", CodeA }, 0, OverlapCodeSuccessLine);
+
+        // jurisdiction_conflict: the registry refuses a code with a mismatched country or municipality, but the verb's
+        // parser refuses --code together with --country or --municipality as usage before any load, so the CLI never
+        // prints it; both facts are pinned.
+        var registry = first.Registry;
+        var conflictCountry = registry?.Select(new ProjectJurisdiction(CodeA, "Other Country", null));
+        var conflictMunicipality = registry?.Select(new ProjectJurisdiction(CodeA, "Fixture Country", "Other Town"));
+        Check(conflictCountry?.Refusal is { } countryRefusal && Failed(countryRefusal) == ConflictCountryLine
+            && conflictMunicipality?.Refusal is { } municipalityRefusal && Failed(municipalityRefusal) == ConflictMunicipalityLine,
+            "jurisdiction_conflict: in process, Select with code " + CodeA + " and a mismatched country, then a matching country and a mismatched municipality, refuses with the pinned lines",
+            (conflictCountry?.Refusal is { } shownCountry ? Failed(shownCountry) : "<no refusal>") + " / " + (conflictMunicipality?.Refusal is { } shownMunicipality ? Failed(shownMunicipality) : "<no refusal>"));
+        Case("conflict unreachable on the CLI: --code with --country is usage", new[] { "--code", CodeA, "--country", "Other Country" }, 1, UsageLine);
+        Case("conflict unreachable on the CLI: --code with --country and --municipality is usage", new[] { "--code", CodeA, "--country", "Fixture Country", "--municipality", "Other Town" }, 1, UsageLine);
+
+        // Drifted lock: xx.p534a.pack's sidecar note edited after pinning; the locked load refuses before any selection.
+        File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited.
+        const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
+        var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
+            "drifted lock: the in-process LoadLocked refusal equals the pinned skill_lock_drift line", (drifted.Refusal is { } shownDrift ? Failed(shownDrift) : "<no refusal>") + " | pinned " + DriftLine);
+        Case("selection over a drifted lock", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, DriftLine);
+        Case("code selection over a drifted lock", new[] { "--code", DuplicateCode }, 1, DriftLine);
+
+        Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
+        // P5-34 red probe (removed in the green commit): the measured lines of one real process per case.
+        var measured = new[]
+        {
+            new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" },
+            new[] { "--code", DuplicateCode },
+            new[] { "--code", CodeA, "--country", "Other Country" },
+        }.Select(selection => Child(new[] { "jurisdiction-resolve" }.Concat(selection).Concat(new[] { "--lock", lockPath }).ToArray())).Select(D);
+        Check(false, "probe: measured drifted-lock and usage lines", string.Join(" || ", measured));
     }
 
     // Reads of the skills directory skill-list must never make itself (P5-24): only JurisdictionRegistry.Load reads it.

@@ -65,7 +65,8 @@ internal static class TwiceReadToolTests
             var stderr = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>"); }
             process.WaitForExit();
-            _ = stderr.Result;
+            // P5-34: the packaged CLI writes nothing on stderr for any line these sections compare.
+            Check(stderr.Result.Length == 0, "the packaged CLI " + string.Join(" ", arguments) + " writes nothing on stderr | " + Short(stderr.Result));
             var text = stdout.Result;
             if (text.EndsWith('\n')) text = text[..^1];
             if (text.EndsWith('\r')) text = text[..^1];
@@ -194,6 +195,9 @@ internal static class TwiceReadToolTests
 
         // P5-32: the selection arguments and allow_stub under lock_path over a second generated package.
         Selection(work, dotnet, cliDll, mcpDll, call, check);
+
+        // P5-34: jurisdiction_ambiguous, jurisdiction_conflict (as -32602) and a drifted lock under lock_path.
+        Ambiguity(work, dotnet, cliDll, mcpDll, call, check);
     }
 
     // P5-32: jurisdiction_resolve with the selection arguments (country, municipality) and allow_stub under lock_path, over a
@@ -244,7 +248,8 @@ internal static class TwiceReadToolTests
             var stderr = process.StandardError.ReadToEndAsync();
             if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>"); }
             process.WaitForExit();
-            _ = stderr.Result;
+            // P5-34: the packaged CLI writes nothing on stderr for any line these sections compare.
+            Check(stderr.Result.Length == 0, "the packaged CLI " + string.Join(" ", arguments) + " writes nothing on stderr | " + Short(stderr.Result));
             var text = stdout.Result;
             if (text.EndsWith('\n')) text = text[..^1];
             if (text.EndsWith('\r')) text = text[..^1];
@@ -300,6 +305,9 @@ internal static class TwiceReadToolTests
         // ordinal order). The json_invalid message is the .NET 8 System.Text.Json text first observed in P5-30 run 44731149194.
         const string UnknownLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_unknown\",\"subject\":\"fixture country/nowhere else\",\"detail\":\"no registered jurisdiction matches; registered: xx.p532m, xx.p532t\"}";
         const string StubRefusedLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_stub_refused\",\"subject\":\"xx.p532t\",\"detail\":\"jurisdiction xx.p532t is a stub example pack (xx.p532t.pack), not real law; pass allowStub to use it\"}";
+        // P5-34: aliased on purpose, not a missing pin. JurisdictionRegistry.Select refuses a stub after either route has
+        // matched it, with the claim's code as subject and no mention of the route, so the by-metadata refusal is the same
+        // bytes as the by-code one.
         const string StubRefusedByMetadataLine = StubRefusedLine;
         const string JsonMessage = "Expected start of a property name or value, but instead reached end of data. LineNumber: 0 | BytePositionInLine: 29.";
 
@@ -367,6 +375,187 @@ internal static class TwiceReadToolTests
             ("selection", Args(repinned, ("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", repinned], jsonInvalidLine),
             ("allow_stub", Args(repinned, ("code", StubCode), ("allow_stub", true)), ["--code", StubCode, "--allow-stub", "--lock", repinned], jsonInvalidLine),
         });
+    }
+
+    // P5-34: jurisdiction_resolve under lock_path over a generated package (copied CLI + MCP) whose skills hold
+    // xx.p534ma.pack and xx.p534mb.pack (distinct codes, both Fixture Country / Fixture Town: alias_overlap) and
+    // xx.p534md.one and xx.p534md.two (both claiming code xx.p534md, Twin Town: claim_duplicate), all pinned in an outside
+    // lock. Every case runs the packaged CLI once for its line (exit and empty stderr checked), then the tool twice on the
+    // harness's in-process server (base-directory override, restored) and twice on one real packaged mcp/Bim.Mcp.dll
+    // process. Result cases: the text is byte-equal to the CLI line and the literal pin, isError = (exit 1):
+    // jurisdiction_ambiguous by metadata (overlap), by code and by metadata (duplicate), the code route success on an
+    // overlapping pack. jurisdiction_conflict is not reachable: code with a mismatched country (or a matching country and a
+    // mismatched municipality) is the verb's usage refusal, so the tool answers JSON-RPC -32602 with
+    // JurisdictionResolveTool.UsageMessage (no result) and the CLI prints the jurisdiction_resolve_usage line, exit 1.
+    // Then xx.p534ma.pack's sidecar note is edited after pinning: a metadata and a code selection are the literal
+    // skill_lock_drift line on xx.p534ma.pack.
+    static void Ambiguity(string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
+        static string Short(string text) => text.Length > 700 ? text[..700] + "..." : text;
+        const string PackA = "xx.p534ma.pack";
+        const string CodeA = "xx.p534ma";
+        const string PackB = "xx.p534mb.pack";
+        const string CodeB = "xx.p534mb";
+        const string DuplicateOne = "xx.p534md.one";
+        const string DuplicateTwo = "xx.p534md.two";
+        const string DuplicateCode = "xx.p534md";
+        var package = Path.Combine(work, "twice-read-mcp-p534", "pkg");
+        var packageCli = Path.Combine(package, "cli");
+        var packageMcp = Path.Combine(package, "mcp");
+        CopyDirectory(Path.GetDirectoryName(cliDll)!, packageCli);
+        CopyDirectory(Path.GetDirectoryName(mcpDll)!, packageMcp);
+        File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
+        File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
+        var skills = Path.Combine(package, "skills");
+        static string Sidecar(string code, string pack, string municipality, string note) =>
+            "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":false,\"note\":\"" + note + "\"}\n";
+        foreach (var (packId, code, municipality) in new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") })
+        {
+            Directory.CreateDirectory(Path.Combine(skills, packId));
+            File.WriteAllText(Path.Combine(skills, packId, "skill.json"),
+                "{\"manifest_version\":1,\"id\":\"" + packId + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(skills, packId, "jurisdiction.json"), Sidecar(code, packId, municipality, "fictitious test fixture"), new UTF8Encoding(false));
+        }
+        var lockPath = Path.Combine(work, "twice-read-mcp-p534", "p534m.skills.lock.json");
+        File.WriteAllBytes(lockPath, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { PackA, PackB, DuplicateOne, DuplicateTwo })));
+        var packageCliDll = Path.Combine(packageCli, "Bim.Cli.dll");
+        var packageMcpDll = Path.Combine(packageMcp, "Bim.Mcp.dll");
+        var packageBase = packageCli + Path.DirectorySeparatorChar;
+
+        (int Exit, string Out) Cli(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            start.ArgumentList.Add(packageCliDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>"); }
+            process.WaitForExit();
+            Check(stderr.Result.Length == 0, "the packaged CLI " + string.Join(" ", arguments) + " writes nothing on stderr | " + Short(stderr.Result));
+            var text = stdout.Result;
+            if (text.EndsWith('\n')) text = text[..^1];
+            if (text.EndsWith('\r')) text = text[..^1];
+            return (process.ExitCode, text);
+        }
+        string McpProcess(string stdin)
+        {
+            var start = new ProcessStartInfo(dotnet)
+            {
+                RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false),
+            };
+            start.ArgumentList.Add(packageMcpDll);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: " + dotnet);
+            var stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch (IOException) { }
+            if (!process.WaitForExit(120000)) { process.Kill(true); throw new InvalidOperationException("packaged MCP server timed out"); }
+            process.WaitForExit();
+            _ = stderr.Result;
+            return stdout.Result;
+        }
+        var id = 4000;
+        string Line(JsonObject arguments) => new JsonObject
+        {
+            ["jsonrpc"] = "2.0", ["id"] = ++id, ["method"] = "tools/call",
+            ["params"] = new JsonObject { ["name"] = "jurisdiction_resolve", ["arguments"] = arguments },
+        }.ToJsonString();
+        static bool IsResult(JsonObject response) => response["result"] is JsonObject result && result["content"] is JsonArray && !response.ContainsKey("error");
+        static string Text(JsonObject response) => response["result"]!["content"]![0]!["text"]!.GetValue<string>();
+        static bool IsError(JsonObject response) => response["result"]!["isError"]!.GetValue<bool>();
+        // A usage-equivalent call: JSON-RPC -32602 with the tool's usage message and no result.
+        static bool IsUsage(JsonObject response) =>
+            response["result"] is null && response["error"] is JsonObject error && error["code"] is JsonValue errorCode && errorCode.TryGetValue<int>(out var number) && number == -32602
+            && error["message"] is JsonValue message && message.TryGetValue<string>(out var messageText) && messageText == Bim.Mcp.JurisdictionResolveTool.UsageMessage;
+        JsonObject InProcess(string line, bool overridden)
+        {
+            var previous = AppContext.GetData("APP_CONTEXT_BASE_DIRECTORY");
+            try
+            {
+                if (overridden) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", packageBase);
+                return call(line);
+            }
+            finally { if (overridden) AppContext.SetData("APP_CONTEXT_BASE_DIRECTORY", previous); }
+        }
+        var originalBase = AppContext.BaseDirectory;
+        Check(Bim.Cli.SkillPackLookup.PackageRoot(packageMcp) == Path.GetFullPath(package), "the generated package is a package root from mcp/");
+        {
+            var plain = InProcess(Line(new JsonObject { ["country"] = "Fixture Country", ["municipality"] = "Fixture Town", ["lock_path"] = lockPath }), overridden: false);
+            Check(IsResult(plain) && IsError(plain) && Text(plain).StartsWith("{\"status\":\"failed\",\"code\":\"" + JurisdictionCodes.SkillLockMissing + "\",\"subject\":\"xx.p534m", StringComparison.Ordinal),
+                "negative control: without the base-directory override the in-process selection under lock_path is skill_lock_missing (the override is load-bearing) | " + Short(plain.ToJsonString()));
+        }
+
+        const string UsageLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_resolve_usage\",\"detail\":\"usage: jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub]\"}";
+        // Pinned is the CLI line; Usage marks a case the tool answers with -32602 (its CLI line is then UsageLine).
+        void Phase(string phase, (string Label, JsonObject Arguments, string[] CliArguments, string Pinned, bool Usage)[] cases)
+        {
+            var digest = TreeDigest(skills);
+            var lockBytes = File.ReadAllBytes(lockPath);
+            var cli = cases.Select(c => Cli(["jurisdiction-resolve", .. c.CliArguments])).ToArray();
+            for (var index = 0; index < cases.Length; index++)
+                Check(cli[index].Out == cases[index].Pinned && cli[index].Exit == (cases[index].Pinned.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) ? 0 : 1)
+                    && (!cases[index].Usage || cases[index].Pinned == UsageLine),
+                    phase + ": " + cases[index].Label + ": the packaged CLI line is the pinned one | exit " + cli[index].Exit.ToString(CultureInfo.InvariantCulture) + " " + Short(cli[index].Out));
+            bool Answers(JsonObject response, int index) => cases[index].Usage
+                ? IsUsage(response)
+                : IsResult(response) && Text(response) == cli[index].Out && Text(response) == cases[index].Pinned && IsError(response) == (cli[index].Exit != 0);
+            for (var index = 0; index < cases.Length; index++)
+                for (var turn = 1; turn <= 2; turn++)
+                {
+                    var response = InProcess(Line(cases[index].Arguments.DeepClone().AsObject()), true);
+                    Check(Answers(response, index),
+                        phase + ": " + cases[index].Label + " in-process call #" + turn.ToString(CultureInfo.InvariantCulture) + (cases[index].Usage ? " is -32602 with the usage message" : " text byte-equal to the CLI line and the pin, isError = (exit 1)") + " | " + Short(response.ToJsonString()));
+                }
+            Check(AppContext.BaseDirectory == originalBase, phase + ": AppContext.BaseDirectory is restored after the in-process calls");
+            var stdin = new StringBuilder();
+            var requestIds = new List<int>();
+            foreach (var c in cases) for (var turn = 0; turn < 2; turn++) { stdin.Append(Line(c.Arguments.DeepClone().AsObject())).Append('\n'); requestIds.Add(id); }
+            var lines = McpProcess(stdin.ToString()).Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r')).ToArray();
+            Check(lines.Length == cases.Length * 2, phase + ": the packaged Bim.Mcp.dll answers " + (cases.Length * 2).ToString(CultureInfo.InvariantCulture) + " lines | " + Short(string.Join(" / ", lines)));
+            for (var at = 0; at < lines.Length && at < cases.Length * 2; at++)
+            {
+                var index = at / 2;
+                var response = JsonNode.Parse(lines[at])!.AsObject();
+                Check(response["id"] is JsonValue responseId && responseId.TryGetValue<int>(out var answered) && answered == requestIds[at] && Answers(response, index),
+                    phase + ": " + cases[index].Label + " packaged-server call #" + (at % 2 + 1).ToString(CultureInfo.InvariantCulture) + " answers its request id " + (cases[index].Usage ? "with -32602 and the usage message" : "with text byte-equal to the CLI line and the pin") + " | " + Short(lines[at]));
+            }
+            Check(TreeDigest(skills) == digest && File.ReadAllBytes(lockPath).AsSpan().SequenceEqual(lockBytes), phase + ": the skills tree and the lock are unchanged");
+        }
+        JsonObject Args(params (string Name, JsonNode Value)[] values)
+        {
+            var arguments = new JsonObject();
+            foreach (var (name, value) in values) arguments[name] = value;
+            arguments["lock_path"] = lockPath;
+            return arguments;
+        }
+
+        // Derived from JurisdictionRegistry.SelectAny (claims ordered by code, then pack, ordinal; normalised metadata subject).
+        const string AmbiguousByMetadataLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"fixture country/fixture town\",\"detail\":\"matches xx.p534ma (xx.p534ma.pack), xx.p534mb (xx.p534mb.pack)\"}";
+        const string AmbiguousByCodeLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"xx.p534md\",\"detail\":\"claimed by xx.p534md.one, xx.p534md.two\"}";
+        const string AmbiguousDuplicateByMetadataLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"fixture country/twin town\",\"detail\":\"matches xx.p534md (xx.p534md.one), xx.p534md (xx.p534md.two)\"}";
+        const string OverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534ma\",\"pack\":\"xx.p534ma.pack\",\"version\":\"1.2.3\",\"stub\":false}";
+        Phase("valid lock", new (string, JsonObject, string[], string, bool)[]
+        {
+            ("ambiguous by metadata (alias overlap)", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], AmbiguousByMetadataLine, false),
+            ("ambiguous by code (claim duplicate)", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], AmbiguousByCodeLine, false),
+            ("ambiguous by metadata (claim duplicate)", Args(("country", "Fixture Country"), ("municipality", "Twin Town")), ["--country", "Fixture Country", "--municipality", "Twin Town", "--lock", lockPath], AmbiguousDuplicateByMetadataLine, false),
+            ("code route success on an overlapping pack", Args(("code", CodeA)), ["--code", CodeA, "--lock", lockPath], OverlapCodeSuccessLine, false),
+            ("conflict: code with a mismatched country", Args(("code", CodeA), ("country", "Other Country")), ["--code", CodeA, "--country", "Other Country", "--lock", lockPath], UsageLine, true),
+            ("conflict: code with a mismatched municipality", Args(("code", CodeA), ("country", "Fixture Country"), ("municipality", "Other Town")), ["--code", CodeA, "--country", "Fixture Country", "--municipality", "Other Town", "--lock", lockPath], UsageLine, true),
+        });
+
+        File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited.
+        const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
+        Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
+        {
+            ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], DriftLine, false),
+            ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], DriftLine, false),
+        });
+        // P5-34 red probe (removed in the green commit): the measured drifted-lock line of the packaged CLI.
+        Check(false, "probe: measured drifted-lock line | " + Cli(["jurisdiction-resolve", "--code", DuplicateCode, "--lock", lockPath]).Out);
     }
 
     static void CopyDirectory(string source, string target)
