@@ -1973,3 +1973,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay256
 - 2026-11-21T01:52:44Z lock taken (session_014pxpsTdbiLmasY6jB1ukuc relay256; was FREE, relay255 released 2026-11-21T01:28:53Z)
+- 2026-11-21T01:53:08Z picked P2-37 (phase 2), P3-31 (phase 3), P4-31 (phase 4) — oldest-touched (relay253); disjoint files (tests/mirror-journal macOS branch only by P2-37; GenerateTypologyCommand.cs Document catch-all + GenerateTypologyTests.cs new section only by P3-31; tests/cli/PackageLayoutPackTests.cs McpWithoutGltf + tests/packaging/test-package.ps1 new section only by P4-31). Workers spawned.
