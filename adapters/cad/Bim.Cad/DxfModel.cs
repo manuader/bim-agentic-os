@@ -49,6 +49,11 @@ public readonly record struct DxfVertex(Point2 Point, double Bulge);
 
 public sealed record DxfPolyline(DxfProvenance Provenance, IReadOnlyList<DxfVertex> Vertices, bool Closed) : DxfEntity(Provenance)
 {
+    // P6-36: the world height of an LWPOLYLINE's plane in the coordinates it lives in (its OCS elevation, group 38,
+    // taken to world z: -38 under an exact -Z OCS). DxfExploder uses it only under an enclosing near +-Z insert, where
+    // it shifts world XY by z times that normal's horizontal part. Not serialized; 0 for other polylines.
+    public double Elevation { get; init; }
+
     public IReadOnlyList<DxfPolylineSegment> Segments() => DxfGeometry.Segments(this);
 }
 
@@ -80,11 +85,13 @@ public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point
     // P6-34: the insertion's world height in the coordinates the INSERT lives in (its OCS point (x, y, group 30) taken
     // to world z), and where one unit of block z goes there: ZAxisXY is the horizontal part of the extrusion normal
     // (zero for an exact +-Z normal), ZAxisZ its z (+-1). DxfExploder uses them so that, under an enclosing insert with
-    // a near +-Z normal, a nested insertion's block z shifts world XY by z times that normal's horizontal part. The
-    // Z scale (group 43) is read as 1.
+    // a near +-Z normal, a nested insertion's block z shifts world XY by z times that normal's horizontal part.
+    // P6-36: ScaleZ is the Z scale (group 43, default 1); it scales where block z goes (and so nested elevations, the
+    // BLOCK base point z and leaf LWPOLYLINE elevations), which matters only under near +-Z normals.
     public double Elevation { get; init; }
     public Point2 ZAxisXY { get; init; }
     public double ZAxisZ { get; init; } = 1;
+    public double ScaleZ { get; init; } = 1;
 
     // The ATTRIBs that follow the INSERT (group 66 = 1) up to its SEQEND, in file order.
     public IReadOnlyList<DxfAttribute> Attributes { get; init; } = Array.Empty<DxfAttribute>();
@@ -141,7 +148,12 @@ public static class DxfInsertPath
 
 public sealed record DxfLayer(string Name, int Color, string LineType, bool Frozen, bool Off, bool Declared);
 
-public sealed record DxfBlock(string Name, Point2 BasePoint, string? Handle, int Line, IReadOnlyList<DxfEntity> Entities);
+public sealed record DxfBlock(string Name, Point2 BasePoint, string? Handle, int Line, IReadOnlyList<DxfEntity> Entities)
+{
+    // P6-36: the BLOCK base point z (group 30). DxfExploder subtracts it along the block's z direction, which reaches
+    // world XY only under near +-Z inserts. Not serialized.
+    public double BaseZ { get; init; }
+}
 
 public sealed record DxfWarning(string Code, int Line, string Message);
 

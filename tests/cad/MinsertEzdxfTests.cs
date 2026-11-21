@@ -70,7 +70,8 @@ using Point2 = Bim.Cad.Point2;
 // corners and segment midpoints equal ezdxf 1.4.2 (offline generator, P6-36 section z_main: composed Insert.matrix44()
 // of every level, MINSERT cells from multi_insert(); virtual_entities() agrees within 1e-9 for the cases without a
 // MINSERT) within 1e-6. Removing each case's z feature moves its outline by 2.5e-4 (H1) to 9e-4 (X1 > XE) in ezdxf, so
-// every case exercises it.
+// every case exercises it. H1 and X1 already held after P6-34 (pinned); Z1, K1, L1, L2 and W1 were off by 6e-4, 2.7e-4,
+// 3.6e-4, 2.4e-4 and 5.7e-4 before P6-36 made DxfReader keep groups 43, BLOCK 30 and 38 and DxfExploder use them.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
