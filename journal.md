@@ -2019,3 +2019,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay262
 - 2026-11-21T11:52:41Z lock taken (session_014pxpsRruN6NMVtcBzRjQsv relay262; was FREE, relay261 released 2026-11-21T11:22:02Z)
+- 2026-11-21T11:53:14Z picked P10-36 (phase 10), P6-35 (phase 6), P7-36 (phase 7) — oldest-touched (relay257); disjoint files (McpServer.cs Handle/Dispatch checks + tests/mcp/RepeatedEnvelopeKeyTests.cs new section by P10-36; tests/cad/PdfType3GlyphListTests.cs new section + PdfContent.cs InvokeXObject /Matrix parsing (if defect) + contracts cad-brief note by P6-35; tests/cli/GeneratePrototypesTests.cs PartialWriter/Forced helpers + new section by P7-36). Workers spawned.
