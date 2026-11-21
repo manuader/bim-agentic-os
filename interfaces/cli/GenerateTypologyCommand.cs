@@ -125,11 +125,12 @@ internal static partial class GenerateTypologyCommand
         // P3-23: a non-refusal exception outside Generate's guarded pipeline block (the parse / pack-load stretch, forced in
         // tests through UnguardedWorkProbe) is the typed internal error too, not an exception escaping to McpServer's
         // generic Failed(message). The guarded block's own failures already arrive here as Refusal(InternalError) with their
-        // diagnostic written once.
+        // diagnostic written once. P3-31: the diagnostic is written guarded, so a stderr that throws (any exception) drops
+        // only that line and the typed (false, internal-error line) is still returned (nothing escapes to McpServer).
         catch (Exception error)
         {
             var envelope = IntentPlan.Internal("generate-typology", error);
-            Console.Error.WriteLine(envelope.Diagnostic);
+            try { Console.Error.WriteLine(envelope.Diagnostic); } catch (Exception) { }
             return (false, envelope.Line);
         }
     }
