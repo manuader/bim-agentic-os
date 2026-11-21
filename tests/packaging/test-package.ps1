@@ -1485,9 +1485,11 @@ try {
                 # identical on Linux and Windows (observed in CI run 44841962105 on core and core-windows).
                 $p733InfeasibleSha256 = '6d4a993dfbefe530f19892d7b676eec8ff1cea6c42f438e9dc26b6489fa0144c'
                 # P7-35: SHA-256 of the packaged generate-typology document for $p733TypologyPath and of the packaged plan-layouts
-                # document for $p733BriefPath (with --pack), from the CLI file and the MCP tools/call text alike.
-                $p733TypologySha256 = '0000000000000000000000000000000000000000000000000000000000000000'
-                $p733LayoutsSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                # document for $p733BriefPath (with --pack), from the CLI file and the MCP tools/call text alike: typology
+                # pipeline_status infeasible, 47622 bytes; layouts 3520 bytes; identical on Linux and Windows (observed in CI run
+                # 44873131145 on core and core-windows).
+                $p733TypologySha256 = '155d9c090c801dd28a69b4954574361e521325e88847754351a4064ddff54b75'
+                $p733LayoutsSha256 = 'd7036e1357bf7ec69395a812db1f92e53a7b39739cd87abbe18ca61234dc176e'
                 # The full tools/list name catalogue of the packaged server, in listed order: the 17 core tools, then one revit_<command>
                 # per RevitCommandCatalogue entry (79 names, observed in CI run 44841962105 on core and core-windows).
                 $p733Catalogue = [string[]]@(
@@ -1517,7 +1519,7 @@ try {
                     '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],' +
                     '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
                 $p733Sibling = @(
-                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p733TypologySha256 },
+                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"infeasible"'; Sha256 = $p733TypologySha256 },
                     @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256 }
                 )
                 function Get-P733Sha256([byte[]]$Bytes) {
