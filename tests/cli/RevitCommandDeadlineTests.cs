@@ -993,6 +993,41 @@ internal static class RevitCommandDeadlineTests
         };
         foreach (var (label, mutant) in mutants)
             check(mutant != Clean && ContinuationProblems(mutant).Length > 0, "P1-37 mutation self-test: the continuation check flags a " + label, string.Join("; ", ContinuationProblems(mutant)));
+        StripHelperSelfTest(Clean, Attach, check);
+    }
+
+    // P1-39: the one strip helper (StripCode) reads interpolation holes as code, nested quotes included, and the method
+    // end is found by brace matching, not by indentation. Mutation self-test on ContinuationProblems and SeamProblems.
+    static void StripHelperSelfTest(string clean, string attach, Action<bool, string, string> check)
+    {
+        const string Hide = "_ = read.ContinueWith(t => t, TaskScheduler.Default);";
+        var cleans = new (string Label, string Source)[]
+        {
+            ("continuation code after a hole holding a \"//\" string on the same line", clean.Replace(attach, "var shown = $\"{(read.IsFaulted ? \"//\" : \"\")}\"; " + attach, StringComparison.Ordinal)),
+            ("continuation text after a hole holding an escaped quote", clean.Replace(attach, "var note = $\"{\"\\\"\"}" + Hide + "\";\n        " + attach, StringComparison.Ordinal)),
+            ("continuation text after a verbatim hole holding a char quote", clean.Replace(attach, "var note = $@\"{F('\"')}" + Hide + "\";\n        " + attach, StringComparison.Ordinal)),
+            ("continuation code after a raw hole holding a \"//\" string", clean.Replace(attach, "var shown = $$\"\"\"{{F(\"//\")}}\"\"\"; " + attach, StringComparison.Ordinal)),
+            ("tab indentation", clean.Replace("    ", "\t", StringComparison.Ordinal)),
+            ("two-space indentation", clean.Replace("    ", "  ", StringComparison.Ordinal)),
+            ("a namespace block (eight-space members)", "namespace N\n{\n" + string.Join("\n", clean.TrimEnd('\n').Split('\n').Select(line => line.Length == 0 ? line : "    " + line)) + "\n}\n"),
+        };
+        foreach (var (label, source) in cleans)
+            check(ContinuationProblems(source).Length == 0, "P1-39 strip self-test: the continuation check passes with " + label, string.Join("; ", ContinuationProblems(source)));
+        var mutants = new (string Label, string Source)[]
+        {
+            ("second continuation after a hole holding a \"//\" string", clean.Replace(attach, attach + "\n        var shown = $\"{(read.IsFaulted ? \"//\" : \"\")}\"; " + Hide, StringComparison.Ordinal)),
+            ("second continuation inside a hole", clean.Replace(attach, attach + "\n        var shown = $\"{(read.IsFaulted ? \"x\" : \"\")} {read.ContinueWith(t => t, TaskScheduler.Default)}\";", StringComparison.Ordinal)),
+            ("removed continuation, tab indentation", clean.Replace(attach, "", StringComparison.Ordinal).Replace("    ", "\t", StringComparison.Ordinal)),
+            ("continuation in a following method, tab indentation", clean.Replace("        " + attach + "\n", "", StringComparison.Ordinal).Replace("    }\n}\n", "    }\n    static void After(Task<string?> read)\n    {\n        " + attach + "\n    }\n}\n", StringComparison.Ordinal).Replace("    ", "\t", StringComparison.Ordinal)),
+        };
+        foreach (var (label, source) in mutants)
+            check(source != clean && ContinuationProblems(source).Length > 0, "P1-39 strip self-test: the continuation check flags a " + label, "no problem flagged");
+
+        const string Send = "class T\n{\n    public string? Send(string line)\n    {\n        var pipe = connectThenRead(wait, ReadAfter);\n        return pipe(line);\n    }\n}\n";
+        check(SeamProblems(Send.Replace("    ", "\t", StringComparison.Ordinal)).Length == 0, "P1-39 strip self-test: the seam check passes a tab-indented Send",
+            string.Join("; ", SeamProblems(Send.Replace("    ", "\t", StringComparison.Ordinal))));
+        var hidden = Send.Replace("        return pipe(line);", "        var s = $\"{(line is null ? \"//\" : \"\")}\"; var c = cutTransport;\n        return pipe(line);", StringComparison.Ordinal);
+        check(SeamProblems(hidden).Length > 0, "P1-39 strip self-test: the seam check flags a seam in code after a hole holding a \"//\" string", "no problem flagged");
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
@@ -1205,7 +1240,9 @@ internal static class RevitCommandDeadlineTests
         }
     }
 
-    static string TaskState(Task? task) => task is null ? "not started" : task.IsCanceled ? "canceled" : task.IsFaulted ? "faulted" : task.IsCompletedSuccessfully ? "completed" : "pending";
+    // P1-39: a read that completed records its result (null: the pipe reached end of stream).
+    static string TaskState(Task<string?>? task) => task is null ? "not started" : task.IsCanceled ? "canceled" : task.IsFaulted ? "faulted"
+        : task.IsCompletedSuccessfully ? "completed " + (task.Result is null ? "null" : "line " + task.Result) : "pending";
 
     // Starts a real ReadLineAsync on a client pipe to a stalled server and abandons it: through ReadReplyLine (viaSeam) or
     // never observed (the control). badBytes: the read ignores the cancel and the server sends 0xFF '\n' to a throwing
@@ -1289,6 +1326,9 @@ internal static class RevitCommandDeadlineTests
             check(control.Collected && control.Outcome.Count == 3 && control.Outcome[1] == "served p1-37 D" && control.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal)
                 && control.Faults.Contains("D:" + nameof(DecoderFallbackException)),
                 "P1-37 real pipe detector: a real-pipe read faulting (decoder) and never observed is reported by TaskScheduler.UnobservedTaskException once collected", Describe(control));
+            var disposeControl = Step("D2", false, false, false);
+            check(false, "P1-39 probe on " + System.Runtime.InteropServices.RuntimeInformation.OSDescription + " / " + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription
+                + ": pipe-dispose control states", Describe(disposeControl));
             var faulting = Step("C", true, false, true);
             check(faulting.Collected && faulting.Outcome.Count == 3 && faulting.Outcome[0] == timeout && faulting.Outcome[1] == "served p1-37 C"
                 && faulting.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal) && faulting.Faults.Length == 0,
@@ -1309,6 +1349,8 @@ internal static class RevitCommandDeadlineTests
                 && faulting.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal) && control.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal),
                 "P1-37 real pipe states pinned: the production read form ends canceled; a pipe disposed under a read ignoring the cancel ends " + disposedState[..^4] + " on this OS",
                 "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1]);
+            check(false, "P1-39 probe on " + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription + ": abandoned real-pipe read states",
+                "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1] + " ; D2 " + disposeControl.Outcome[^1]);
 
             Volatile.Write(ref step, "E");
             var expected = RevitCommandResponse.Failure(RevitCommandCodes.PipeReadTimeout, "pipe_name",
