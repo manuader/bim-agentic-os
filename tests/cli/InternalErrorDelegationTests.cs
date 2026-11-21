@@ -466,6 +466,15 @@ internal static class InternalErrorDelegationTests
                     ("the read moved into a stored anonymous method with parameters", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
                     ("the read moved into a block lambda passed as an argument", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
                     ("the read moved into a stored expression lambda", declaration + "\nstatic void W() { Action later = () => " + read + " later(); }\n", false),
+                    // P3-33: local functions, and lambdas with an attribute or an explicit return type before the parameter list.
+                    ("the read moved into a local function (planted)", declaration + "\nstatic void W() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read nested in a block inside a static local function with parameters", declaration + "\nstatic void W() { static void Later(int n) { if (n > 0) { " + read + " } } Later(1); }\n", false),
+                    ("the read moved into an expression-bodied local function", declaration + "\nstatic void W() { void Later() => " + read + " Later(); }\n", false),
+                    ("an unrelated local function closed before the pinned read", declaration + "\nstatic void W() { void Unrelated() { } Unrelated(); try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the read moved into an attributed block lambda (planted)", declaration + "\nstatic void W() { Action later = [Obsolete] () => { " + read + " }; later(); }\n", false),
+                    ("the read moved into a block lambda with an explicit return type", declaration + "\nstatic void W() { Func<int> later = int () => { " + read + " return 0; }; later(); }\n", false),
+                    ("the read moved into an attributed lambda with an explicit return type passed as an argument", declaration + "\nstatic void W() { Task.Run([Obsolete] void () => { " + read + " }); }\n", false),
+                    ("an unrelated attributed lambda with an explicit return type closed before the pinned read", declaration + "\nstatic void W() { Func<int> unrelated = [Obsolete] int () => { return 0; }; try { " + read + " } catch (Exception) { throw; } }\n", true),
                 };
                 if (full)
                 {
@@ -506,9 +515,9 @@ internal static class InternalErrorDelegationTests
                     selfTests++;
                 }
             }
-            // 8 lambda/anonymous-method cases for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form
-            // cases for each of the four new seams.
-            Check(selfTests == 9 * 8 + 2 * (16 + 1) + 2 * (16 + 2), "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) for each of the 9 seams;
+            // 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 214.
+            Check(selfTests == 9 * (8 + 8) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 214, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
@@ -524,7 +533,7 @@ internal static class InternalErrorDelegationTests
                     "P3-29 seam hygiene: " + seam + " appears under interfaces/ only in " + string.Join(", ", expected), string.Join(", ", found.Select(s => s.Name)));
                 foreach (var (name, uses) in found)
                     Check(uses.Clean, "P3-29 seam hygiene: " + name + " declares " + seam + " once without an initializer, reads it once as [" + read
-                        + "] outside any block lambda or anonymous method, never assigns it", uses.Detail);
+                        + "] outside any block lambda, anonymous method or local function, never assigns it", uses.Detail);
             }
         }
 
@@ -643,7 +652,8 @@ internal static class InternalErrorDelegationTests
     // P3-27: ProbeUses plus Hygiene for a remaining CLI test seam, given its name, declared type (Action or
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
-    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method);
+    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
+    // block-bodied local function);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -685,9 +695,13 @@ internal static class InternalErrorDelegationTests
     // P3-29: true when the use at index (in literal-blanked, comment-stripped code) sits, at any depth, inside a block
     // lambda `=> { ... }` or an anonymous method `delegate [(...)] { ... }`: every unmatched '{' enclosing the use is
     // tested. Such a read runs only when the stored or passed delegate is invoked, so it is not an Action seam's read.
+    // A lambda with an attribute or an explicit return type (`[A] int () => { ... }`) still ends its header in `=>`.
+    // P3-33: also true inside a block-bodied local function: two of the enclosing '{' open method-like bodies
+    // (MethodBody), so the inner one is a local function that runs only when it is called.
     static bool InBlockLambda(string code, int index)
     {
         var depth = 0;
+        var bodies = 0;
         for (var i = index - 1; i >= 0; i--)
         {
             if (code[i] == '}') depth++;
@@ -695,9 +709,23 @@ internal static class InternalErrorDelegationTests
             {
                 if (depth > 0) { depth--; continue; }
                 if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
+                var start = i == 0 ? 0 : code.LastIndexOfAny(new[] { ';', '{', '}' }, i - 1) + 1;
+                if (MethodBody(code[start..i]) && ++bodies == 2) return true;
             }
         }
         return false;
+    }
+
+    // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
+    // '}') opens a method, constructor or local function body: `[attributes/modifiers/type] Name[<...>](...) [where ...]`
+    // with Name not a statement keyword, and no type-declaration or object-creation keyword in the header.
+    static bool MethodBody(string header)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        var match = System.Text.RegularExpressions.Regex.Match(header,
+            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
+        return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
+            .Contains(match.Groups[1].Value, StringComparer.Ordinal);
     }
 
     // P3-27: CodeOf does not model raw """ strings or interpolated verbatim @$"/$@" strings; a '"' and '//' inside one
