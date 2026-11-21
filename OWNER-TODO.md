@@ -390,3 +390,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay255 (2026-11-21, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main = 390731b) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`. Upcoming (P6-34): proposal on surfacing dropped tilted inserts in CAD briefs (decision later).
+
+## Relay256 (2026-11-21, cloud)
+- No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main = 5258a3a) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`.
