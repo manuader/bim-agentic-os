@@ -2362,6 +2362,9 @@ static class MirrorDriftLoopChecks
             var sendBuffer = UnixSendBuffer();
             var raised = raisedLever.Set;
             var lowered = loweredLever.Set;
+            // P2-39: the value the lever asked for (3/4 of the client's default, SendBufferLever(3, 4, ...)); measured green
+            // P2-38: default 8192 -> requested and kept 6144.
+            var requestedLowered = loweredLever.Default >= 0 ? (int)((long)loweredLever.Default * 3 / 4) : -1;
             var loweredHanded = loweredReports.Count > 0 ? loweredReports[^1].Written : -1;
             var loweredQueued = extraLines.Length == 1 ? Queued(extraLines[0]) : long.MinValue;
             var chunk = RevitCommandService.WriteProgressChunk;
@@ -2375,18 +2378,28 @@ static class MirrorDriftLoopChecks
             var leversOk = raisedLever.Calls == 1 && raisedLever.Error.Length == 0 && loweredLever.Calls == 1 && loweredLever.Error.Length == 0;
             var precondition = leversOk && sendBuffer > 0 && raisedLever.Default == sendBuffer && loweredLever.Default == sendBuffer
                 && raised > sendBuffer && raised % chunk == 0 && inBuffer > raised && lowered > 0 && lowered < sendBuffer && lowered % chunk == 0
-                && lowered != MidArgsBreakBytes;
+                && lowered != MidArgsBreakBytes && lowered == requestedLowered;
             Check(precondition,
                 "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default and lowered (0 < lowered < default) are whole multiples of the " + chunk + "-byte piece, lowered differs from the " + MidArgsBreakBytes + " bytes the fake reads (P2-38: handed == read + lowered is not 2 x read), and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer", macDetail);
             // P2-38: the precondition guards every macOS relation once; a relation cannot pass without it.
             void Relation(bool relation, string name) => Check(precondition && relation, name, macDetail);
+            // P2-39: a kernel that rounds the lowered send buffer (kept != requested) is a named setup red carrying the
+            // measured value, not a relation red.
+            // P2-39 probe red (run 44927109449) planted lowered - 1: named red "measured lowered=6143, requested=6144".
+            Check(leversOk && lowered == requestedLowered,
+                "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + requestedLowered + " = 3/4 of default " + loweredLever.Default + ")", macDetail);
+            // P2-39: the lowered queued/handed relation, once; its planted self-test proves it rejects handed == 2 x read
+            // (the precondition's lowered != read makes read + lowered != 2 x read), so no separate != 2 x read clause.
+            bool LoweredCounts(long queued, long handedBytes) => queued == lowered && handedBytes == MidArgsBreakBytes + lowered && handedBytes % chunk == 0;
+            // P2-39 probe red (run 44927109449) asserted acceptance and failed: the relation rejects handed 8192 == 2 x read.
+            Relation(!LoweredCounts(lowered, 2 * MidArgsBreakBytes),
+                "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (" + 2 * MidArgsBreakBytes + ") with queued == lowered (" + lowered + ")");
             Relation(seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
                 && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
                 "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue");
             Relation(loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
                 && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes)
-                && loweredQueued == lowered && loweredHanded == MidArgsBreakBytes + lowered && loweredHanded % chunk == 0
-                && loweredHanded != 2 * MidArgsBreakBytes && loweredQueued < cliQueued && loweredHanded < handed,
+                && LoweredCounts(loweredQueued, loweredHanded) && loweredQueued < cliQueued && loweredHanded < handed,
                 "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways");
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
