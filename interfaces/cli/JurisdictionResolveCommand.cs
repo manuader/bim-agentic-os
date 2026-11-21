@@ -48,7 +48,14 @@ internal static class JurisdictionResolveCommand
     // GenerateTypologyCommand's GuardedWorkProbe/UnguardedWorkProbe counting only that verb's seams.
     internal static Action? WorkProbe { get; set; }
 
-    public static void Run(string[] args) => Resolve(args).Print();
+    // P5-33: the diagnostic goes through the shared guarded SkillListCommand.WriteDiagnostic (a Console.Error that throws
+    // is ignored), then the envelope is printed without it: the typed line and exit 1 still follow, nothing escapes Run.
+    public static void Run(string[] args)
+    {
+        var envelope = Resolve(args);
+        SkillListCommand.WriteDiagnostic(envelope);
+        (envelope with { Diagnostic = null }).Print();
+    }
 
     // P10-27: the verb's whole handler (args[0] is the verb): the envelope Run prints, shared by the MCP tool
     // jurisdiction_resolve (interfaces/mcp/JurisdictionResolveTool.cs). Writes nothing to the console or the exit code.
