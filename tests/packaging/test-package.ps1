@@ -31,6 +31,9 @@
 # catalogue is pinned and the handshake also runs one awaited reply at a time; unremovable case folders are warned about.
 # P7-35: the same copy: the generate_typology and plan_layouts documents are pinned by sha256 (CLI == MCP); the typology status is
 # matched exactly; P7-24/P7-31/P7-33 case folders go through one warning helper; the cleanup self-test is a named SKIP as root.
+# P7-37: the same copy: a ranked generate_typology document (16 x 16 m lot) is pinned by sha256 and byte length (CLI == MCP), every
+# pinned document's byte length and exact stdout status members are asserted; P7-12 cleans up through the warning helper, and
+# cleanup warnings are collected and reported once at the end.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1066,6 +1069,27 @@ try {
     # An unknown command makes the CLI answer with its JSON failure envelope, which proves the runtime loaded.
     Assert ($cliCode -eq 1 -and (($cliOut -join "`n") -match '"status":"failed"')) "packaged CLI did not start from the release layout (exit $cliCode): $(Get-Tail ($cliOut -join "`n"))"
 
+    # Removes a case folder; one still present afterwards is a warning naming it and its section $Label, returned as text;
+    # $null when it is gone (P7-33, used by P7-24, P7-31 and P7-33 since P7-35, and P7-12 since P7-37). P7-37: unless Silent
+    # (the cleanup self-test) the warning is collected in $packageCleanupWarnings and reported once, after every section,
+    # by Write-PackageCleanupWarnings (a GitHub annotation each on CI).
+    $packageCleanupWarnings = [Collections.Generic.List[string]]::new()
+    function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent) {
+        if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
+        try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        if (!(Test-Path -LiteralPath $Path)) { return $null }
+        $warning = "$($Label): a case folder could not be removed and is left behind: $Path"
+        if (!$Silent) { $packageCleanupWarnings.Add($warning) }
+        return $warning
+    }
+    function Write-PackageCleanupWarnings {
+        Write-Host "packaging cleanup: $($packageCleanupWarnings.Count) case folder(s) left behind"
+        foreach ($warning in $packageCleanupWarnings) {
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
+            else { Write-Host "WARNING $warning" }
+        }
+    }
+
     # --- P7-12 skills/ ships next to cli/ (every tracked skills file, byte-identical, listed in manifest.json) and the
     # packaged generate-prototypes reads its pack from there, outside any repository, byte-equal to the repository run ---
     try {
@@ -1123,23 +1147,9 @@ try {
                 $noSkillsOut = Join-Path $work 'generate-no-skills.json'
                 $noSkills = Invoke-Generate (Join-Path $outsidePackage 'cli/Bim.Cli.dll') $noSkillsOut
                 Assert ($noSkills.Code -eq 1 -and $noSkills.Output -match '"code":"generate_prototypes_repository_not_found"' -and !(Test-Path -LiteralPath $noSkillsOut)) "a package without skills/ outside a repository must refuse generate_prototypes_repository_not_found (exit $($noSkills.Code)): $(Get-Tail $noSkills.Output)"
-            } finally { if (Test-Path -LiteralPath $outsidePackage) { Remove-Item -LiteralPath $outsidePackage -Recurse -Force -ErrorAction SilentlyContinue } }
+            } finally { [void](Remove-PackageCaseDirectory 'P7-12' $outsidePackage) }
         }
     } catch { $failures.Add("P7-12 packaged skills/generate-prototypes checks threw: $($_.Exception.Message)") }
-
-    # Removes a case folder; one still present afterwards is a warning naming it and its section $Label (a GitHub annotation on
-    # CI unless Silent), returned as text; $null when it is gone (P7-33, used by P7-24, P7-31 and P7-33 since P7-35).
-    function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent) {
-        if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
-        try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-        if (!(Test-Path -LiteralPath $Path)) { return $null }
-        $warning = "$($Label): a case folder could not be removed and is left behind: $Path"
-        if (!$Silent) {
-            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
-            else { Write-Host "WARNING $warning" }
-        }
-        return $warning
-    }
 
     # --- P7-24 generate_prototypes from the packaged MCP binary: a copy of the real package (release A) outside any
     # repository; its mcp/Bim.Mcp.dll over stdio (one tools/call line) returns the document whose UTF-8 bytes equal the
@@ -1494,6 +1504,10 @@ try {
                 # 44873131145 on core and core-windows).
                 $p733TypologySha256 = '155d9c090c801dd28a69b4954574361e521325e88847754351a4064ddff54b75'
                 $p733LayoutsSha256 = 'd7036e1357bf7ec69395a812db1f92e53a7b39739cd87abbe18ca61234dc176e'
+                # P7-37: SHA-256 and byte length of the packaged generate-typology document for $p737RankedPath (family 3 on a 16 x 16 m
+                # lot, 4 alternatives, seed 0, project id ...07a7: the P5-12 ranked request), from the CLI file and the MCP text alike.
+                $p737RankedSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                $p737RankedLength = 0
                 # The full tools/list name catalogue of the packaged server, in listed order: the 17 core tools, then one revit_<command>
                 # per RevitCommandCatalogue entry (79 names, observed in CI run 44841962105 on core and core-windows).
                 $p733Catalogue = [string[]]@(
@@ -1522,10 +1536,32 @@ try {
                 Write-PackageText $p733BriefPath ('{"brief_version":1,"name":"Small studio","constraints":{"site":{"width_m":6,"depth_m":8},"levels":1},' +
                     '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],' +
                     '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
+                $p737RankedPath = Join-Path $p733Io 'typology-ranked.json'
+                Write-PackageText $p737RankedPath ('{"pack":"' + $p733Typology + '","family_size":3,"lot":{"width_m":16,"depth_m":16},"alternatives":4,"seed":0,"project_id":"00000000-0000-4000-8000-0000000007a7"}')
+                # P7-37: Length is the pinned document byte length; Exact lists stdout members whose value must equal the text given
+                # (strings by value, numbers by their JSON literal).
                 $p733Sibling = @(
-                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"infeasible"'; Sha256 = $p733TypologySha256 },
-                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256 }
+                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"infeasible"'; Sha256 = $p733TypologySha256; Length = 47622; Exact = [ordered]@{ pipeline_status = 'infeasible' } },
+                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'probe'; pack = $p733Caba; pack_rules = '-1' } }
                 )
+                # P7-37: the ranked typology request, pinned like the siblings (package-first only; not part of the fallback cases).
+                $p737Ranked = @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p737RankedPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p737RankedPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p737RankedSha256; Length = $p737RankedLength; Exact = [ordered]@{ pipeline_status = 'ranked'; alternatives = '4'; accepted = '-1' }; Ranked = $true }
+                # The observed value of each Exact member of a CLI stdout line, as text ('<absent>' / '<unparsed>' otherwise).
+                function Get-P737Members([string]$Line, $Exact) {
+                    $observed = [ordered]@{}
+                    try {
+                        $document = [Text.Json.JsonDocument]::Parse($Line)
+                        try {
+                            foreach ($name in $Exact.Keys) {
+                                $element = $null
+                                if (!$document.RootElement.TryGetProperty($name, [ref]$element)) { $observed[$name] = '<absent>' }
+                                elseif ($element.ValueKind -eq [Text.Json.JsonValueKind]::String) { $observed[$name] = $element.GetString() }
+                                else { $observed[$name] = $element.GetRawText() }
+                            }
+                        } finally { $document.Dispose() }
+                    } catch { foreach ($name in $Exact.Keys) { $observed[$name] = '<unparsed>' } }
+                    return $observed
+                }
                 function Get-P733Sha256([byte[]]$Bytes) {
                     $sha = [Security.Cryptography.SHA256]::Create()
                     try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes)) -replace '-', '').ToLowerInvariant() } finally { $sha.Dispose() }
@@ -1737,12 +1773,13 @@ try {
 
                 # (2) generate_typology and plan_layouts: package-first baselines, then the repository fallback with a marker removed.
                 $baselines = @{}
-                foreach ($tool in $p733Sibling) {
-                    $cli = Invoke-P733Cli $plainCli $tool.Verb $tool.Input $tool.Options "$($tool.Tool)-baseline"
+                foreach ($tool in @($p733Sibling) + @($p737Ranked)) {
+                    $caseLabel = if ($tool.Ranked) { "$($tool.Tool)-ranked" } else { $tool.Tool }
+                    $cli = Invoke-P733Cli $plainCli $tool.Verb $tool.Input $tool.Options "$caseLabel-baseline"
                     Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $null -ne $cli.Bytes -and $cli.Line -cmatch '^\{"status":"succeeded",' -and $cli.Line -cmatch $tool.Status -and $cli.Line.Contains('"sha256":"' + (Get-P733Sha256 $cli.Bytes) + '"')) "P7-33 $($tool.Tool): the packaged CLI $($tool.Verb) outside any repository succeeds package-first ($($tool.Status)): $($cli.Raw)"
                     [byte[]]$bytes = @()
                     if ($null -ne $cli.Bytes) { $bytes = $cli.Bytes }
-                    $baselines[$tool.Tool] = [pscustomobject]@{ Bytes = $bytes; Line = $cli.Line }
+                    if (!$tool.Ranked) { $baselines[$tool.Tool] = [pscustomobject]@{ Bytes = $bytes; Line = $cli.Line } }
                     $mcp = Invoke-P733Call $plainMcp $tool.Tool $tool.Arguments
                     $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
                     Assert ($mcp.Ok -and !$mcp.IsError -and $bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($bytes)) "P7-33 $($tool.Tool): the packaged mcp/Bim.Mcp.dll returns the packaged CLI file bytes package-first (cli $($bytes.Length), mcp $($mcpBytes.Length) bytes): $($mcp.Raw)"
@@ -1751,6 +1788,12 @@ try {
                     $observedStatus = if ($cli.Line -cmatch '"pipeline_status":"([a-z_]+)"') { $Matches[1] } else { '-' }
                     Assert ($bytes.Length -gt 0 -and $cliSha -ceq $tool.Sha256) "P7-35 $($tool.Tool): observed cli sha256 $cliSha ($($bytes.Length) bytes, pipeline_status $observedStatus, $p733Os); pinned $($tool.Sha256)"
                     Assert ($mcp.Ok -and !$mcp.IsError -and $mcpBytes.Length -gt 0 -and $mcpSha -ceq $tool.Sha256 -and $mcpSha -ceq $cliSha) "P7-35 $($tool.Tool): observed mcp sha256 $mcpSha ($($mcpBytes.Length) bytes, $p733Os); cli $cliSha; pinned $($tool.Sha256)"
+                    # P7-37: the documented byte length and the exact stdout status members.
+                    Assert ($bytes.Length -eq $tool.Length -and $mcpBytes.Length -eq $tool.Length) "P7-37 $($caseLabel): observed cli $($bytes.Length) / mcp $($mcpBytes.Length) bytes (sha256 $cliSha, $p733Os); pinned $($tool.Length)"
+                    $members = Get-P737Members $cli.Line $tool.Exact
+                    $observedText = @($members.Keys | ForEach-Object { "$_=$($members[$_])" }) -join ' '
+                    $pinnedText = @($tool.Exact.Keys | ForEach-Object { "$_=$($tool.Exact[$_])" }) -join ' '
+                    Assert ($observedText -ceq $pinnedText) "P7-37 $($caseLabel): observed stdout $observedText ($p733Os); pinned $pinnedText"
                 }
                 foreach ($marker in @('VERSION', 'manifest.json')) {
                     $label = $marker.Replace('.', '-')
@@ -2271,5 +2314,7 @@ exit 0
     Assert (@(Get-ChildItem -LiteralPath $work -Force -Directory | Where-Object { $_.Name -like '*.partial-*' }).Count -eq 0) 'package.ps1 left a partial staging directory'
 } finally {
     Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+    # P7-37: every collected cleanup warning, in one place.
+    if (Get-Command Write-PackageCleanupWarnings -ErrorAction SilentlyContinue) { Write-PackageCleanupWarnings }
 }
 Complete
