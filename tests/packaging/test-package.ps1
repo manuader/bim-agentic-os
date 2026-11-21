@@ -1909,6 +1909,32 @@ try {
             }
             return , $escaping
         }
+        # P4-33: every runtime asset name in a deps.json (any target entry) whose .. climbs above the package root, as a named
+        # escaping path whatever its file name (an escaping Bim.Gltf asset is also a Bim.Gltf match); $null when unreadable.
+        function Get-P433DepsEscaping([string]$File) {
+            try { $deps = [IO.File]::ReadAllText($File) | ConvertFrom-Json -NoEnumerate } catch { return $null }
+            if (!(Test-P431Object $deps) -or $null -eq $deps.PSObject.Properties['libraries'] -or !(Test-P431Object $deps.libraries)) { return $null }
+            $escaping = [Collections.Generic.List[string]]::new()
+            if ($null -ne $deps.PSObject.Properties['targets'] -and (Test-P431Object $deps.targets)) {
+                foreach ($target in $deps.targets.PSObject.Properties) {
+                    if (!(Test-P431Object $target.Value)) { continue }
+                    foreach ($entry in $target.Value.PSObject.Properties) {
+                        if (!(Test-P431Object $entry.Value)) { continue }
+                        $runtime = $entry.Value.PSObject.Properties['runtime']
+                        if ($null -eq $runtime -or !(Test-P431Object $runtime.Value)) { continue }
+                        foreach ($asset in $runtime.Value.PSObject.Properties) { if ($null -eq (ConvertTo-P431Path $asset.Name)) { $escaping.Add("runtime $($entry.Name) escaping path $($asset.Name)") } }
+                    }
+                }
+            }
+            return , $escaping
+        }
+        # P4-33: removes a P4-32 case folder through Remove-PackageCaseDirectory and records a left-behind folder as a named
+        # failure in $Into (not only a cleanup warning); $Remove stands in for the remover in the self-test.
+        function Add-P433CleanupFailure($Into, [string]$Label, [string]$Path, [scriptblock]$Remove) {
+            if ($null -eq $Remove) { $Remove = { param($l, $p) Remove-PackageCaseDirectory $l $p } }
+            $warning = & $Remove $Label $Path
+            if ($warning) { $Into.Add("P4-33: cleanup failed: $warning") }
+        }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
             $cliGltf = Join-Path $Layout 'cli/Bim.Gltf.dll'
@@ -1997,6 +2023,8 @@ try {
         Assert ($p431Control.Count -eq 0) "P4-31: positive control: release A keeps cli/Bim.Gltf.dll with one sbom.json and one manifest.json line carrying its sha256: $(Format-P431List $p431Control)"
         $p432Escaping = Get-P432Escaping $outA
         Assert ($p432Escaping.Count -eq 0) "P4-32: no sbom.json or manifest.json path of release A climbs above its root (an escaping .. is a named failure, not clamped): $(Format-P431List $p432Escaping)"
+        $p433McpEscaping = Get-P433DepsEscaping (Join-Path $outA 'mcp/Bim.Mcp.deps.json')
+        Assert ($null -ne $p433McpEscaping -and $p433McpEscaping.Count -eq 0) "P4-33: no runtime asset of release A's mcp/Bim.Mcp.deps.json climbs above the package root: $(if ($null -eq $p433McpEscaping) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p433McpEscaping })"
         $p431McpDeps = Get-P431DepsGltf (Join-Path $outA 'mcp/Bim.Mcp.deps.json')
         Assert ($null -ne $p431McpDeps -and $p431McpDeps.Count -eq 0) "P4-31: release A's mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime asset: $(if ($null -eq $p431McpDeps) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p431McpDeps })"
         $p431CliDeps = Get-P431DepsGltf (Join-Path $outA 'cli/Bim.Cli.deps.json')
@@ -2006,6 +2034,7 @@ try {
         $p431Copy = Join-Path $work 'p4-31 layout copy'
         $p432HiddenSource = Join-Path $work 'p4-32 hidden source'
         $p432HiddenCopy = Join-Path $work 'p4-32 hidden copy'
+        $p433NoForce = Join-Path $work 'p4-33 hidden copy without force'
         try {
             # P4-32: the layout copy takes hidden files (a dot file, also with the Hidden attribute on Windows).
             New-Item -ItemType Directory -Force (Join-Path $p432HiddenSource 'mcp/sub') | Out-Null
@@ -2014,8 +2043,27 @@ try {
             if ($IsWindows) { [IO.File]::SetAttributes($p432Hidden, ([IO.File]::GetAttributes($p432Hidden) -bor [IO.FileAttributes]::Hidden)) }
             Copy-P431Layout $p432HiddenSource $p432HiddenCopy
             Assert (Test-Path -LiteralPath (Join-Path $p432HiddenCopy 'mcp/sub/.hidden-planted') -PathType Leaf) 'P4-32 self-test: the layout copy takes hidden files (Copy-Item -Force): mcp/sub/.hidden-planted'
+            # P4-33: the same copy without -Force misses the hidden file (so -Force is what takes it), or a named SKIP where this
+            # platform's Copy-Item copies it anyway; either outcome is a notice annotation naming the OS.
+            New-Item -ItemType Directory -Force $p433NoForce | Out-Null
+            Copy-Item -LiteralPath (Join-Path $p432HiddenSource 'mcp') -Destination (Join-Path $p433NoForce 'mcp') -Recurse
+            Assert (Test-Path -LiteralPath (Join-Path $p433NoForce 'mcp/sub') -PathType Container) 'P4-33 self-test setup: the copy without -Force still copies the visible mcp/sub folder'
+            $p433Os = if ($IsWindows) { 'Windows' } elseif ($IsMacOS) { 'macOS' } else { 'Linux' }
+            $p433Outcome = if (Test-Path -LiteralPath (Join-Path $p433NoForce 'mcp/sub/.hidden-planted')) { "SKIP P4-33 hidden-file control on $($p433Os): Copy-Item -Recurse without -Force copies mcp/sub/.hidden-planted here too, so this platform cannot show -Force is needed" }
+            else { "P4-33 hidden-file control on $($p433Os): a copy without -Force misses mcp/sub/.hidden-planted (the -Force copy takes it)" }
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::notice title=packaging::' + ($p433Outcome -replace '%', '%25')) } else { Write-Host $p433Outcome }
         } catch { $failures.Add("P4-32 hidden-file copy self-test threw: $($_.Exception.Message)") }
-        finally { [void](Remove-PackageCaseDirectory 'P4-32' $p432HiddenSource); [void](Remove-PackageCaseDirectory 'P4-32' $p432HiddenCopy) }
+        finally { foreach ($p433Path in $p432HiddenSource, $p432HiddenCopy, $p433NoForce) { Add-P433CleanupFailure $failures 'P4-32' $p433Path } }
+        # P4-33 self-test: a left-behind folder is a named failure (stand-in remover), a removed or absent one adds nothing.
+        try {
+            $p433Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p433Into 'P4-32' '/p4-33/left' { param($l, $p) "$($l): a case folder could not be removed and is left behind: $p" }
+            Assert (($p433Into -join '|') -ceq 'P4-33: cleanup failed: P4-32: a case folder could not be removed and is left behind: /p4-33/left') "P4-33 self-test: a cleanup warning is recorded as a named failure: $(Format-P431List $p433Into)"
+            $p433Into.Clear()
+            Add-P433CleanupFailure $p433Into 'P4-32' '/p4-33/gone' { param($l, $p) $null }
+            Add-P433CleanupFailure $p433Into 'P4-32' (Join-Path $work 'p4-33 absent folder')
+            Assert ($p433Into.Count -eq 0) "P4-33 self-test: a removed or absent case folder records no failure: $(Format-P431List $p433Into)"
+        } catch { $failures.Add("P4-33 cleanup self-test threw: $($_.Exception.Message)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
@@ -2096,8 +2144,26 @@ try {
                     $what = if ($depsPlant.Expected) { 'is caught (and only it)' } else { 'names nothing' }
                     Assert ($null -ne $found -and ($found -join '|') -ceq $depsPlant.Expected) "$($depsPlant.Id) self-test: a planted Bim.Gltf $($depsPlant.Label) in mcp/Bim.Mcp.deps.json $($what): $(if ($null -eq $found) { '<unreadable>' } else { Format-P431List $found })"
                 }
+                # P4-33: an escaping runtime asset is a named escaping path (a Bim.Gltf one is also a Bim.Gltf match); a .. that
+                # stays inside the root and a plain asset are not escaping.
+                $p433Plants = @(
+                    @{ Asset = '../BIM.GLTF'; Escaping = "runtime $mcpTarget escaping path ../BIM.GLTF"; Gltf = "runtime $mcpTarget ../BIM.GLTF" },
+                    @{ Asset = 'lib/../../mcp/Bim.Gltf.dll'; Escaping = "runtime $mcpTarget escaping path lib/../../mcp/Bim.Gltf.dll"; Gltf = "runtime $mcpTarget lib/../../mcp/Bim.Gltf.dll" },
+                    @{ Asset = '..\other\Other.dll'; Escaping = "runtime $mcpTarget escaping path ..\other\Other.dll"; Gltf = '' },
+                    @{ Asset = 'lib/net8.0/../net8.0/Other.dll'; Escaping = ''; Gltf = '' },
+                    @{ Asset = 'lib/net8.0/Bim.Gltf'; Escaping = ''; Gltf = "runtime $mcpTarget lib/net8.0/Bim.Gltf" }
+                )
+                foreach ($p433Plant in $p433Plants) {
+                    $edited = $depsText | ConvertFrom-Json -NoEnumerate
+                    $editedTarget = @($edited.targets.PSObject.Properties | Where-Object { Test-P431Object $_.Value }) | Select-Object -First 1
+                    $editedTarget.Value.$mcpTarget | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ $p433Plant.Asset = [pscustomobject]@{} }) -Force
+                    Write-P431Json $depsCopy $edited
+                    $escapingFound = Get-P433DepsEscaping $depsCopy; $gltfFound = Get-P431DepsGltf $depsCopy
+                    Assert ($null -ne $escapingFound -and ($escapingFound -join '|') -ceq $p433Plant.Escaping -and $null -ne $gltfFound -and ($gltfFound -join '|') -ceq $p433Plant.Gltf) "P4-33 self-test: a planted runtime asset $($p433Plant.Asset) in mcp/Bim.Mcp.deps.json reads escaping '$($p433Plant.Escaping)' and Bim.Gltf '$($p433Plant.Gltf)': escaping $(if ($null -eq $escapingFound) { '<unreadable>' } else { Format-P431List $escapingFound }) Bim.Gltf $(if ($null -eq $gltfFound) { '<unreadable>' } else { Format-P431List $gltfFound })"
+                }
                 [IO.File]::WriteAllText($depsCopy, '{')
                 Assert ($null -eq (Get-P431DepsGltf $depsCopy)) 'P4-31 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)'
+                Assert ($null -eq (Get-P433DepsEscaping $depsCopy)) 'P4-33 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable for the escaping check too (fail-closed)'
                 Remove-Item -LiteralPath $depsCopy -Force
                 Assert ($null -eq (Get-P431DepsGltf $depsCopy)) 'P4-31 self-test: a missing mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)'
                 [IO.File]::WriteAllBytes($depsCopy, $depsOriginal)
