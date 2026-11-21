@@ -23,6 +23,9 @@ using System.Text;
 // P6-31: a show inside a Form XObject whose /Matrix makes the text height non-finite keeps the warning pending for the
 // next emitting show, inside the form or after it; a Ts rise that overflows the text position is a non-finite text
 // position (operand-error, no text) and likewise keeps it pending; the P6-25 static check reads stripped sources.
+// P6-33: a form /Matrix whose composition with the CTM is non-finite gives operand-error at the Do and the form runs under
+// the outer CTM (as cm does); nested form matrices that only together overflow the height and a skewed Tm whose rise
+// overflows only x keep the warning pending; one shared swallow guard (ordered member anchors) serves every static check.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -262,14 +265,12 @@ internal static class PdfType3GlyphListTests
             var content = Code(Path.Combine(adapter, "PdfContent.cs"));
             var encoding = Code(Path.Combine(adapter, "PdfEncoding.cs"));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
-            foreach (var (source, sourceName, member, last) in new[]
+            foreach (var (source, sourceName, anchors) in new[] { (content, "PdfContent.cs", ContentAnchors), (encoding, "PdfEncoding.cs", EncodingAnchors) })
             {
-                (content, "PdfContent.cs", "FontDecoder(string name", "private void InvokeXObject(string name"),
-                (encoding, "PdfEncoding.cs", "UnsupportedGlyphListName(byte code)", "Lazy<Dictionary<string, string>> Latin = new("),
-            })
-                C(Count(source, "{") == Count(source, "}") && source.TrimEnd().EndsWith('}') && Count(source, member) == 1 && Count(source, last) == 1,
-                    "the P6-25 static check reads stripped " + sourceName + " with balanced braces and its members " + member + " and " + last + " (P6-31 swallow guard)",
-                    I(Count(source, "{")) + "/" + I(Count(source, "}")) + " end " + (source.TrimEnd().Length > 0 ? source.TrimEnd()[^1].ToString() : "empty") + " " + I(Count(source, member)) + " " + I(Count(source, last)));
+                var guard = SwallowGuard(source, anchors);
+                C(guard is null, "the P6-25 static check reads stripped " + sourceName + " under the shared swallow guard (balanced braces, final '}', every member anchor once and in order; P6-31, P6-33)",
+                    guard ?? "");
+            }
             C(Count(content, "IsGlyphListName") == 0 && Count(content, ".UnsupportedGlyphListName(") == 1,
                 "the font decoder reads affected names through one PdfSimpleEncoding per-code accessor (P6-25 static check)",
                 Count(content, "IsGlyphListName") + " " + Count(content, ".UnsupportedGlyphListName("));
@@ -364,16 +365,15 @@ internal static class PdfType3GlyphListTests
             var content = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
             var encoding = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfEncoding.cs")));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
-            // Swallow guard (P6-27 review): each stripped source keeps balanced braces, ends with '}' and still holds its
-            // decoder member and its last member, so a literal or comment that ran to EOF fails here.
-            foreach (var (source, sourceName, member, last) in new[]
+            // Swallow guard (P6-27 review, one shared helper since P6-33): each stripped source keeps balanced braces, ends
+            // with '}' and holds every member anchor once and in order, so a literal or comment that ran to EOF or swallowed
+            // a balanced stretch mid-file fails here.
+            foreach (var (source, sourceName, anchors) in new[] { (content, "PdfContent.cs", ContentAnchors), (encoding, "PdfEncoding.cs", EncodingAnchors) })
             {
-                (content, "PdfContent.cs", "FontDecoder(string name", "private void InvokeXObject(string name"),
-                (encoding, "PdfEncoding.cs", "UnsupportedGlyphListName(byte code)", "Lazy<Dictionary<string, string>> Latin = new("),
-            })
-                C(Count(source, "{") == Count(source, "}") && source.TrimEnd().EndsWith('}') && Count(source, member) == 1 && Count(source, last) == 1,
-                    "stripped " + sourceName + " keeps balanced braces and its members " + member + " and " + last + " (P6-27 swallow guard)",
-                    I(Count(source, "{")) + "/" + I(Count(source, "}")) + " end " + (source.TrimEnd().Length > 0 ? source.TrimEnd()[^1].ToString() : "empty") + " " + I(Count(source, member)) + " " + I(Count(source, last)));
+                var guard = SwallowGuard(source, anchors);
+                C(guard is null, "stripped " + sourceName + " passes the shared swallow guard (balanced braces, final '}', every member anchor once and in order; P6-27, P6-33)",
+                    guard ?? "");
+            }
             C(Count(content, "IsGlyphListName") == 0 && Count(content, ".UnsupportedGlyphListName(") == 1,
                 "without comments and literals the font decoder reads affected names through the one per-code accessor (P6-27 static check)",
                 I(Count(content, "IsGlyphListName")) + " " + I(Count(content, ".UnsupportedGlyphListName(")));
@@ -459,6 +459,184 @@ internal static class PdfType3GlyphListTests
                 "control: a Ts rise that does not overflow emits the first Tj and warns there (P6-31)", Texts(lower) + " " + Warnings(lower) + " " + Messages(lower));
         }
         catch (Exception error) { C(false, "p6-31 unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- P6-33: non-finite form matrix composition, nested form matrices, skewed rise, shared swallow guard ----------
+        try
+        {
+            const string tail = " is a Type3 font whose /Differences names glyph-list names the reader does not map (";
+            const string affected = "[1 /g1 /afii10017 /Gamma /afii10018 /afii10019]";
+            string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
+            string Message(string names) => "font /F1 (object 5)" + tail + names + "); their codes are read as text bytes";
+            string Paths(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => I(t.Provenance.ObjectNumber) + ":" + I(t.Provenance.OperatorIndex) + "@" + string.Join(">", t.Provenance.XObjectPath)));
+            static string R(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+            string Origins(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => R(t.Origin.X) + "," + R(t.Origin.Y) + " h" + R(t.Height)));
+            static bool Near(double value, double expected) => Math.Abs(value / expected - 1) < 1e-12;
+            var e30 = "1" + new string('0', 30);
+            var e50 = "1" + new string('0', 50);
+            var e60 = "1" + new string('0', 60);
+            var e63 = "1" + new string('0', 63);
+            var scale = e60 + " 0 0 " + e60 + " 0 0 cm ";
+            static (int Number, byte[] Body) FormObject(int number, string matrix, string resources, string content) =>
+                (number, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + (matrix.Length > 0 ? " /Matrix [" + matrix + "]" : "") + resources, L(content)));
+            PdfDocument WithForms(string page, params (int Number, byte[] Body)[] forms) => PdfToUnicodeTests.Page(page, Type3(affected), null, "/XObject << /X1 8 0 R >>", forms);
+
+            // (1) A form /Matrix whose composition with the CTM is itself non-finite: page CTM 1e300 (five cm of 1e60) and
+            // /Matrix [1e60 0 0 1e60 0 0] give 1e360. Documented one way (P6-33), as for cm: operand-error at the Do
+            // ('Do /X1 gives a non-finite form matrix; the current matrix is kept') and the form runs under the outer CTM,
+            // so its Tj is at (1e301, 1e301) with height 1e301 and warns there. Measured before P6-33: the outer CTM was
+            // kept silently (no warning). Page: q 0, cm 1-5, Do 6, Q 7, BT 8, Tf 9, Tm 10, Tj 11, ET 12. Form: BT 0, Tf 1, Tm 2, Tj 3, ET 4.
+            var overflowPage = "q " + string.Concat(Enumerable.Repeat(scale, 5)) + "/X1 Do Q BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET";
+            var overflow = WithForms(overflowPage, FormObject(8, e60 + " 0 0 " + e60 + " 0 0", "", "BT /F1 10 Tf 1 0 0 1 10 10 Tm (\\004) Tj ET"));
+            var formText = overflow.Pages.SelectMany(p => p.Elements).OfType<PdfText>().FirstOrDefault();
+            C(Texts(overflow) == "\\u0004|\\u0002" && Paths(overflow) == "8:3@o4:i6|4:11@"
+                && Warnings(overflow) == "operand-error@1:4:6;encoding-glyph-unsupported@1:8:3"
+                && Messages(overflow) == "Do /X1 gives a non-finite form matrix; the current matrix is kept / " + Message("/afii10018")
+                && formText is not null && Near(formText.Origin.X, 1e301) && Near(formText.Origin.Y, 1e301) && Near(formText.Height, 1e301),
+                "a form /Matrix whose composition with the CTM is non-finite gives operand-error at the Do and the form runs under the outer CTM (as cm does), its Tj emitting and warning there (P6-33)",
+                Texts(overflow) + " " + Paths(overflow) + " " + Warnings(overflow) + " " + Messages(overflow) + " " + Origins(overflow));
+            // Control: a /Matrix of 1e-60 keeps the composition finite (1e240): no Do warning, the form Tj is at (1e241, 1e241).
+            var finiteMatrix = "0." + new string('0', 59) + "1";
+            var composed = WithForms(overflowPage, FormObject(8, finiteMatrix + " 0 0 " + finiteMatrix + " 0 0", "", "BT /F1 10 Tf 1 0 0 1 10 10 Tm (\\004) Tj ET"));
+            var composedText = composed.Pages.SelectMany(p => p.Elements).OfType<PdfText>().FirstOrDefault();
+            C(Warnings(composed) == "encoding-glyph-unsupported@1:8:3" && composedText is not null && Near(composedText.Origin.X, 1e241) && Near(composedText.Height, 1e241),
+                "control: a finite composition gives no Do warning and the form Tj uses the composed matrix (P6-33)", Warnings(composed) + " " + Origins(composed));
+
+            // (2) Nested forms whose /Matrix values only together overflow the text height: page CTM 1e180 (three cm), form 8
+            // /Matrix [1 0 0 1e30 0 0] invokes form 9 /Matrix [1 0 0 1e30 0 0] (no /Resources, so form 8's /F1 = object 5).
+            // Form 9's CTM is [1e180 0 0 1e240]; Tf 1e63 and Tm d = 1e10 give a finite position (1e181, 1e241) and height
+            // 1e63 x 1e250 = 1e313; with either /Matrix alone the height is 1e283. Page: q 0, cm 1-3, Do 4, Q 5, BT 6, Tf 7,
+            // Tm 8, Tj 9, ET 10. Form 8: Do 0. Form 9: BT 0, Tf 1, Tm 2, Tj 3, Tf 4, Tm 5, Tj 6, ET 7 (or BT 0, Tf 1, Tm 2, Tj 3, ET 4).
+            var nestedPage = "q " + string.Concat(Enumerable.Repeat(scale, 3)) + "/X1 Do Q BT /F1 10 Tf 1 0 0 1 50 50 Tm (\\002) Tj ET";
+            var tallThenShort = "BT /F1 " + e63 + " Tf 1 0 0 10000000000 10 10 Tm (\\004) Tj /F1 10 Tf 1 0 0 1 10 10 Tm (\\002) Tj ET";
+            var tallOnly = "BT /F1 " + e63 + " Tf 1 0 0 10000000000 10 10 Tm (\\004) Tj ET";
+            PdfDocument Nested(bool outerMatrix, bool innerMatrix, string innerContent) => WithForms(nestedPage,
+                FormObject(8, outerMatrix ? "1 0 0 " + e30 + " 0 0" : "", " /Resources << /Font << /F1 5 0 R >> /XObject << /X2 9 0 R >> >>", "/X2 Do"),
+                FormObject(9, innerMatrix ? "1 0 0 " + e30 + " 0 0" : "", "", innerContent));
+            var nestedInside = Nested(true, true, tallThenShort);
+            C(Texts(nestedInside) == "\\u0002|\\u0002" && Paths(nestedInside) == "9:6@o4:i4>o8:i0|4:9@"
+                && Warnings(nestedInside) == "operand-error@1:9:3;encoding-glyph-unsupported@1:9:6"
+                && Messages(nestedInside) == "Tj gives a non-finite text height / " + Message("/afii10017"),
+                "nested forms whose /Matrix values only together make the text height non-finite keep only operand-error; the next emitting show in the inner form warns with only its own names (P6-33)",
+                Texts(nestedInside) + " " + Paths(nestedInside) + " " + Warnings(nestedInside) + " " + Messages(nestedInside));
+            var nestedAfter = Nested(true, true, tallOnly);
+            C(Texts(nestedAfter) == "\\u0002" && Paths(nestedAfter) == "4:9@"
+                && Warnings(nestedAfter) == "operand-error@1:9:3;encoding-glyph-unsupported@1:4:9"
+                && Messages(nestedAfter) == "Tj gives a non-finite text height / " + Message("/afii10017"),
+                "nested forms whose /Matrix values only together overflow the height leave the warning pending to the next emitting show on the page (P6-33)",
+                Texts(nestedAfter) + " " + Paths(nestedAfter) + " " + Warnings(nestedAfter) + " " + Messages(nestedAfter));
+            foreach (var (withOuter, withInner) in new[] { (true, false), (false, true) })
+            {
+                var single = Nested(withOuter, withInner, tallThenShort);
+                var heights = single.Pages.SelectMany(p => p.Elements).OfType<PdfText>().Select(t => t.Height).ToList();
+                C(Texts(single) == "\\u0004|\\u0002|\\u0002" && Paths(single) == "9:3@o4:i4>o8:i0|9:6@o4:i4>o8:i0|4:9@"
+                    && Warnings(single) == "encoding-glyph-unsupported@1:9:3" && Messages(single) == Message("/afii10018")
+                    && heights.Count == 3 && Near(heights[0], 1e283),
+                    "control: with only the " + (withOuter ? "outer" : "inner") + " /Matrix the height is 1e283, the first inner Tj emits and warns there (P6-33)",
+                    Texts(single) + " " + Paths(single) + " " + Warnings(single) + " " + Messages(single) + " " + Origins(single));
+            }
+
+            // (3) A skewed Tm where only x overflows under a rise: CTM [1e240 0 0 1 0 0] (four cm of [1e60 0 0 1]) and Tm
+            // [1 0 1e10 1 50 50]. A rise of 1e63 gives x = (1e63 x 1e10 + 50) x 1e240 = 1e313 (non-finite) while y = 1e63 + 50
+            // and the height (10 x 1e250) stay finite: a non-finite text position, operand-error, warning pending; after 0 Ts
+            // the next show is at (5e241, 50) and warns. Operators: q 0, cm 1-4, BT 5, Tf 6, Tm 7, Ts 8, show 9, Ts 10, Tj 11,
+            // ET 12, Q 13 (' : TL 8 shifts by one).
+            var skewCtm = PdfMatrix.Identity;
+            for (var k = 0; k < 4; k++) skewCtm = new PdfMatrix(1e60, 0, 0, 1, 0, 0).Then(skewCtm);
+            var skewRendering = PdfMatrix.Translation(0, 1e63).Then(new PdfMatrix(1, 0, 1e10, 1, 50, 50)).Then(skewCtm);
+            C(!double.IsFinite(skewRendering.E) && double.IsFinite(skewRendering.F) && double.IsFinite(skewRendering.C) && double.IsFinite(skewRendering.D),
+                "the skewed rise overflows only the x of the text position (P6-33 premise)", R(skewRendering.E) + " " + R(skewRendering.F) + " " + R(skewRendering.C) + " " + R(skewRendering.D));
+            string Skew(string rise, string show) => "q " + string.Concat(Enumerable.Repeat(e60 + " 0 0 1 0 0 cm ", 4)) + "BT /F1 10 Tf 1 0 10000000000 1 50 50 Tm "
+                + show.Replace("RISE", rise + " Ts", StringComparison.Ordinal) + " 0 Ts (\\002) Tj ET Q";
+            foreach (var (show, op) in new[] { ("RISE (\\004) Tj", "Tj"), ("RISE [(\\004) -300 (\\004)] TJ", "TJ"), ("12 TL RISE (\\004) '", "'") })
+            {
+                var shift = op == "'" ? 1 : 0;
+                var skewed = Page(Skew(e63, show), Type3(affected));
+                var emitted = skewed.Pages.SelectMany(p => p.Elements).OfType<PdfText>().FirstOrDefault();
+                C(Texts(skewed) == "\\u0002" && Warnings(skewed) == "operand-error@1:4:" + I(9 + shift) + ";encoding-glyph-unsupported@1:4:" + I(11 + shift)
+                    && Messages(skewed) == op + " gives a non-finite text position / " + Message("/afii10017")
+                    && emitted is not null && Near(emitted.Origin.X, op == "'" ? (50 - 12e10) * 1e240 : 5e241) && emitted.Origin.Y == (op == "'" ? 38 : 50),
+                    "a " + op + " under a skewed Tm whose rise overflows only x keeps only operand-error (non-finite text position); the next emitting show at (5e241, 50) (after ' : the line moved by -12) warns with only its own names (P6-33)",
+                    Texts(skewed) + " " + Warnings(skewed) + " " + Messages(skewed) + " " + Origins(skewed));
+            }
+            // Control: a rise of 1e50 gives x = 1e300 (finite), so the first Tj emits and warns there.
+            var skewLow = Page(Skew(e50, "RISE (\\004) Tj"), Type3(affected));
+            C(Texts(skewLow) == "\\u0004|\\u0002" && Warnings(skewLow) == "encoding-glyph-unsupported@1:4:9" && Messages(skewLow) == Message("/afii10018"),
+                "control: a skewed rise that does not overflow x emits the first Tj and warns there (P6-33)", Texts(skewLow) + " " + Warnings(skewLow) + " " + Messages(skewLow) + " " + Origins(skewLow));
+
+            // (4) Shared swallow guard self-test. The P6-25/P6-27 guard (balanced braces, final '}', first and last member)
+            // missed a balanced mid-file over-strip; the shared guard requires every anchor once and in order.
+            static bool OldGuard(string text, string first, string last) =>
+                text.Count(c => c == '{') == text.Count(c => c == '}') && text.TrimEnd().EndsWith('}') && Occurrences(text, first) == 1 && Occurrences(text, last) == 1;
+            // A real over-strip by StripCommentsAndLiterals (its known interpolation-hole limit): the "/*" inside the hole
+            // opens a block comment that runs to the "*/" in Spacer, swallowing a balanced stretch.
+            const string sample = "class S\n{\n    void First() { var s = $\"{F(\"/*\")}\"; }\n    void Middle() { if (x) { y(); } }\n    void Spacer() { /* */ }\n    void Last() { }\n}\n";
+            string[] sampleAnchors = { "void First()", "void Middle()", "void Spacer()", "void Last()" };
+            var overStripped = StripCommentsAndLiterals(sample);
+            C(overStripped == "class S\n{\n    void First() { var s = \"\"  }\n    void Last() { }\n}\n",
+                "self-test premise: a block comment opened inside an interpolation hole swallows a balanced mid-file stretch (P6-33)", Escape(overStripped));
+            C(OldGuard(overStripped, "void First()", "void Last()") && SwallowGuard(overStripped, sampleAnchors) == "void Middle() x0; void Spacer() x0",
+                "the shared swallow guard catches a balanced mid-file over-strip that the old first/last guard let through (P6-33)",
+                OldGuard(overStripped, "void First()", "void Last()") + " " + (SwallowGuard(overStripped, sampleAnchors) ?? "passed"));
+            var intact = sample.Replace("$\"{F(\"/*\")}\"", "1", StringComparison.Ordinal);
+            C(SwallowGuard(StripCommentsAndLiterals(intact), sampleAnchors) is null && SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) == "void Spacer() out of order; void Middle() out of order; void First() out of order",
+                "the shared swallow guard passes an intact sample and reports anchors out of order (P6-33)",
+                (SwallowGuard(StripCommentsAndLiterals(intact), sampleAnchors) ?? "passed") + " / " + (SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) ?? "passed"));
+            // The same on the real stripped PdfContent.cs: cutting the balanced HasCurrent member out passes the old guard
+            // but not the shared one.
+            var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
+            var content = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
+            var cutStart = content.IndexOf("    private bool HasCurrent(", StringComparison.Ordinal);
+            var cutEnd = content.IndexOf("    private void AddLine(", StringComparison.Ordinal);
+            var cut = cutStart >= 0 && cutEnd > cutStart ? content.Remove(cutStart, cutEnd - cutStart) : content;
+            C(SwallowGuard(content, ContentAnchors) is null && cut.Length < content.Length && OldGuard(cut, "FontDecoder(string name", "private void InvokeXObject(string name")
+                && SwallowGuard(cut, ContentAnchors) == "private bool HasCurrent( x0",
+                "on the real stripped PdfContent.cs a balanced member cut mid-file passes the old guard and fails the shared one (P6-33)",
+                I(cutStart) + ".." + I(cutEnd) + " " + (SwallowGuard(content, ContentAnchors) ?? "passed") + " / " + (SwallowGuard(cut, ContentAnchors) ?? "passed"));
+        }
+        catch (Exception error) { C(false, "p6-33 unexpected", error.GetType().Name + ": " + error.Message); }
+    }
+
+    // P6-33: member anchors of the stripped sources, in source order, for the shared swallow guard. They are spread over
+    // each file, so a literal or comment that swallows a balanced stretch mid-file removes at least one of them.
+    private static readonly string[] ContentAnchors =
+    {
+        "internal sealed class PdfContentInterpreter", "public void Run(", "private static bool SkipInlineImage(", "private void Execute(string op",
+        "private bool HasCurrent(", "private void Show(byte[] bytes", "FontDecoder(string name", "private bool Show(string text",
+        "private static double Hypot(", "internal static string DecodeText(", "private void InvokeXObject(string name",
+    };
+
+    private static readonly string[] EncodingAnchors =
+    {
+        "internal sealed class PdfSimpleEncoding", "public bool TryMap(byte code", "UnsupportedGlyphListName(byte code)", "private static PdfSimpleEncoding Parse(",
+        "private static string?[] Ascii()", "internal static class PdfGlyphNames", "public static bool IsGlyphListName(string name)", "private static int? Hex(",
+        "Lazy<Dictionary<string, string>> Latin = new(",
+    };
+
+    private static int Occurrences(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
+
+    // P6-33: the one swallow guard for a source read through StripCommentsAndLiterals (it replaces the P6-25 and P6-27
+    // copies): balanced braces, a final '}', and every anchor exactly once and in the given order. Null when the stripped
+    // text passes, otherwise what failed.
+    private static string? SwallowGuard(string stripped, IReadOnlyList<string> anchors)
+    {
+        var problems = new List<string>();
+        var opens = stripped.Count(c => c == '{');
+        var closes = stripped.Count(c => c == '}');
+        if (opens != closes) problems.Add("braces " + I(opens) + "/" + I(closes));
+        var end = stripped.TrimEnd();
+        if (!end.EndsWith('}')) problems.Add("ends " + (end.Length > 0 ? end[^1].ToString() : "empty"));
+        var previous = -1;
+        foreach (var anchor in anchors)
+        {
+            var count = Occurrences(stripped, anchor);
+            var index = stripped.IndexOf(anchor, StringComparison.Ordinal);
+            if (count != 1) problems.Add(anchor + " x" + I(count));
+            else if (index < previous) problems.Add(anchor + " out of order");
+            else previous = index;
+        }
+        return problems.Count == 0 ? null : string.Join("; ", problems);
     }
 
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal

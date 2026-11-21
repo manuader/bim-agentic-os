@@ -825,6 +825,10 @@ From a `scripts/package.ps1` release outside any repository, `mcp/Bim.Mcp.dll` r
 
 A show inside a Form XObject whose `/Matrix` makes the text height non-finite gives operand-error `<op> gives a non-finite text height` and leaves the Type3 glyph-list warning pending; the next emitting show, inside the form or after it on the page, warns with only its own names. A `Ts` rise that overflows the text position is treated as a non-finite text position (operand-error `<op> gives a non-finite text position`), warning pending. Test-only; `PdfContent.cs` unchanged.
 
+## Form XObject matrix overflow and nested matrices (P6-33)
+
+`adapters/cad/Bim.Cad/PdfContent.cs` `InvokeXObject`: a form `/Matrix` whose composition with the current CTM is non-finite is handled as a non-finite `cm` is: operand-error at the `Do` (`Do /<name> gives a non-finite form matrix; the current matrix is kept`) and the form runs under the outer CTM (before P6-33 the outer CTM was kept silently). Nested forms whose `/Matrix` values only together overflow the text height give `<op> gives a non-finite text height` and leave the Type3 glyph-list warning pending for the next emitting show; a skewed `Tm` whose `Ts` rise overflows only the x of the text position is a non-finite text position (operand-error, warning pending). Unit-tested (`tests/cad/PdfType3GlyphListTests.cs` section P6-33, which also holds the shared swallow guard for the stripped-source static checks).
+
 ## generate-prototypes typed-refusal stdout failure (P7-30)
 
 `interfaces/cli/GenerateWrite.cs` `Run` `catch (Refusal)` sets `Environment.ExitCode = 1` and then calls `Fail` inside a try/catch, so a stdout that rejects, throws or is disposed while a typed refusal (usage, output_*, input_*, pack, guarded-block internal error) is written leaves exit 1 and nothing escapes `Run`; `Fail` itself is unchanged. A pipeline refusal (`RefusedLine` in `Execute`) whose stdout write throws is reported as `generate_prototypes_internal_error` through the catch-all (pinned).

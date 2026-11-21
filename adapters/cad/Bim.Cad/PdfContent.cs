@@ -598,8 +598,11 @@ internal sealed class PdfContentInterpreter
             subpaths = new List<PdfSubpath>();
             subpathStart = null;
             current = null;
+            // P6-33: a /Matrix whose composition with the CTM is non-finite is reported like a non-finite cm: operand-error
+            // at the Do, and the form runs under the current CTM.
             var ctm = matrix.Then(state.Ctm);
             if (ctm.IsFinite) state = state with { Ctm = ctm };
+            else Warn("operand-error", objectNumber, operatorIndex, "Do /" + name + " gives a non-finite form matrix; the current matrix is kept");
             stackFloor = stack.Count;
             var formResources = file.Resolve(PdfFile.Get(form.Dictionary, "Resources")) as Dictionary<string, object> ?? resources;
             var savedInvocation = invocation;
