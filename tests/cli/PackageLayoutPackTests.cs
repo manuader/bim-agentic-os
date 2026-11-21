@@ -692,6 +692,20 @@ internal static class PackageLayoutPackTests
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
         }
+        // P4-33: every runtime asset name in a deps.json (any target entry) whose ".." climbs above the package root, named as
+        // an escaping path whatever its file name (an escaping Bim.Gltf asset is also a Bim.Gltf match); null when unreadable.
+        static List<string>? EscapingInDeps(string file)
+        {
+            try
+            {
+                using var document = JsonDocument.Parse(File.ReadAllText(file));
+                var root = document.RootElement;
+                if (root.ValueKind != JsonValueKind.Object || !root.TryGetProperty("libraries", out var libraries) || libraries.ValueKind != JsonValueKind.Object) return null;
+                var escaping = new List<string>();
+                return escaping;
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
+        }
         static List<string> Fingerprint(string layout)
         {
             try
@@ -723,6 +737,8 @@ internal static class PackageLayoutPackTests
         Check(control.Count == 0, "positive control: the package keeps cli/Bim.Gltf.dll with one sbom.json and one manifest.json line carrying its sha256", Show(control));
         var escapingPaths = Escaping(package);
         Check32(escapingPaths.Count == 0, "no sbom.json or manifest.json path of the package climbs above its root (an escaping .. is a named failure, not clamped)", Show(escapingPaths));
+        var mcpDepsEscaping = EscapingInDeps(Path.Combine(package, "mcp", "Bim.Mcp.deps.json"));
+        check(mcpDepsEscaping is { Count: 0 }, "P4-33: no runtime asset of the packaged mcp/Bim.Mcp.deps.json climbs above the package root", Missing(mcpDepsEscaping, "mcp/Bim.Mcp.deps.json"));
         var mcpDeps = GltfInDeps(Path.Combine(package, "mcp", "Bim.Mcp.deps.json"));
         Check31(mcpDeps is { Count: 0 }, "the packaged mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime asset", Missing(mcpDeps, "mcp/Bim.Mcp.deps.json"));
         var cliDeps = GltfInDeps(Path.Combine(package, "cli", "Bim.Cli.deps.json"));
@@ -857,7 +873,28 @@ internal static class PackageLayoutPackTests
                     File.WriteAllText(depsCopy, toolsDeps.ToJsonString(), new UTF8Encoding(false));
                     var toolsFound = GltfInDeps(depsCopy);
                     Check32(toolsFound is { Count: 0 }, "self-test: a planted Bim.GltfTools runtime asset in mcp/Bim.Mcp.deps.json is no Bim.Gltf", Missing(toolsFound, "deps"));
+                    // P4-33: an escaping runtime asset is a named escaping path (a Bim.Gltf one is also a Bim.Gltf match); a ".."
+                    // that stays inside the root and a plain asset are not escaping.
+                    foreach (var (asset, escapingExpected, gltfExpected) in new[]
+                    {
+                        ("../BIM.GLTF", "runtime " + mcpTarget + " escaping path ../BIM.GLTF", "runtime " + mcpTarget + " ../BIM.GLTF"),
+                        ("lib/../../mcp/Bim.Gltf.dll", "runtime " + mcpTarget + " escaping path lib/../../mcp/Bim.Gltf.dll", "runtime " + mcpTarget + " lib/../../mcp/Bim.Gltf.dll"),
+                        ("..\\other\\Other.dll", "runtime " + mcpTarget + " escaping path ..\\other\\Other.dll", ""),
+                        ("lib/net8.0/../net8.0/Other.dll", "", ""),
+                        ("lib/net8.0/Bim.Gltf", "", "runtime " + mcpTarget + " lib/net8.0/Bim.Gltf"),
+                    })
+                    {
+                        var edited = (JsonObject)depsNode!.DeepClone();
+                        Entry(edited)["runtime"] = new JsonObject { [asset] = new JsonObject() };
+                        File.WriteAllText(depsCopy, edited.ToJsonString(), new UTF8Encoding(false));
+                        var escapingFound = EscapingInDeps(depsCopy);
+                        var gltfFound = GltfInDeps(depsCopy);
+                        check(escapingFound is not null && string.Join("|", escapingFound) == escapingExpected && gltfFound is not null && string.Join("|", gltfFound) == gltfExpected,
+                            "P4-33: self-test: a planted runtime asset " + asset + " in mcp/Bim.Mcp.deps.json reads escaping '" + escapingExpected + "' and Bim.Gltf '" + gltfExpected + "'",
+                            "escaping " + Missing(escapingFound, "deps") + " Bim.Gltf " + Missing(gltfFound, "deps"));
+                    }
                     File.WriteAllText(depsCopy, "{");
+                    check(EscapingInDeps(depsCopy) is null, "P4-33: self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable for the escaping check too (fail-closed)", "");
                     Check31(GltfInDeps(depsCopy) is null, "self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)", "");
                     File.Delete(depsCopy);
                     Check31(GltfInDeps(depsCopy) is null, "self-test: a missing mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)", "");
