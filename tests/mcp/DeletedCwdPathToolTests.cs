@@ -171,12 +171,16 @@ internal static class DeletedCwdPathToolTests
         Add("skills_lock_verify", ["skills_path", "lock_path"]);
         Check(cases.Count == 17 && cases.Select(c => c.Tool).Distinct().Count() == 8, "fixture: 17 cases over eight tools");
 
+        // P10-37: every case of both modes either runs or is a counted SKIP (non-Linux, or a privileged runner).
+        var ran = 0;
+        var skipped = 0;
         foreach (var mode in new[] { "cwd", "parent" })
         {
             if (!OperatingSystem.IsLinux())
             {
                 foreach (var (tool, parameter, _) in cases)
                     Console.WriteLine("SKIP P10-35 unsearchable working directory: " + mode + " " + tool + " " + parameter + ": Linux only (macOS does not run tests/mcp; Windows has no Unix permission bits)");
+                skipped += cases.Count;
                 continue;
             }
             var parent = Path.Combine(work, "p10-35-locked-" + mode + "-" + Guid.NewGuid().ToString("N"));
@@ -193,6 +197,7 @@ internal static class DeletedCwdPathToolTests
             {
                 foreach (var (tool, parameter, _) in cases)
                     Console.WriteLine("SKIP P10-35 unsearchable working directory: " + mode + " " + tool + " " + parameter + ": a mode-000 directory is still listable (privileged runner)");
+                skipped += cases.Count;
                 continue;
             }
 
@@ -234,6 +239,7 @@ internal static class DeletedCwdPathToolTests
                 var ok = probe == "GetFullPath accepted" && isError == "true" && text == expected && stderr.Length == 0 && thrown.Length == 0
                     && code is { Length: > 0 } && code.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_') && !code.Contains("internal_error", StringComparison.Ordinal)
                     && Environment.CurrentDirectory == original;
+                ran++;
                 measured.Add((tool + " " + parameter, expected, ok, probe + "; isError " + isError + " " + text + (stderr.Length > 0 ? " stderr " + stderr : "") + (thrown.Length > 0 ? " " + thrown : "")));
             }
             // Every case runs before the first check, so a failing check names all observed outcomes (one CI annotation).
@@ -243,5 +249,115 @@ internal static class DeletedCwdPathToolTests
                 Check(m.Ok, mode + " " + m.Label + ": GetFullPath accepted (Linux), isError, exactly " + m.Expected + ", a typed code (never McpServer's generic failure nor an internal error), nothing on stderr, working directory restored" + (m.Ok ? "" : observed));
             Check(Environment.CurrentDirectory == original, mode + ": the working directory is restored after all cases");
         }
+        var counts = "ran " + ran.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", skipped " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        if (skipped > 0) Console.WriteLine("SKIP P10-35 unsearchable working directory: " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture) + " cases skipped (" + counts + ")");
+        Check(ran + skipped == 2 * cases.Count && (ran == 0 || skipped == 0 || ran == cases.Count), "P10-37 every case of both modes ran or was a counted SKIP (" + counts + " of " + (2 * cases.Count).ToString(System.Globalization.CultureInfo.InvariantCulture) + ")");
+        ValidLockRelativeSkills(work, call, check);
+    }
+
+    // ---- P10-37: skills_lock_verify with a valid lock and a relative skills_path under an unsearchable cwd ----
+    // The skills directory is "skills" inside the working directory, pinned by a valid lock at an absolute path outside it.
+    // With the working directory searchable the relative call verifies (reference, precondition). Then "cwd" mode chmods
+    // the working directory to 000 and "parent" mode its parent; on Linux GetFullPath accepts "skills", SkillLockTool's
+    // PathProblem passes it, and the lock-checked load meets the unreadable directory. The text is pinned as measured
+    // (Pins37), isError, nothing on stderr, never McpServer's generic failure nor skills_lock_internal_error; the lock and
+    // the pack are unchanged. Linux only, non-root; counted SKIP otherwise. Modes and the working directory restored.
+    // As measured (run 44938432860, Linux, both modes alike; a ::warning:: probe): Core's skills-root check cannot see the directory through the
+    // mode-000 path, so the load reports the root missing (skills_invalid root_missing) and the pinned pack skill_lock_missing
+    // — a typed report, not an access refusal (the same report shape as a missing skills directory).
+    const string LockedSkills37 = """{"status":"failed","code":"skills_invalid","mode":"verify","verified":false,"lock_version":1,"content_hash":"bim-skill-pack-sha256-v1","packs":[{"id":"bim.test.gamma","version":"1.0.0","content_sha256":"9adb9e8f6b09883bb1579edc8fd96f171301b897581b906020a7a5d4aa6b0000","state":"skill_lock_missing","detail":"pack directory not found under the skills root"}],"issues":[{"code":"skills_invalid","subject":".","detail":"root_missing: skills root directory not found"},{"code":"skill_lock_missing","subject":"bim.test.gamma","detail":"pack directory not found under the skills root"}]}""";
+    static readonly Dictionary<string, string> Pins37 = new(StringComparer.Ordinal)
+    {
+        ["cwd"] = LockedSkills37,
+        ["parent"] = LockedSkills37,
+    };
+
+    static void ValidLockRelativeSkills(string work, Func<string, JsonObject> call, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + name);
+        const string Pack = "bim.test.gamma";
+        var modes = new[] { "cwd", "parent" };
+        if (!OperatingSystem.IsLinux())
+        {
+            foreach (var mode in modes)
+                Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + mode + ": Linux only (macOS does not run tests/mcp; Windows has no Unix permission bits)");
+            Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + modes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + " cases skipped");
+            return;
+        }
+        const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        var original = Environment.CurrentDirectory;
+        var skipped = 0;
+        foreach (var mode in modes)
+        {
+            var parent = Path.GetFullPath(Path.Combine(work, "p10-37-" + mode + "-" + Guid.NewGuid().ToString("N")));
+            var cwd = Path.Combine(parent, "cwd");
+            var skills = Path.Combine(cwd, "skills");
+            Directory.CreateDirectory(Path.Combine(skills, Pack));
+            File.WriteAllBytes(Path.Combine(skills, Pack, "skill.json"), new System.Text.UTF8Encoding(false).GetBytes("{\"manifest_version\":1,\"id\":\"" + Pack + "\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"P10-37 lock pack\",\"priority\":10}\n"));
+            var lockFile = Path.GetFullPath(Path.Combine(work, "p10-37-" + mode + "-" + Guid.NewGuid().ToString("N") + ".lock.json"));
+            File.WriteAllBytes(lockFile, Bim.Core.SkillLockFile.Serialize(Bim.Core.SkillLocking.Pin(skills, new[] { Pack })));
+            var lockBytes = File.ReadAllBytes(lockFile);
+            var packBytes = File.ReadAllBytes(Path.Combine(skills, Pack, "skill.json"));
+            var locked = mode == "cwd" ? cwd : parent;
+            bool denied;
+            Chmod(locked, UnixFileMode.None);
+            try { Directory.GetFileSystemEntries(locked); denied = false; }
+            catch (UnauthorizedAccessException) { denied = true; }
+            finally { Chmod(locked, Owner); }
+            if (!denied)
+            {
+                Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + mode + ": a mode-000 directory is still listable (privileged runner)");
+                skipped++;
+                continue;
+            }
+            var request = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 37, ["method"] = "tools/call", ["params"] = new JsonObject { ["name"] = "skills_lock_verify", ["arguments"] = new JsonObject { ["skills_path"] = "skills", ["lock_path"] = lockFile } } }.ToJsonString();
+            (string Text, string IsError, string Stderr, string Thrown, string Probe) Call(bool lockIt)
+            {
+                var previousError = Console.Error;
+                var capturedError = new StringWriter();
+                var probe = "";
+                var thrown = "";
+                JsonObject? response = null;
+                try
+                {
+                    Directory.SetCurrentDirectory(cwd);
+                    if (lockIt) Chmod(locked, UnixFileMode.None);
+                    try { Path.GetFullPath("skills"); probe = "GetFullPath accepted"; }
+                    catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                    Console.SetError(capturedError);
+                    response = call(request);
+                }
+                catch (Exception failure) { thrown = "threw " + failure.GetType().FullName + ": " + failure.Message; }
+                finally
+                {
+                    Console.SetError(previousError);
+                    Chmod(locked, Owner);
+                    Directory.SetCurrentDirectory(original);
+                }
+                string text = "", isError = "";
+                try { text = response?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? ""; isError = response?["result"]?["isError"]?.ToJsonString() ?? ""; }
+                catch (Exception failure) { thrown += " response " + failure.Message; }
+                return (text.Replace(lockFile, "<lock>", StringComparison.Ordinal).Replace(work, "<work>", StringComparison.Ordinal), isError, capturedError.ToString().Trim(), thrown, probe);
+            }
+            var reference = Call(false);
+            Check(reference.Text.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && reference.Text.Contains("\"verified\":true", StringComparison.Ordinal) && reference.IsError == "false"
+                && reference.Stderr.Length == 0 && reference.Thrown.Length == 0,
+                mode + ": precondition: with the working directory searchable the relative skills_path verifies | " + reference.Text + " isError " + reference.IsError + " " + reference.Stderr + reference.Thrown);
+            var run = Call(true);
+            var measured = run.Probe + "; isError " + run.IsError + " " + run.Text + (run.Stderr.Length > 0 ? " stderr " + run.Stderr : "") + (run.Thrown.Length > 0 ? " " + run.Thrown : "");
+            string? code = null;
+            try { code = JsonNode.Parse(run.Text)?["code"]?.GetValue<string>(); }
+            catch (Exception failure) when (failure is System.Text.Json.JsonException or InvalidOperationException) { }
+            var expected = Pins37[mode];
+            Check(run.Probe == "GetFullPath accepted", mode + ": precondition: Path.GetFullPath of the relative skills_path is accepted (Linux) | " + measured);
+            Check(run.IsError == "true" && run.Text == expected && run.Stderr.Length == 0 && run.Thrown.Length == 0
+                && code is { Length: > 0 } && code.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_') && !code.Contains("internal_error", StringComparison.Ordinal),
+                mode + ": isError, exactly " + expected + ", a typed code (never McpServer's generic failure nor an internal error), nothing on stderr | " + measured);
+            Check(Environment.CurrentDirectory == original, mode + ": the working directory is restored (finally)");
+            Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes) && File.ReadAllBytes(Path.Combine(skills, Pack, "skill.json")).AsSpan().SequenceEqual(packBytes), mode + ": the lock and the pack are unchanged");
+            Directory.Delete(parent, true);
+            File.Delete(lockFile);
+        }
+        if (skipped > 0) Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture) + " cases skipped");
     }
 }
