@@ -2046,3 +2046,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay265
 - 2026-11-21T18:53:51Z lock taken (session_014pxpsRSKkxQU73xSR3SXr3 relay265; was FREE, relay264 released 2026-11-21T18:36:12Z)
+- 2026-11-21T18:54:26Z picked P3-34 (phase 3), P10-37 (phase 10), P6-36 (phase 6) — oldest-touched (relay261); disjoint files (GenerateTypologyToolTests.cs new section + GenerateTypologyTests.cs section 14; DeletedCwdPathTests.cs + DeletedCwdPathToolTests.cs new sections; MinsertEzdxfTests.cs new section + minsert_ezdxf_centres.py + cad-brief P6-34 wording). Workers spawned; background heartbeat every 20 min.
