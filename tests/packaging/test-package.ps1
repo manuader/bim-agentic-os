@@ -1470,9 +1470,9 @@ try {
                 Write-PackageText $p733TypologyPath ('{"pack":"' + $p733Typology + '","family_size":3,"lot":{"width_m":8.66,"depth_m":20},"alternatives":2,"seed":0,"project_id":"6f1c2a9e-7b3d-4c55-9a10-000000000733"}')
                 # The tests/mcp/PlanLayoutsToolTests.cs small brief: its Living room matches the CABA pack's area/side minimums.
                 $p733BriefPath = Join-Path $p733Io 'brief.json'
-                Write-PackageText $p733BriefPath ('{"brief_version":1,"name":"Small studio","constraints":{"site":{"width_m":6,"depth_m":8},"levels":1},'
-                    + '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],'
-                    + '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
+                Write-PackageText $p733BriefPath ('{"brief_version":1,"name":"Small studio","constraints":{"site":{"width_m":6,"depth_m":8},"levels":1},' +
+                    '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],' +
+                    '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
                 $p733Sibling = @(
                     @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"(ranked|infeasible)"' },
                     @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]' }
@@ -1646,8 +1646,7 @@ try {
                         $document = [Text.Json.JsonDocument]::Parse($batch.Lines[1])
                         try {
                             $list = $document.RootElement.GetProperty('result')
-                            $cursor = $null
-                            $paged = $list.TryGetProperty('nextCursor', [ref]$cursor)
+                            $paged = @($list.EnumerateObject() | Where-Object { $_.Name -ceq 'nextCursor' }).Count -gt 0
                             $names = [string[]]@($list.GetProperty('tools').EnumerateArray() | ForEach-Object { $_.GetProperty('name').GetString() })
                         } finally { $document.Dispose() }
                     } catch { $failures.Add("P7-33: the handshake initialize / tools/list replies have an unexpected shape: $($_.Exception.Message)") }
