@@ -374,7 +374,7 @@ internal static class RepeatedEnvelopeKeyTests
         Check(initialized.StartsWith("result@90:{\"protocolVersion\":", StringComparison.Ordinal) && listed.StartsWith("result@91:{\"tools\":[", StringComparison.Ordinal),
             "fixture: initialize and tools/list answer | " + Short(initialized) + " / " + Short(listed));
         string As(string outcome, string id) => outcome[..outcome.IndexOf('@')] + "@" + id + outcome[outcome.IndexOf(':')..];
-        const string UnknownTool = "result@{0}:{\"status\":\"failed\",\"code\":\"unknown_tool\"}";
+        static string UnknownTool(string id) => "result@" + id + ":{\"status\":\"failed\",\"code\":\"unknown_tool\"}";
 
         var cases = new List<(string Label, string Line, string Expected)>
         {
@@ -388,8 +388,8 @@ internal static class RepeatedEnvelopeKeyTests
             ("O6 notification params lone name", """{"jsonrpc":"2.0","method":"notifications/initialized","params":{"\ud800":1}}""", "none"),
             ("O7 unknown method params lone name", Request("6", "resources/list", """{"\ud800":1}"""), "-32601:method_not_found@6"),
             // ---- inside _meta: pinned as measured (accepted, never read) ----
-            ("M1 tools/call _meta lone name", Request("10", "tools/call", """{"name":"p10_36_unknown","arguments":{},"_meta":{"\ud800":1}}"""), string.Format(CultureInfo.InvariantCulture, UnknownTool, "10")),
-            ("M2 tools/call _meta progressToken lone", Request("11", "tools/call", """{"name":"p10_36_unknown","_meta":{"progressToken":"\ud800"}}"""), string.Format(CultureInfo.InvariantCulture, UnknownTool, "11")),
+            ("M1 tools/call _meta lone name", Request("10", "tools/call", """{"name":"p10_36_unknown","arguments":{},"_meta":{"\ud800":1}}"""), UnknownTool("10")),
+            ("M2 tools/call _meta progressToken lone", Request("11", "tools/call", """{"name":"p10_36_unknown","_meta":{"progressToken":"\ud800"}}"""), UnknownTool("11")),
             ("M3 ping _meta lone name", Request("12", "ping", """{"_meta":{"\ud800":1}}"""), "result@12:{}"),
             ("M4 initialize _meta lone value", Request("13", "initialize", "{" + Init + ",\"_meta\":{\"progressToken\":\"\\udc00\"}}"), As(initialized, "13")),
             ("M5 tools/list _meta lone name", Request("14", "tools/list", """{"_meta":{"\udc00":"\ud800"}}"""), As(listed, "14")),
