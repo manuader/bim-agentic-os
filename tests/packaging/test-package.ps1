@@ -29,6 +29,8 @@
 # P7-33: the same copy: the infeasible generate_prototypes document's sha256 is pinned from CLI and MCP; generate_typology and plan_layouts
 # fall back to a generated repository identically from CLI and MCP; a stray skills/ beside renamed cli/ and mcp/ is ignored; the tools/list
 # catalogue is pinned and the handshake also runs one awaited reply at a time; unremovable case folders are warned about.
+# P7-35: the same copy: the generate_typology and plan_layouts documents are pinned by sha256 (CLI == MCP); the typology status is
+# matched exactly; P7-24/P7-31/P7-33 case folders go through one warning helper; the cleanup self-test is a named SKIP as root.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -1121,6 +1123,20 @@ try {
         }
     } catch { $failures.Add("P7-12 packaged skills/generate-prototypes checks threw: $($_.Exception.Message)") }
 
+    # Removes a case folder; one still present afterwards is a warning naming it and its section $Label (a GitHub annotation on
+    # CI unless Silent), returned as text; $null when it is gone (P7-33, used by P7-24, P7-31 and P7-33 since P7-35).
+    function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent) {
+        if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
+        try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+        if (!(Test-Path -LiteralPath $Path)) { return $null }
+        $warning = "$($Label): a case folder could not be removed and is left behind: $Path"
+        if (!$Silent) {
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
+            else { Write-Host "WARNING $warning" }
+        }
+        return $warning
+    }
+
     # --- P7-24 generate_prototypes from the packaged MCP binary: a copy of the real package (release A) outside any
     # repository; its mcp/Bim.Mcp.dll over stdio (one tools/call line) returns the document whose UTF-8 bytes equal the
     # packaged CLI generate-prototypes output file (ranked and infeasible requests), the code pack resolved package-first
@@ -1222,7 +1238,7 @@ try {
                 Assert ($cli.Code -eq 1 -and $cliLine -ceq $expected -and $cli.Err.Length -eq 0 -and !(Test-Path -LiteralPath $cliOut)) "P7-24: a missing packaged code pack makes the packaged CLI print $expected (exit 1, empty stderr, no output file): exit $($cli.Code) $(Get-Tail $cli.Out) $(Get-Tail $cli.Err)"
                 $mcp = Invoke-P724Mcp $p724Mcp $request
                 Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cliLine) "P7-24: a missing packaged code pack makes the packaged mcp/Bim.Mcp.dll generate_prototypes return the typed pack_unavailable line (isError), equal to the packaged CLI stdout line: mcp $($mcp.Raw)"
-            } finally { if (Test-Path -LiteralPath $p724Case) { Remove-Item -LiteralPath $p724Case -Recurse -Force -ErrorAction SilentlyContinue } }
+            } finally { [void](Remove-PackageCaseDirectory 'P7-24' $p724Case) }
         }
     } catch { $failures.Add("P7-24 packaged MCP generate_prototypes checks threw: $($_.Exception.Message)") }
 
@@ -1413,7 +1429,7 @@ try {
                 Assert ($cli.Code -eq 1 -and $cli.Line -ceq $expected -and $cli.Err.Length -eq 0 -and $null -eq $cli.Bytes) "P7-31: a package copy without VERSION outside any repository makes the packaged CLI print $expected (exit 1, empty stderr, no file): $($cli.Raw)"
                 $mcp = Invoke-P731McpCall $orphan
                 Assert ($mcp.Ok -and $mcp.IsError -and $mcp.Text -ceq $expected -and $mcp.Text -ceq $cli.Line) "P7-31: a package copy without VERSION outside any repository makes the packaged MCP return $expected (isError), equal to the CLI line: $($mcp.Raw)"
-            } finally { if (Test-Path -LiteralPath $p731Case) { Remove-Item -LiteralPath $p731Case -Recurse -Force -ErrorAction SilentlyContinue } }
+            } finally { [void](Remove-PackageCaseDirectory 'P7-31' $p731Case) }
         }
     } catch { $failures.Add("P7-31 packaged MCP generate_prototypes pack_invalid/fallback/handshake checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
     # --- P7-33 packaged MCP infeasible sha, sibling tools fallback and catalogue pin: copies of the real package (release A)
@@ -1431,18 +1447,24 @@ try {
             for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
             return $false
         }
-        # Removes a folder; one still present afterwards is a warning naming it (a GitHub annotation on CI unless Silent), returned
-        # as text; $null when it is gone.
-        function Remove-P733Directory([string]$Path, [switch]$Silent) {
-            if (!(Test-Path -LiteralPath $Path)) { return $null }
-            try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-            if (!(Test-Path -LiteralPath $Path)) { return $null }
-            $warning = "P7-33: a case folder could not be removed and is left behind: $Path"
-            if (!$Silent) {
-                if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
-                else { Write-Host "WARNING $warning" }
-            }
-            return $warning
+        function Remove-P733Directory([string]$Path, [switch]$Silent) { return Remove-PackageCaseDirectory 'P7-33' $Path -Silent:$Silent }
+        # P7-35: why the cleanup self-test cannot hold a folder here, or $null when it can. Root (or a privileged process)
+        # removes a folder whose mode forbids writes, and SetUnixFileMode needs .NET 7+; Windows holds a file open instead.
+        function Get-P733CleanupSkip([bool]$Windows, [bool]$Privileged, [bool]$HasUnixFileMode) {
+            if ($Windows) { return $null }
+            if ($Privileged) { return 'running as root (a read-only folder is removed anyway)' }
+            if (!$HasUnixFileMode) { return 'IO.File.SetUnixFileMode is unavailable' }
+            return $null
+        }
+        function Test-P733Privileged {
+            if ($IsWindows) { return $false }
+            $privileged = $null
+            try { $privileged = [Environment]::IsPrivilegedProcess } catch { }
+            if ($privileged -is [bool]) { return $privileged }
+            try { return ((& id -u 2>$null) -join '').Trim() -ceq '0' } catch { return $false }
+        }
+        function Test-P733UnixFileMode {
+            try { return $null -ne [IO.File].GetMethod('SetUnixFileMode', [type[]]@([string], [type]'System.IO.UnixFileMode')) } catch { return $false }
         }
         $p733Base = @($env:RUNNER_TEMP, [IO.Path]::GetTempPath(), $(if (!$IsWindows) { '/tmp' })) |
             Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) -and !(Test-P733UnderRepository $_) } | Select-Object -First 1
@@ -1456,12 +1478,16 @@ try {
                 $p733Io = Join-Path $p733Case 'io'
                 New-Item -ItemType Directory -Force $p733Io | Out-Null
                 $p733Utf8 = [Text.UTF8Encoding]::new($false)
-                $p733Os = if ($IsWindows) { 'Windows' } else { 'Linux' }
+                $p733Os = if ($IsWindows) { 'Windows' } elseif ($IsMacOS) { 'macOS' } else { 'Linux' }
                 $p733Caba = 'ar.caba.codigo-edificacion'
                 $p733Typology = 'bim.typology.vivienda-unifamiliar'
                 # SHA-256 of the canonical generate-prototypes document for $p733Prototypes (pipeline_status infeasible, 5559 bytes),
                 # identical on Linux and Windows (observed in CI run 44841962105 on core and core-windows).
                 $p733InfeasibleSha256 = '6d4a993dfbefe530f19892d7b676eec8ff1cea6c42f438e9dc26b6489fa0144c'
+                # P7-35: SHA-256 of the packaged generate-typology document for $p733TypologyPath and of the packaged plan-layouts
+                # document for $p733BriefPath (with --pack), from the CLI file and the MCP tools/call text alike.
+                $p733TypologySha256 = '0000000000000000000000000000000000000000000000000000000000000000'
+                $p733LayoutsSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
                 # The full tools/list name catalogue of the packaged server, in listed order: the 17 core tools, then one revit_<command>
                 # per RevitCommandCatalogue entry (79 names, observed in CI run 44841962105 on core and core-windows).
                 $p733Catalogue = [string[]]@(
@@ -1491,8 +1517,8 @@ try {
                     '"rooms":[{"id":"living","name":"Living","target_area_m2":20,"min_area_m2":15},{"id":"bath","name":"Bath","target_area_m2":4,"min_area_m2":3}],' +
                     '"adjacencies":[{"a":"living","b":"bath","kind":"required"}]}')
                 $p733Sibling = @(
-                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"(ranked|infeasible)"' },
-                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]' }
+                    @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p733TypologySha256 },
+                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256 }
                 )
                 function Get-P733Sha256([byte[]]$Bytes) {
                     $sha = [Security.Cryptography.SHA256]::Create()
@@ -1615,16 +1641,32 @@ try {
                 $lockedInner = Join-Path $locked 'inner'
                 New-Item -ItemType Directory -Force $lockedInner | Out-Null
                 Write-PackageText (Join-Path $lockedInner 'held.txt') 'x'
-                $holder = $null
-                try {
-                    if ($IsWindows) { $holder = [IO.File]::Open((Join-Path $lockedInner 'held.txt'), 'Open', 'Read', 'None') }
-                    else { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserExecute') }
-                    $warning = Remove-P733Directory $locked -Silent
-                    if ($null -eq $warning -and $env:GITHUB_ACTIONS -ne 'true') { Write-Host 'SKIP P7-33 cleanup warning: the folder could not be held (running with rights that remove it anyway)' }
-                    else { Assert ($null -ne $warning -and $warning.Contains($locked) -and (Test-Path -LiteralPath $locked)) "P7-33: a case folder that cannot be removed ($($p733Os)) is reported as a warning naming it: $warning" }
-                } finally {
-                    if ($holder) { $holder.Dispose() }
-                    if (!$IsWindows -and (Test-Path -LiteralPath $lockedInner)) { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute') }
+                # P7-35: the skip decision itself, then a named SKIP (not a failure) as root or without SetUnixFileMode.
+                foreach ($case in @(
+                        @{ W = $true; P = $true; U = $false; Skip = $null },
+                        @{ W = $false; P = $true; U = $true; Skip = 'running as root (a read-only folder is removed anyway)' },
+                        @{ W = $false; P = $false; U = $false; Skip = 'IO.File.SetUnixFileMode is unavailable' },
+                        @{ W = $false; P = $false; U = $true; Skip = $null })) {
+                    $got = Get-P733CleanupSkip $case.W $case.P $case.U
+                    Assert ($got -ceq $case.Skip) "P7-35: the cleanup self-test skip for windows=$($case.W) privileged=$($case.P) SetUnixFileMode=$($case.U) is '$($case.Skip)'; got '$got'"
+                }
+                $p733Privileged = Test-P733Privileged
+                $p733HasUnixFileMode = Test-P733UnixFileMode
+                $cleanupSkip = Get-P733CleanupSkip ([bool]$IsWindows) $p733Privileged $p733HasUnixFileMode
+                Write-Host "P7-33 cleanup self-test on $($p733Os): privileged $p733Privileged, SetUnixFileMode $p733HasUnixFileMode"
+                if ($null -ne $cleanupSkip) { Write-Host "SKIP P7-33 cleanup warning self-test ($p733Os): $cleanupSkip" }
+                else {
+                    $holder = $null
+                    try {
+                        if ($IsWindows) { $holder = [IO.File]::Open((Join-Path $lockedInner 'held.txt'), 'Open', 'Read', 'None') }
+                        else { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserExecute') }
+                        $warning = Remove-P733Directory $locked -Silent
+                        if ($null -eq $warning -and $env:GITHUB_ACTIONS -ne 'true') { Write-Host 'SKIP P7-33 cleanup warning: the folder could not be held (running with rights that remove it anyway)' }
+                        else { Assert ($null -ne $warning -and $warning.StartsWith('P7-33: ') -and $warning.Contains($locked) -and (Test-Path -LiteralPath $locked)) "P7-33: a case folder that cannot be removed ($($p733Os)) is reported as a warning naming it: $warning" }
+                    } finally {
+                        if ($holder) { $holder.Dispose() }
+                        if (!$IsWindows -and (Test-Path -LiteralPath $lockedInner)) { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute') }
+                    }
                 }
                 $released = Remove-P733Directory $locked -Silent
                 Assert ($null -eq $released -and !(Test-Path -LiteralPath $locked)) "P7-33: a removable case folder is removed with no warning: $released"
@@ -1698,6 +1740,11 @@ try {
                     $mcp = Invoke-P733Call $plainMcp $tool.Tool $tool.Arguments
                     $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
                     Assert ($mcp.Ok -and !$mcp.IsError -and $bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($bytes)) "P7-33 $($tool.Tool): the packaged mcp/Bim.Mcp.dll returns the packaged CLI file bytes package-first (cli $($bytes.Length), mcp $($mcpBytes.Length) bytes): $($mcp.Raw)"
+                    # P7-35: the package-first document is pinned by sha256 from the CLI file and the MCP text alike.
+                    $cliSha = Get-P733Sha256 $bytes; $mcpSha = Get-P733Sha256 $mcpBytes
+                    $observedStatus = if ($cli.Line -cmatch '"pipeline_status":"([a-z_]+)"') { $Matches[1] } else { '-' }
+                    Assert ($bytes.Length -gt 0 -and $cliSha -ceq $tool.Sha256) "P7-35 $($tool.Tool): observed cli sha256 $cliSha ($($bytes.Length) bytes, pipeline_status $observedStatus, $p733Os); pinned $($tool.Sha256)"
+                    Assert ($mcp.Ok -and !$mcp.IsError -and $mcpBytes.Length -gt 0 -and $mcpSha -ceq $tool.Sha256 -and $mcpSha -ceq $cliSha) "P7-35 $($tool.Tool): observed mcp sha256 $mcpSha ($($mcpBytes.Length) bytes, $p733Os); cli $cliSha; pinned $($tool.Sha256)"
                 }
                 foreach ($marker in @('VERSION', 'manifest.json')) {
                     $label = $marker.Replace('.', '-')
