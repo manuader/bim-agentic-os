@@ -39,6 +39,9 @@ using Bim.Generative;
 //  12. P7-32: a stdout that accepts part of a typed refusal, internal-error, success or pipeline-refusal line and then
 //      throws leaves that truncated line (no newline) on stdout, exit 1, nothing escaping Run; a disposed stdout's attempts
 //      are counted through a CountingWriter; success, refusal and section 7-11 bytes unchanged (PartialWriteStage).
+//  13. P7-34: section 12's per-line budget also cut after the full line (a complete success JSON on stdout with exit 1 and
+//      no file), CountingWriter's WriteLine() / Write(char[], int, int) self-tested, and a static pin (with mutation
+//      self-tests) that Run never flushes or retries the typed line after a failed write (PartialWriteContractStage).
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -457,6 +460,7 @@ internal static class GeneratePrototypesTests
         OutputWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         RefusalWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PartialWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
+        PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
     }
 
     // ---- 7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
@@ -1955,13 +1959,17 @@ internal static class GeneratePrototypesTests
 
     // P7-32: a stdout that records every write it is asked for (Attempts, the full value) and then hands it to inner (here a
     // disposed StringWriter, which throws ObjectDisposedException), so a real closed writer's failure is observed together
-    // with the attempt instead of a null Out.
+    // with the attempt instead of a null Out. P7-34: WriteLine() (recorded as "", the line's content like WriteLine("")) and
+    // Write(char[], int, int) (recorded as the slice; Write(char[]) reaches it through TextWriter) are one attempt each and
+    // forwarded as the same overload, instead of TextWriter's per-char fallback (section 13 self-tests them).
     sealed class CountingWriter(TextWriter inner) : TextWriter
     {
         public List<string> Attempts { get; } = new();
         public override Encoding Encoding => new UTF8Encoding(false);
         public override void Write(char value) { Attempts.Add(value.ToString()); inner.Write(value); }
         public override void Write(string? value) { Attempts.Add(value ?? ""); inner.Write(value); }
+        public override void Write(char[] buffer, int index, int count) { Attempts.Add(new string(buffer, index, count)); inner.Write(buffer, index, count); }
+        public override void WriteLine() { Attempts.Add(""); inner.WriteLine(); }
         public override void WriteLine(string? value) { Attempts.Add(value ?? ""); inner.WriteLine(value); }
     }
 
@@ -2221,6 +2229,276 @@ internal static class GeneratePrototypesTests
             try { Directory.Delete(inputs, recursive: true); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    // ---- 13. P7-34: partial-write contract, no flush/retry of the typed line, full-line per-line cut ----
+    //   a. CountingWriter self-test: WriteLine() and Write(char[], int, int) (and Write(char[]) through it) are one attempt
+    //      each, forwarded byte-exact to an accepting inner writer, and still recorded before a disposed inner throws.
+    //   b. Section 12's per-line budget case also cut after the full line: the success line S (and the pipeline refusal R)
+    //      with a per-line budget of all of S: stdout is S without its newline directly followed by the typed internal-error
+    //      line with its newline (the writer recovered), S then the typed line attempted once each, stderr the stdout
+    //      exception's diagnostic once, exit 1, no file (the success file was written with the pinned bytes, then deleted).
+    //      So a complete success JSON appears on stdout while exit is 1: only the exit code is authoritative.
+    //   c. Static (comments stripped, strings blanked): no flush and no retry of the typed line after a failed write.
+    //      GenerateWrite.cs names no Flush at all; Run calls Fail( once and .Print( once, each as the only statement of a
+    //      try whose catch (Exception) { } is empty and which is the last statement of its catch block; Run has no loop,
+    //      goto, finally or other Console member than Console.Error; Fail and IntentEnvelope.Print write their line with one
+    //      Console.WriteLine( and contain no Flush, loop or try. Accept self-test on the real sources plus mutation
+    //      self-tests (flush, retry in the empty catch, a second call, a loop, goto, finally, a filter, a direct write).
+    //   d. The contract (docs/contracts/module-contracts.md) states that the exit code, not a parse of stdout, decides.
+    static void PartialWriteContractStage(string root, string scratch, string cliDll, byte[] expected, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-34 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var nl = Environment.NewLine;
+
+        // a. CountingWriter overloads.
+        {
+            var inner = new StringWriter(CultureInfo.InvariantCulture);
+            var counting = new CountingWriter(inner);
+            counting.WriteLine();
+            counting.Write("xabcx".ToCharArray(), 1, 3);
+            counting.Write("de".ToCharArray());
+            counting.WriteLine("f");
+            Check(counting.Attempts.SequenceEqual(new[] { "", "abc", "de", "f" }) && inner.ToString() == inner.NewLine + "abcde" + "f" + inner.NewLine,
+                "CountingWriter: WriteLine(), Write(char[], int, int) and Write(char[]) are one attempt each, forwarded byte-exact",
+                "attempts [" + string.Join(" | ", counting.Attempts) + "] inner [" + inner + "]");
+            var closed = new StringWriter(CultureInfo.InvariantCulture);
+            closed.Dispose();
+            var disposed = new CountingWriter(closed);
+            var thrown = new List<string>();
+            foreach (var (label, act) in new (string, Action)[] { ("WriteLine()", () => disposed.WriteLine()), ("Write(char[], int, int)", () => disposed.Write("abc".ToCharArray(), 0, 2)) })
+            {
+                try { act(); thrown.Add(label + " no exception"); }
+                catch (ObjectDisposedException) { thrown.Add(label + " ObjectDisposedException"); }
+            }
+            Check(disposed.Attempts.SequenceEqual(new[] { "", "ab" }) && thrown.SequenceEqual(new[] { "WriteLine() ObjectDisposedException", "Write(char[], int, int) ObjectDisposedException" }),
+                "CountingWriter over a disposed writer: WriteLine() and Write(char[], int, int) are recorded once each, then ObjectDisposedException",
+                "attempts [" + string.Join(" | ", disposed.Attempts) + "] " + string.Join(", ", thrown));
+        }
+
+        // b. The per-line budget cut after the full line.
+        var inputs = Path.Combine(scratch, "p7-34-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            const string good = "{\"typology\":2,\"lot\":{\"width_m\":8.66,\"depth_m\":20},\"alternatives\":2,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a9\"}";
+            var request = Input("request.json", good);
+            var refusedRequest = Input("refused.json", good.Replace("\"typology\":2", "\"typology\":4", StringComparison.Ordinal));
+            var pinned = Hex(expected);
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var seamProperties = new[] { "PostWriteStageProbe", "PostWriteDeleteProbe", "UnguardedStageProbe", "GuardedWorkProbe" }.Select(name => type?.GetProperty(name, Any)).ToArray();
+            Check(run is not null && seamProperties.All(p => p is not null && p.CanRead && p.CanWrite), "Run(string[]) and the four seams found in the Release CLI");
+            if (run is null || seamProperties.Any(p => p is null)) return;
+            System.Reflection.MethodInfo runMethod = run;
+            var seams = seamProperties.Select(p => p!).ToArray();
+            var stageProbe = seams[0];
+            bool AllNull() => seams.All(seam => seam.GetValue(null) is null);
+            Check(AllNull(), "the generate-prototypes seams are null unless a test sets them");
+
+            (Exception? Thrown, List<string> Events, int Exit, PartialWriter Out, bool Restored) Forced(PartialWriter stdout, Action? stage, string[] args)
+            {
+                var events = new List<string>();
+                var previousOut = Console.Out;
+                var previousError = Console.Error;
+                var previousExit = Environment.ExitCode;
+                Exception? thrown = null;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(new EventWriter("err", events));
+                    Environment.ExitCode = 0;
+                    stageProbe.SetValue(null, stage);
+                    try { runMethod.Invoke(null, new object?[] { args }); }
+                    catch (System.Reflection.TargetInvocationException error) { thrown = error.InnerException; }
+                    finally { foreach (var seam in seams) seam.SetValue(null, null); }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(previousOut);
+                    Console.SetError(previousError);
+                    Environment.ExitCode = previousExit;
+                }
+                var restored = ReferenceEquals(Console.Out, previousOut) && ReferenceEquals(Console.Error, previousError) && Environment.ExitCode == previousExit;
+                return (thrown, events, exit, stdout, restored);
+            }
+            static string D((Exception? Thrown, List<string> Events, int Exit, PartialWriter Out, bool Restored) r) =>
+                "stderr [" + string.Join(" | ", r.Events) + "] exit " + r.Exit.ToString(CultureInfo.InvariantCulture)
+                + " stdout text [" + r.Out.Text + "] (" + r.Out.Text.Length.ToString(CultureInfo.InvariantCulture) + " chars) rejected " + r.Out.Rejected.ToString(CultureInfo.InvariantCulture)
+                + " attempts [" + string.Join(" | ", r.Out.Attempts) + "] restored " + r.Restored
+                + (r.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : " threw nothing");
+
+            var typed = Bim.Cli.IntentPlan.Internal("generate-prototypes", new InvalidOperationException("p7-34 fixture")).Line;
+            Check(typed == "{\"status\":\"failed\",\"code\":\"generate_prototypes_internal_error\"}", "fixture: the typed internal-error line", typed);
+            var success = cli(new[] { "generate-prototypes", request, Output() });
+            var refused = cli(new[] { "generate-prototypes", refusedRequest, Output() });
+            Check(success.Exit == 0 && success.Err.Length == 0 && success.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && success.Out.EndsWith("}", StringComparison.Ordinal),
+                "fixture: the success line of the real process is one complete JSON object", "exit " + success.Exit + " " + success.Out + " " + success.Err);
+            Check(refused.Exit == 1 && refused.Err.Length == 0 && refused.Out.StartsWith("{\"status\":\"failed\",\"code\":\"generate_prototypes_refused\",\"refusals\":[", StringComparison.Ordinal),
+                "fixture: the pipeline refusal line of the real process", "exit " + refused.Exit + " " + refused.Out + " " + refused.Err);
+            const string StdoutMessage = "p7-34 stdout lost the newline";
+            foreach (var (label, requestPath, line) in new (string, string, string)[] { ("success", request, success.Out), ("pipeline refusal", refusedRequest, refused.Out) })
+                foreach (var (kind, make, sample) in new (string, Func<Exception>, Exception)[]
+                {
+                    ("IOException", () => new IOException(StdoutMessage), new IOException(StdoutMessage)),
+                    ("InvalidOperationException", () => new InvalidOperationException(StdoutMessage), new InvalidOperationException(StdoutMessage)),
+                })
+                {
+                    var output = Output();
+                    byte[]? seen = null;
+                    var r = Forced(new PartialWriter(line.Length, true, make), label == "success" ? () => { seen = File.Exists(output) ? File.ReadAllBytes(output) : null; } : null,
+                        new[] { "generate-prototypes", requestPath, output });
+                    var typedPart = (typed + nl)[..Math.Min(line.Length, typed.Length + nl.Length)];
+                    var diagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-prototypes", sample);
+                    Check(r.Thrown is null && r.Restored && r.Exit == 1 && AllNull() && r.Out.Attempts.SequenceEqual(new[] { line, typed }) && r.Out.Rejected == 1
+                        && r.Out.Text == line + typedPart && r.Events.SequenceEqual(new[] { "err:" + diagnostic })
+                        && !File.Exists(output) && (label != "success" || (seen is not null && Hex(seen) == pinned)),
+                        "the " + label + " line + stdout " + kind + " after a per-line budget of all " + line.Length.ToString(CultureInfo.InvariantCulture)
+                        + " chars: stdout the whole line without its newline then the typed line's first " + typedPart.Length.ToString(CultureInfo.InvariantCulture)
+                        + " chars, the line then the typed line attempted once each, stderr the stdout exception's diagnostic once, exit 1, nothing escapes, no file"
+                        + (label == "success" ? " (the written file deleted)" : ""), D(r) + " seen " + (seen is null ? "<none>" : Hex(seen)));
+                    if (label == "success")
+                        Check(r.Out.Text.StartsWith(success.Out, StringComparison.Ordinal) && typedPart == typed + nl,
+                            "pinned: a complete success JSON object is on stdout (the typed line follows on the same line) while exit is 1 and no file exists: the exit code decides", D(r));
+                }
+            Check(AllNull(), "the seams are null after the section");
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+
+        // c. Static no flush / no retry pin with accept and mutation self-tests.
+        var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
+        var plan = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "IntentPlan.cs")));
+        var real = NoRetryProblems(write, plan);
+        Check(real.Count == 0, "static: GenerateWrite.cs Run / Fail and IntentEnvelope.Print never flush or retry the typed line after a failed write", string.Join("; ", real));
+        const string FailTry = @"try\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}";
+        const string PrintTry = @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}";
+        const string FailWrite = @"Console\s*\.\s*WriteLine\s*\(\s*FailureLine\s*\(\s*code\s*,\s*detail\s*\)\s*\)\s*;";
+        const string PrintWrite = @"Console\s*\.\s*WriteLine\s*\(\s*Line\s*\)\s*;";
+        const string FailCall = "try { Fail(refusal.Code, refusal.Detail); }";
+        const string PrintCall = "try { (internalError with { Diagnostic = null }).Print(); }";
+        var mutations = new (string Label, bool Plan, string Pattern, string Replacement)[]
+        {
+            ("a flush in the empty catch after Fail", false, FailTry, FailCall + " catch (Exception) { Console.Out.Flush(); }"),
+            ("a retry of Fail in its catch", false, FailTry, FailCall + " catch (Exception) { Fail(refusal.Code, refusal.Detail); }"),
+            ("a second Fail call after the guarded one", false, FailTry, FailCall + " catch (Exception) { } Fail(refusal.Code, refusal.Detail);"),
+            ("a flush statement after the guarded Fail", false, FailTry, FailCall + " catch (Exception) { } Console.Out.Flush();"),
+            ("a for retry loop around the guarded Fail", false, FailTry, "for (var attempt = 0; attempt < 2; attempt++) { " + FailCall + " catch (Exception) { } }"),
+            ("a goto retry of the guarded Fail", false, FailTry, "var tries = 0; again: " + FailCall + " catch (Exception) { if (++tries < 2) goto again; }"),
+            ("a filtered catch after Fail", false, FailTry, FailCall + " catch (Exception) when (Retry()) { }"),
+            ("a newline written in the catch after Fail", false, FailTry, FailCall + " catch (Exception) { Console.Out.WriteLine(); }"),
+            ("a retry of Print in its catch", false, PrintTry, PrintCall + " catch (Exception) { (internalError with { Diagnostic = null }).Print(); }"),
+            ("a direct write of the typed line in the catch after Print", false, PrintTry, PrintCall + " catch (Exception) { Console.WriteLine(internalError.Line); }"),
+            ("a flush in the empty catch after Print", false, PrintTry, PrintCall + " catch (Exception) { Console.Out.FlushAsync(); }"),
+            ("a flush statement after the guarded Print", false, PrintTry, PrintCall + " catch (Exception) { } Console.Out.Flush();"),
+            ("a while retry loop around the guarded Print", false, PrintTry, "var left = 2; while (left-- > 0) { " + PrintCall + " catch (Exception) { } }"),
+            ("a finally flushing stdout", false, PrintTry, PrintCall + " catch (Exception) { } finally { Console.Out.Flush(); }"),
+            ("a re-run of Execute in the catch after Print", false, PrintTry, PrintCall + " catch (Exception) { Execute(args); }"),
+            ("a second Print call after the guarded one", false, PrintTry, PrintCall + " catch (Exception) { } internalError.Print();"),
+            ("a flush in Fail", false, FailWrite, "Console.WriteLine(FailureLine(code, detail)); Console.Out.Flush();"),
+            ("a guarded retry in Fail", false, FailWrite, "try { Console.WriteLine(FailureLine(code, detail)); } catch (IOException) { Console.WriteLine(FailureLine(code, detail)); }"),
+            ("a flush anywhere in GenerateWrite.cs (Execute's success line)", false, @"PostWriteStageProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;", "PostWriteStageProbe?.Invoke(); Console.Out.Flush();"),
+            ("AutoFlush set in GenerateWrite.cs", false, @"var\s+output\s*=\s*args\s*\[\s*2\s*\]\s*;", "var output = args[2]; ((StreamWriter)Console.Out).AutoFlush = true;"),
+            ("a flush in IntentEnvelope.Print", true, PrintWrite, "Console.WriteLine(Line); Console.Out.Flush();"),
+            ("a retry loop in IntentEnvelope.Print", true, PrintWrite, "for (var i = 0; i < 2; i++) { try { Console.WriteLine(Line); break; } catch (IOException) { } }"),
+            ("a second write in IntentEnvelope.Print", true, PrintWrite, "Console.WriteLine(Line); Console.WriteLine(Line);"),
+        };
+        foreach (var (label, onPlan, pattern, replacement) in mutations)
+        {
+            var target = onPlan ? plan : write;
+            var regex = new System.Text.RegularExpressions.Regex(pattern);
+            var found = regex.Matches(target).Count;
+            var mutated = regex.Replace(target, replacement.Replace("$", "$$", StringComparison.Ordinal), 1);
+            var problems = onPlan ? NoRetryProblems(write, mutated) : NoRetryProblems(mutated, plan);
+            Check(found == 1 && mutated != target && problems.Count > 0, "static self-test: " + label + " is rejected",
+                "anchor matches " + found.ToString(CultureInfo.InvariantCulture) + "; problems [" + string.Join("; ", problems) + "]");
+        }
+
+        // d. The contract wording.
+        var contracts = File.ReadAllText(Path.Combine(root, "docs", "contracts", "module-contracts.md"));
+        var heading = contracts.IndexOf("## generate-prototypes partial stdout write (P7-32)", StringComparison.Ordinal);
+        var next = heading < 0 ? -1 : contracts.IndexOf("\n## ", heading + 1, StringComparison.Ordinal);
+        var sectionText = heading < 0 ? "" : next < 0 ? contracts[heading..] : contracts[heading..next];
+        Check(sectionText.Contains("the exit code, not a parse of stdout, is authoritative", StringComparison.Ordinal)
+            && sectionText.Contains("never flushed, completed or retried", StringComparison.Ordinal),
+            "docs/contracts/module-contracts.md: the generate-prototypes partial-write section states that the exit code, not a parse of stdout, is authoritative and that the typed line is never flushed, completed or retried",
+            sectionText.Length == 0 ? "section not found" : sectionText);
+    }
+
+    // P7-34: over the comment-stripped, string-blanked GenerateWrite.cs (write) and IntentPlan.cs (plan): the problems that
+    // would let generate-prototypes flush, complete or retry its typed stdout line after a failed write (empty = pinned).
+    static List<string> NoRetryProblems(string write, string plan)
+    {
+        static int Close(string code, int open)
+        {
+            var depth = 0;
+            for (var i = open; i < code.Length; i++)
+            {
+                if (code[i] == '{') depth++;
+                else if (code[i] == '}' && --depth == 0) return i;
+            }
+            return -1;
+        }
+        static string? Body(string code, string header)
+        {
+            var matches = System.Text.RegularExpressions.Regex.Matches(code, header);
+            if (matches.Count != 1) return null;
+            var open = matches[0].Index + matches[0].Length - 1;
+            var close = Close(code, open);
+            return close < 0 ? null : code[open..(close + 1)];
+        }
+        static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
+        const string Loop = @"\b(?:for|foreach|while|do|goto)\b";
+        var problems = new List<string>();
+        if (Count(write, @"\b(?:Auto)?Flush(?:Async)?\b") != 0) problems.Add("GenerateWrite.cs names Flush");
+        var run = Body(write, @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{");
+        if (run is null) problems.Add("Run(string[] args) not found once");
+        else
+        {
+            if (Count(run, @"\bFail\s*\(") != 1) problems.Add("Run calls Fail( other than once");
+            if (Count(run, @"\.\s*Print\s*\(") != 1) problems.Add("Run calls .Print( other than once");
+            if (Count(run, Loop) != 0) problems.Add("Run has a loop or goto");
+            if (Count(run, @"\bfinally\b") != 0) problems.Add("Run has a finally");
+            if (Count(run, @"\bwhen\b") != 0) problems.Add("Run has an exception filter");
+            if (Count(run, @"\bConsole\s*\.(?!\s*Error\b)") != 0) problems.Add("Run uses a Console member other than Console.Error");
+            if (Count(run, @"\bExecute\s*\(") != 1) problems.Add("Run calls Execute( other than once");
+            // Each guarded write is the only statement of its try, its catch (Exception) { } is empty, and it is the last
+            // statement of the enclosing catch block (the next token closes that block).
+            if (Count(run, @"try\s*\{\s*Fail\s*\(\s*refusal\s*\.\s*Code\s*,\s*refusal\s*\.\s*Detail\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}") != 1)
+                problems.Add("Fail( is not the last, guarded statement of catch (Refusal) with an empty catch (Exception) { }");
+            if (Count(run, @"try\s*\{\s*\(\s*internalError\s+with\s*\{\s*Diagnostic\s*=\s*null\s*\}\s*\)\s*\.\s*Print\s*\(\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*\}$") != 1)
+                problems.Add(".Print( is not the last, guarded statement of the catch-all (and of Run) with an empty catch (Exception) { }");
+        }
+        var fail = Body(write, @"\bstatic\s+void\s+Fail\s*\(\s*string\s+code\s*,\s*string\s*\?\s*detail\s*\)\s*\{");
+        if (fail is null) problems.Add("Fail(string code, string? detail) not found once");
+        else
+        {
+            if (Count(fail, @"\bConsole\s*\.") != 1 || Count(fail, @"\bConsole\s*\.\s*WriteLine\s*\(\s*FailureLine\s*\(") != 1) problems.Add("Fail does not write its line with exactly one Console.WriteLine(FailureLine(");
+            if (Count(fail, Loop) != 0 || Count(fail, @"\b(?:try|catch|finally)\b") != 0) problems.Add("Fail has a loop, goto or try");
+        }
+        var print = Body(plan, @"\bpublic\s+void\s+Print\s*\(\s*\)\s*\{");
+        if (print is null) problems.Add("IntentEnvelope.Print() not found once");
+        else
+        {
+            if (Count(print, @"\bConsole\s*\.(?!\s*Error\b)") != 1 || Count(print, @"\bConsole\s*\.\s*WriteLine\s*\(\s*Line\s*\)") != 1) problems.Add("Print does not write stdout with exactly one Console.WriteLine(Line)");
+            if (Count(print, @"\b(?:Auto)?Flush(?:Async)?\b") != 0) problems.Add("Print names Flush");
+            if (Count(print, Loop) != 0 || Count(print, @"\b(?:try|catch|finally)\b") != 0) problems.Add("Print has a loop, goto or try");
+        }
+        return problems;
     }
 
     // ---- P7-25: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
