@@ -220,13 +220,13 @@ internal static class TwiceReadToolTests
         File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
         File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
         var skills = Path.Combine(package, "skills");
-        foreach (var (id, code, municipality, stub) in new[] { (RealPack, RealCode, "Fixture Town", false), (StubPack, StubCode, "Stub Village", true) })
+        foreach (var (packId, code, municipality, stub) in new[] { (RealPack, RealCode, "Fixture Town", false), (StubPack, StubCode, "Stub Village", true) })
         {
-            Directory.CreateDirectory(Path.Combine(skills, id));
-            File.WriteAllText(Path.Combine(skills, id, "skill.json"),
-                "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
-            File.WriteAllText(Path.Combine(skills, id, "jurisdiction.json"),
-                "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + id + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":" + (stub ? "true" : "false") + ",\"note\":\"fictitious test fixture\"}\n", new UTF8Encoding(false));
+            Directory.CreateDirectory(Path.Combine(skills, packId));
+            File.WriteAllText(Path.Combine(skills, packId, "skill.json"),
+                "{\"manifest_version\":1,\"id\":\"" + packId + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(skills, packId, "jurisdiction.json"),
+                "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + packId + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":" + (stub ? "true" : "false") + ",\"note\":\"fictitious test fixture\"}\n", new UTF8Encoding(false));
         }
         var lockPath = Path.Combine(work, "twice-read-mcp-p532", "p532m.skills.lock.json");
         File.WriteAllBytes(lockPath, SkillLockFile.Serialize(SkillLocking.Pin(skills, new[] { RealPack, StubPack })));
