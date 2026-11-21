@@ -46,6 +46,20 @@ using Point2 = Bim.Cad.Point2;
 //     them would change existing brief bytes: the checked-in minsert-ocs.dxf already has a dropped INSERT (handle 85,
 //     extrusion (0,1,0), ocs-non-planar) and its BriefExtract output is pinned byte for byte (BriefNonAsciiTests digest
 //     799C995C1C1F14A7, re-checked here). Callers read the drop from DxfDrawing.Warnings and DxfDrawing.Unsupported.
+//
+// P6-34 (sections RunBulgeParity, RunChain and RunCliPrecondition at the end):
+//   * Bulge sign parity for every D1 cell (both columns, NA and NB), not only D1[0,0].
+//   * ChainDrawing(): a near-Z chain three levels deep, every level at a non-zero elevation (E1 > TM > MA: TOP under
+//     (-1e-7,3e-7,-1) at z 4000 holding MID under (2e-7,0,1) at z -2500 holding ARCH under (1e-7,2e-7,-1) at z 1500),
+//     and a MINSERT with 2 columns and 3 rows inside a chain (F1 > GA: GRID under near +Z holding the MINSERT of ARCH
+//     under near -Z). The seven outlines' corners and segment midpoints equal ezdxf 1.4.2 (offline generator, P6-34
+//     section: composed Insert.matrix44() of every level, MINSERT cells from multi_insert()) within 1e-6. A nested
+//     insertion's block z reaches world XY through the enclosing insert's normal (z times its horizontal part, about
+//     1e-3 mm for E1), which a projection that drops the nested elevation misses.
+//   * cad-brief CLI precondition: a missing Release Bim.Cli.dll is reported as the named failure "cli precondition"
+//     (and the CLI checks are skipped) instead of an unexpected exception; a self-test points it at a missing path.
+//   * The brief's exclusion of reader warnings stays the documented limit above; the proposed opt-in is written up in
+//     docs/contracts/module-contracts.md (cad-brief section), not implemented.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -239,7 +253,9 @@ internal static class MinsertEzdxfTests
         }
 
         RunBulge(C);
-        RunCli(C, bytes);
+        RunBulgeParity(C);
+        RunChain(C);
+        if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
     // ---------- P6-32: bulge outline and nested chains under near +-Z normals ----------
@@ -461,6 +477,145 @@ internal static class MinsertEzdxfTests
         catch (Exception error)
         {
             c(false, "cli unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-34: bulge sign parity for every D1 cell ----------
+
+    // D1 (NEST under near -Z) mirrors once; NA inside it adds no mirror and NB (near -Z) a second one. Every cell of the
+    // MINSERT carries the same parity, so both columns flip NA and keep NB.
+    private static void RunBulgeParity(Action<bool, string, string> c)
+    {
+        try
+        {
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(BulgeDrawing()), "bulge-ezdxf.dxf");
+            var outlines = drawing.Explode().Entities.OfType<DxfPolyline>().ToList();
+            foreach (var column in new[] { 0, 1 })
+            {
+                foreach (var (inner, expected) in new[] { ("NA", "-0.4/0.25"), ("NB", "0.4/-0.25") })
+                {
+                    var path = "D1[0," + column.ToString(CultureInfo.InvariantCulture) + "]>" + inner;
+                    var outline = outlines.Where(o => string.Join(">", o.Provenance.InsertPath) == path).ToList();
+                    var got = outline.Count == 1 ? string.Join("/", outline[0].Vertices.Where(v => v.Bulge != 0).Select(v => F(v.Bulge))) : outline.Count.ToString(CultureInfo.InvariantCulture) + " outlines";
+                    var mirrors = (inner == "NB" ? 2 : 1).ToString(CultureInfo.InvariantCulture);
+                    c(got == expected, "parity: " + path + " (" + mirrors + " mirror(s) in the chain) has bulges " + expected, got);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "parity unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-34: a three-level near-Z chain with elevations and a MINSERT inside a chain ----------
+
+    // Same parameters as CHAIN_BLOCKS and CHAIN_CASES in tests/cad/tools/minsert_ezdxf_centres.py.
+    private static string ChainDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 A0|8 0|2 ARCH|70 0|10 50|20 20|30 0")
+        + G("0 LWPOLYLINE|5 A1|8 0|90 4|70 1|10 50|20 20|10 1050|20 20|42 0.4|10 1050|20 820|10 50|20 820|42 -0.25")
+        + G("0 ENDBLK|5 A2|8 0")
+        + G("0 BLOCK|5 M0|8 0|2 MID|70 0|10 10|20 10|30 0")
+        + G("0 INSERT|5 MA|8 0|2 ARCH|10 400|20 -300|30 1500|41 1.2|42 1.2|50 35|210 1e-7|220 2e-7|230 -1")
+        + G("0 ENDBLK|5 M1|8 0")
+        + G("0 BLOCK|5 P0|8 0|2 TOP|70 0|10 -20|20 40|30 0")
+        + G("0 INSERT|5 TM|8 0|2 MID|10 2500|20 1200|30 -2500|41 0.9|42 0.9|50 -50|210 2e-7|220 0|230 1")
+        + G("0 ENDBLK|5 P1|8 0")
+        + G("0 BLOCK|5 G0|8 0|2 GRID|70 0|10 0|20 0|30 0")
+        + G("0 INSERT|5 GA|8 0|2 ARCH|10 -600|20 900|30 0|41 0.7|42 0.7|50 10|70 2|71 3|44 1500|45 -1100|210 0|220 1e-7|230 -1")
+        + G("0 ENDBLK|5 G1|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 E1|8 ROOMS|2 TOP|10 70000|20 -15000|30 4000|41 1.1|42 1.1|50 20|210 -1e-7|220 3e-7|230 -1")
+        + G("0 INSERT|5 F1|8 ROOMS|2 GRID|10 -60000|20 -20000|30 0|41 1.3|42 1.3|50 25|210 -2e-7|220 1e-7|230 1")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 outlines (generator section P6-34): (insert path, WCS corners x0,y0..x3,y3, WCS segment midpoints).
+    private static readonly (string Path, double[] Corners, double[] Midpoints)[] ChainOutlines =
+    {
+        ("E1>TM>MA", new[] { -71663.43998071413, -12915.705693017644, -71161.36948576615, -11839.01204201814, -72022.72440656577, -11437.355646059777, -72524.79490151376, -12514.049297059284 }, new[] { -71412.40473324014, -12377.35886751789, -71511.71566697428, -11465.912859879038, -72273.75965403976, -11975.70247155953, -72043.91039161915, -12607.208129938515 }),
+        ("F1>GA[0,0]", new[] { -59787.543292347225, -18609.977645009283, -60666.53579427026, -18845.50297605258, -60854.9560591049, -18142.308974514137, -59975.96355718186, -17906.783643470844 }, new[] { -60227.03954330874, -18727.74031053093, -60901.38472699527, -18531.590028250284, -60415.45980814338, -18024.54630899249, -59969.65267495685, -18281.933177344396 }),
+        ("F1>GA[0,1]", new[] { -61671.098653610876, -19114.674782959195, -62550.09115553392, -19350.200114002488, -62738.51142036855, -18647.00611246405, -61859.51891844551, -18411.480781420756 }, new[] { -62110.5949045724, -19232.437448480843, -62784.94008825892, -19036.287166200196, -62299.01516940703, -18529.243446942404, -61853.208036220494, -18786.630315294304 }),
+        ("F1>GA[1,0]", new[] { -59417.432057850645, -19991.25157660265, -60296.42455977367, -20226.77690764594, -60484.84482460831, -19523.582906107502, -59605.852322685256, -19288.05757506421 }, new[] { -59856.92830881216, -20109.014242124296, -60531.27349249868, -19912.86395984365, -60045.348573646785, -19405.820240585854, -59599.54144046025, -19663.207108937757 }),
+        ("F1>GA[1,1]", new[] { -61300.987419114295, -20495.94871455256, -62179.979921037324, -20731.474045595856, -62368.400185871964, -20028.280044057414, -61489.40768394893, -19792.754713014125 }, new[] { -61740.48367007581, -20613.711380074208, -62414.82885376233, -20417.56109779356, -61928.90393491044, -19910.51737853577, -61483.096801723914, -20167.904246887672 }),
+        ("F1>GA[2,0]", new[] { -59047.32082335405, -21372.525508196013, -59926.31332527709, -21608.05083923931, -60114.73359011172, -20904.85683770087, -59235.741088188675, -20669.331506657578 }, new[] { -59486.81707431557, -21490.28817371766, -60161.16225800209, -21294.137891437018, -59675.2373391502, -20787.094172179226, -59229.43020596367, -21044.481040531125 }),
+        ("F1>GA[2,1]", new[] { -60930.87618461771, -21877.22264614593, -61809.86868654074, -22112.74797718922, -61998.28895137538, -21409.55397565078, -61119.29644945233, -21174.028644607486 }, new[] { -61370.37243557922, -21994.985311667573, -62044.71761926575, -21798.835029386926, -61558.79270041386, -21291.791310129134, -61112.985567227326, -21549.178178481037 }),
+    };
+
+    private static void RunChain(Action<bool, string, string> c)
+    {
+        try
+        {
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(ChainDrawing()), "chain-ezdxf.dxf");
+            var x = drawing.Explode();
+            var outlines = x.Entities.OfType<DxfPolyline>().ToList();
+            var paths = string.Join(",", outlines.Select(o => string.Join(">", o.Provenance.InsertPath)));
+            c(drawing.Warnings.Count == 0 && drawing.Unsupported.Count == 0 && x.Warnings.Count == 0 && outlines.Count == ChainOutlines.Length
+                    && paths == string.Join(",", ChainOutlines.Select(o => o.Path)),
+                "chain: E1>TM>MA and the six F1>GA cells are kept and exploded row-major; bulges not tessellated",
+                "reader warnings " + string.Join(",", drawing.Warnings.Select(w => w.Code)) + " explode warnings " + string.Join(",", x.Warnings.Select(w => w.Code)) + " paths " + paths);
+            foreach (var (path, corners, midpoints) in ChainOutlines)
+            {
+                var outline = outlines.Where(o => string.Join(">", o.Provenance.InsertPath) == path).ToList();
+                if (outline.Count != 1 || outline[0].Vertices.Count != 4 || !outline[0].Closed)
+                {
+                    c(false, "chain: " + path + " outline equals ezdxf", "found " + outline.Count.ToString(CultureInfo.InvariantCulture) + " outlines");
+                    continue;
+                }
+                var v = outline[0].Vertices;
+                var mids = Enumerable.Range(0, 4).Select(i => SegmentMidpoint(v[i].Point, v[(i + 1) % 4].Point, v[i].Bulge)).ToList();
+                var worst = Enumerable.Range(0, 4).Max(i => new[]
+                {
+                    Math.Abs(v[i].Point.X - corners[2 * i]), Math.Abs(v[i].Point.Y - corners[2 * i + 1]),
+                    Math.Abs(mids[i].X - midpoints[2 * i]), Math.Abs(mids[i].Y - midpoints[2 * i + 1]),
+                }.Max());
+                c(worst <= Eps,
+                    "chain: " + path + " corners and segment (arc) midpoints equal ezdxf 1.4.2 within 1e-6",
+                    "corners " + string.Join(";", v.Select(p => P(p.Point))) + " bulges " + string.Join(";", v.Select(p => F(p.Bulge)))
+                    + " midpoints " + string.Join(";", mids.Select(P)) + " max error " + F(worst));
+            }
+            // E1 mirrors (near -Z), TM does not, MA does: two mirrors keep 0.4/-0.25. F1 (near +Z) does not mirror and
+            // GA (near -Z) does: every GA cell flips.
+            foreach (var (path, _, _) in ChainOutlines)
+            {
+                var outline = outlines.Where(o => string.Join(">", o.Provenance.InsertPath) == path).ToList();
+                var got = outline.Count == 1 ? string.Join("/", outline[0].Vertices.Where(p => p.Bulge != 0).Select(p => F(p.Bulge))) : "-";
+                var expected = path.StartsWith("E1", StringComparison.Ordinal) ? "0.4/-0.25" : "-0.4/0.25";
+                c(got == expected, "chain: " + path + " bulge sign follows the mirror parity (" + expected + ")", got);
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "chain unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-34: the cad-brief CLI checks' named precondition ----------
+
+    private static string CliDllPath(string root) => Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+
+    // Null when the Release Bim.Cli.dll exists, else the named precondition failure (scripts/verify.ps1 builds
+    // interfaces/cli in Release before tests/cad runs; running tests/cad alone skips that).
+    internal static string? CliPreconditionFailure(string cliDll) =>
+        File.Exists(cliDll) ? null : "precondition failed: Release Bim.Cli.dll not found at " + cliDll + " (build interfaces/cli in Release first; scripts/verify.ps1 does)";
+
+    // Reports the precondition as its own named check and returns whether the CLI checks can run.
+    private static bool RunCliPrecondition(Action<bool, string, string> c)
+    {
+        try
+        {
+            var missing = Path.Combine(Path.GetTempPath(), "bim-cad-p634-" + Environment.ProcessId.ToString(CultureInfo.InvariantCulture), "Release", "Bim.Cli.dll");
+            var selfTest = CliPreconditionFailure(missing);
+            c(selfTest is not null && selfTest.StartsWith("precondition failed: Release Bim.Cli.dll not found at ", StringComparison.Ordinal) && selfTest.Contains(missing, StringComparison.Ordinal),
+                "cli precondition self-test: a missing Release Bim.Cli.dll is named as a precondition failure with its path", selfTest ?? "null");
+            var failure = CliPreconditionFailure(CliDllPath(RepoRoot()));
+            c(failure is null, "cli precondition: the Release Bim.Cli.dll the cad-brief CLI checks run exists", failure ?? "");
+            return failure is null;
+        }
+        catch (Exception error)
+        {
+            c(false, "cli precondition unexpected exception", error.GetType().Name + ": " + error.Message);
+            return false;
         }
     }
 }
