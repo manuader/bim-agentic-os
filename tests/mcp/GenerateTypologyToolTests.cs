@@ -27,6 +27,9 @@ using Bim.Mcp;
 //      a duplicate include member stays request_invalid (request.include) in three member orders.
 //   8. P3-32: with a throwing or disposed stderr on Document's catch-all (and InternalRefusal) the in-process tool is
 //      isError with the typed generate_typology_internal_error line, the diagnostic attempted once, nothing escapes.
+//   9. P3-34: the real Release Bim.Mcp.dll process over stdio, the catch-all forced through a startup hook, with a stderr
+//      pipe the reader closed or a throwing / disposed stderr: the typed isError text, the diagnostic attempted once; the
+//      in-process disposed-StringWriter case counts its one attempt.
 internal static class GenerateTypologyToolTests
 {
     const string TypologyPack = "bim.typology.vivienda-unifamiliar";
@@ -307,6 +310,9 @@ internal static class GenerateTypologyToolTests
 
         // ---- 8. P3-32: a throwing stderr on Document's catch-all, through the in-process server ----
         ThrowingStderrRun(work, call, check);
+
+        // ---- 9. P3-34: the same over stdio from the real Release Bim.Mcp.dll process, and the disposed stderr's attempt ----
+        StdioStderrRun(root, work, dotnet, call, check);
     }
 
     // P3-32: the in-process McpServer (Program.cs's server.Handle) runs generate_typology while Console.Error throws on the
@@ -434,4 +440,251 @@ internal static class GenerateTypologyToolTests
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
     }
+
+    // P3-34. a. In process (as section 8): the disposed-StringWriter stderr now sits behind an AttemptWriter, so the one
+    // diagnostic attempt is counted, on Document's catch-all (UnguardedWorkProbe) and on InternalRefusal (GuardedWorkProbe):
+    // isError, exactly the typed line, attempts exactly [the diagnostic], nothing escapes, stdout unwritten, exit untouched.
+    // b. The real Release interfaces/mcp/bin/Release/net8.0/Bim.Mcp.dll (dotnet, stdin one tools/call line then EOF). The
+    // production seams are null and have no switch, so the catch-all is forced by DOTNET_STARTUP_HOOKS naming this test
+    // assembly: the runtime calls StartupHook.Initialize() (below) inside the server process before Main, and it sets
+    // UnguardedWorkProbe or GuardedWorkProbe (by reflection on the loaded Bim.Mcp assembly) to throw, and optionally replaces
+    // Console.Error with an AttemptWriter that logs every write attempt to a file: forwarding to the real stderr ("pipe"),
+    // throwing IOException / InvalidOperationException, or forwarding to a disposed StringWriter. stderr is either read
+    // (accepting) or its pipe is closed by the reader right after start. Oracle for each forced run: exit 0, stdout exactly
+    // one JSON-RPC line, a tools/call result (no "error"), isError true, the text exactly
+    // {"status":"failed","code":"generate_typology_internal_error"} (no exception message); the log is the hook line then
+    // exactly one attempt, the diagnostic IntentPlan.InternalDiagnostic("generate-typology", e). Measured: a write to the
+    // closed stderr pipe does not throw (the runtime's console stream drops EPIPE / ERROR_NO_DATA), so the closed pipe
+    // alone gives the same result as an accepting one; the throwing and disposed writers stand in for a stderr that does
+    // throw. Controls: without the hook, and with the hook but no seam, a closed stderr pipe still answers the P5-12 pinned
+    // success bytes with an empty log of attempts; an accepting stderr receives exactly the diagnostic line.
+    static void StdioStderrRun(string root, string work, string dotnet, Func<string, JsonObject> call, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "generate_typology P3-34 stdio stderr: " + name);
+        static string Short(string text) => text.Length > 400 ? text[..400] + "..." : text;
+        static string Hex(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
+        static string? TextOf(JsonObject? response) => response?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
+        static bool? IsErrorOf(JsonObject? response) => response?["result"]?["isError"]?.GetValue<bool>();
+        var nl = Environment.NewLine;
+        var scratch = Path.Combine(work, "p3-34-generate-typology-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(scratch);
+        try
+        {
+            var requestPath = Path.Combine(scratch, "request.json");
+            File.WriteAllText(requestPath, "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}", new UTF8Encoding(false));
+            var line = new JsonObject { ["jsonrpc"] = "2.0", ["id"] = 34, ["method"] = "tools/call",
+                ["params"] = new JsonObject { ["name"] = GenerateTypologyTool.Name, ["arguments"] = new JsonObject { [GenerateTypologyTool.RequestParameter] = requestPath } } }.ToJsonString();
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", new InvalidOperationException(StartupHook.FailureMessage));
+            var diagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-typology", new InvalidOperationException(StartupHook.FailureMessage));
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_typology_internal_error\"}"
+                && diagnostic == "generate-typology internal error: System.InvalidOperationException: " + StartupHook.FailureMessage && envelope.Diagnostic == diagnostic,
+                "fixture: the typed line and the diagnostic of the hook's failure | " + envelope.Line + " / " + diagnostic);
+            bool Typed(string? text, bool? isError) => isError == true && text is { } t && t == envelope.Line
+                && !t.Contains(StartupHook.FailureMessage, StringComparison.Ordinal) && !t.Contains(StartupHook.StderrMessage, StringComparison.Ordinal);
+
+            // ---- a. In process: the disposed StringWriter's one attempt ----
+            foreach (var (path, before, guardedWork) in new (string, Action?, Action?)[]
+            {
+                ("Document's own catch-all (UnguardedWorkProbe)", () => throw new InvalidOperationException(StartupHook.FailureMessage), null),
+                ("the guarded block's InternalRefusal (GuardedWorkProbe)", null, () => throw new InvalidOperationException(StartupHook.FailureMessage)),
+            })
+            {
+                var closed = new StringWriter(CultureInfo.InvariantCulture);
+                closed.Dispose();
+                var attempts = new List<string>();
+                var stderr = new AttemptWriter(closed, null, attempts.Add);
+                var stdout = new StringWriter(CultureInfo.InvariantCulture);
+                var savedOut = Console.Out;
+                var savedErr = Console.Error;
+                var savedExit = Environment.ExitCode;
+                JsonObject? response = null;
+                Exception? escaped = null;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(stderr);
+                    Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = before;
+                    Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe = guardedWork;
+                    try { response = call(line); }
+                    catch (Exception error) { escaped = error; }
+                    finally
+                    {
+                        Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe = null;
+                        Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe = null;
+                    }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(savedOut);
+                    Console.SetError(savedErr);
+                    Environment.ExitCode = savedExit;
+                }
+                var restored = ReferenceEquals(Console.Out, savedOut) && ReferenceEquals(Console.Error, savedErr) && Environment.ExitCode == savedExit
+                    && Bim.Cli.GenerateTypologyCommand.UnguardedWorkProbe is null && Bim.Cli.GenerateTypologyCommand.GuardedWorkProbe is null;
+                Check(escaped is null && restored && exit == savedExit && stdout.ToString().Length == 0 && response is { } r && r["error"] is null && Typed(TextOf(r), IsErrorOf(r))
+                    && attempts.SequenceEqual(new[] { "attempt:" + AttemptWriter.Escape(diagnostic), "forward-threw:System.ObjectDisposedException" }),
+                    "in process, " + path + " + a disposed StringWriter as stderr behind an AttemptWriter: isError with the typed internal-error line, the diagnostic attempted exactly once (then ObjectDisposedException), nothing escapes, stdout unwritten, exit untouched | response "
+                    + Short(response?.ToJsonString() ?? "<none>") + " escaped " + (escaped?.GetType().FullName ?? "nothing") + " attempts [" + string.Join(" | ", attempts) + "] restored " + restored);
+            }
+
+            // ---- b. The real Release Bim.Mcp.dll process over stdio ----
+            var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
+            var hookAssembly = typeof(StartupHook).Assembly.Location;
+            Check(File.Exists(mcpDll) && File.Exists(hookAssembly), "fixture: the Release Bim.Mcp.dll and this test assembly (the startup hook) exist | " + mcpDll + " / " + hookAssembly);
+            if (!File.Exists(mcpDll) || !File.Exists(hookAssembly)) return;
+            var runs = 0;
+            // One server process: stdin the tools/call line then EOF. hook null = no DOTNET_STARTUP_HOOKS; closeStderr closes
+            // the reader's end of the stderr pipe right after start. Returns exit, stdout, stderr (null when closed) and the
+            // hook's log lines.
+            (int Exit, string Out, string? Err, List<string> Log) Server((string Seam, string Stderr)? hook, bool closeStderr)
+            {
+                var log = Path.Combine(scratch, "hook-" + (++runs).ToString(CultureInfo.InvariantCulture) + ".log");
+                var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                    StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
+                start.ArgumentList.Add(mcpDll);
+                start.Environment.Remove("DOTNET_STARTUP_HOOKS");
+                foreach (var name in new[] { StartupHook.SeamVariable, StartupHook.StderrVariable, StartupHook.LogVariable }) start.Environment.Remove(name);
+                if (hook is { } h)
+                {
+                    start.Environment["DOTNET_STARTUP_HOOKS"] = hookAssembly;
+                    start.Environment[StartupHook.SeamVariable] = h.Seam;
+                    start.Environment[StartupHook.StderrVariable] = h.Stderr;
+                    start.Environment[StartupHook.LogVariable] = log;
+                }
+                using var process = Process.Start(start) ?? throw new Exception("MCP process did not start: " + dotnet);
+                Task<string>? stderr = null;
+                if (closeStderr) process.StandardError.Close();
+                else stderr = process.StandardError.ReadToEndAsync();
+                var stdout = process.StandardOutput.ReadToEndAsync();
+                try { process.StandardInput.Write(line + "\n"); process.StandardInput.Close(); } catch (IOException) { }
+                if (!process.WaitForExit(120000)) { process.Kill(true); throw new Exception("MCP server timed out (P3-34)"); }
+                process.WaitForExit();
+                var lines = File.Exists(log) ? File.ReadAllLines(log).ToList() : new List<string>();
+                return (process.ExitCode, stdout.Result, stderr?.Result, lines);
+            }
+            static string D((int Exit, string Out, string? Err, List<string> Log) r) =>
+                "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " stdout [" + Short(r.Out) + "] stderr " + (r.Err is null ? "<closed>" : "[" + Short(r.Err) + "]") + " log [" + string.Join(" | ", r.Log) + "]";
+            static JsonObject? Response(string stdout)
+            {
+                var lines = stdout.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+                if (lines.Length != 1) return null;
+                try { return JsonNode.Parse(lines[0]) as JsonObject; }
+                catch (JsonException) { return null; }
+            }
+
+            // Controls: a closed stderr pipe without a forced failure answers the pinned success bytes.
+            foreach (var (label, hook) in new (string, (string, string)?)[] { ("without the hook", null), ("with the hook but no seam (stderr forwarded to the closed pipe)", ("none", "pipe")) })
+            {
+                var r = Server(hook, closeStderr: true);
+                var response = Response(r.Out);
+                Check(r.Exit == 0 && response is { } ok && ok["error"] is null && IsErrorOf(ok) == false && TextOf(ok) is { } text && Hex(text) == PinnedAcceptedSha256
+                    && r.Log.SequenceEqual(hook is null ? Array.Empty<string>() : new[] { "hook:none:pipe" }),
+                    "control: the real process " + label + " and a stderr pipe closed by the reader answers the P5-12 pinned success bytes, no stderr attempt | " + D(r));
+            }
+            foreach (var (path, seam) in new[] { ("Document's own catch-all (UnguardedWorkProbe)", "unguarded"), ("the guarded block's InternalRefusal (GuardedWorkProbe)", "guarded") })
+            {
+                {
+                    var r = Server((seam, "none"), closeStderr: false);
+                    var response = Response(r.Out);
+                    Check(r.Exit == 0 && response is { } typed && typed["error"] is null && Typed(TextOf(typed), IsErrorOf(typed)) && r.Err == diagnostic + nl
+                        && r.Log.SequenceEqual(new[] { "hook:" + seam + ":none" }),
+                        "control: the real process, " + path + " forced, an accepting stderr pipe: isError with the typed internal-error line, stderr exactly the diagnostic line | " + D(r));
+                }
+                foreach (var (label, stderrMode, closeStderr, tail) in new (string, string, bool, string[])[]
+                {
+                    ("the real stderr pipe closed by the reader (the write forwarded to it)", "pipe", true, Array.Empty<string>()),
+                    ("the real stderr pipe closed by the reader and nothing replaced", "none", true, Array.Empty<string>()),
+                    ("a stderr throwing IOException", "io", false, Array.Empty<string>()),
+                    ("a stderr throwing InvalidOperationException", "invalid", false, Array.Empty<string>()),
+                    ("a disposed StringWriter as stderr", "disposed", false, new[] { "forward-threw:System.ObjectDisposedException" }),
+                })
+                {
+                    var r = Server((seam, stderrMode), closeStderr);
+                    var response = Response(r.Out);
+                    var expectedLog = new[] { "hook:" + seam + ":" + stderrMode }.Concat(stderrMode == "none" ? Array.Empty<string>() : new[] { "attempt:" + AttemptWriter.Escape(diagnostic) }).Concat(tail);
+                    Check(r.Exit == 0 && response is { } typed && typed["error"] is null && Typed(TextOf(typed), IsErrorOf(typed))
+                        && (r.Err is null || r.Err.Length == 0) && r.Log.SequenceEqual(expectedLog),
+                        "the real process over stdio, " + path + " forced + " + label + ": nothing escapes, exit 0, one JSON-RPC line, isError with the typed internal-error line (no exception message)"
+                        + (stderrMode == "none" ? "" : ", the diagnostic attempted exactly once") + (stderrMode == "pipe" ? " and the closed pipe's write did not throw (measured)" : "") + " | " + D(r));
+                }
+            }
+        }
+        finally
+        {
+            try { Directory.Delete(scratch, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
+}
+
+// P3-34: the DOTNET_STARTUP_HOOKS entry GenerateTypologyToolTests section 9 lends to the real Release Bim.Mcp.dll process
+// (the runtime calls Initialize() before the server's Main; type in the global namespace, as the runtime requires). It
+// does nothing unless BIM_TEST_P3_34_LOG is set. It appends "hook:<seam>:<stderr>" to that log, sets the server's
+// GenerateTypologyCommand.UnguardedWorkProbe ("unguarded") or GuardedWorkProbe ("guarded") to throw
+// InvalidOperationException(FailureMessage) by reflection on the loaded Bim.Mcp assembly (the production seams have no
+// other switch), and replaces Console.Error with an AttemptWriter logging to the file: "pipe" forwards to the real stderr,
+// "io" / "invalid" throw IOException / InvalidOperationException(StderrMessage), "disposed" forwards to a disposed
+// StringWriter; "none" keeps the real stderr. Test-only: Bim.Mcp.dll and its sources are unchanged.
+internal static class StartupHook
+{
+    public const string SeamVariable = "BIM_TEST_P3_34_SEAM";
+    public const string StderrVariable = "BIM_TEST_P3_34_STDERR";
+    public const string LogVariable = "BIM_TEST_P3_34_LOG";
+    public const string FailureMessage = "boom generate_typology P3-34 stdio original";
+    public const string StderrMessage = "p3-34 stderr rejects the diagnostic";
+
+    public static void Initialize()
+    {
+        var log = Environment.GetEnvironmentVariable(LogVariable);
+        if (string.IsNullOrEmpty(log)) return;
+        var seam = Environment.GetEnvironmentVariable(SeamVariable) ?? "none";
+        var stderr = Environment.GetEnvironmentVariable(StderrVariable) ?? "none";
+        File.AppendAllText(log, "hook:" + seam + ":" + stderr + "\n");
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        var command = System.Reflection.Assembly.Load(new System.Reflection.AssemblyName("Bim.Mcp")).GetType("Bim.Cli.GenerateTypologyCommand", throwOnError: true)!;
+        Action fail = () => throw new InvalidOperationException(FailureMessage);
+        if (seam == "unguarded") command.GetProperty("UnguardedWorkProbe", Any)!.SetValue(null, fail);
+        else if (seam == "guarded") command.GetProperty("GuardedWorkProbe", Any)!.SetValue(null, fail);
+        void Record(string entry) => File.AppendAllText(log, entry + "\n");
+        TextWriter? replacement = stderr switch
+        {
+            "pipe" => new AttemptWriter(Console.Error, null, Record),
+            "io" => new AttemptWriter(null, () => new IOException(StderrMessage), Record),
+            "invalid" => new AttemptWriter(null, () => new InvalidOperationException(StderrMessage), Record),
+            "disposed" => new AttemptWriter(Disposed(), null, Record),
+            _ => null,
+        };
+        if (replacement is not null) Console.SetError(replacement);
+    }
+
+    static StringWriter Disposed()
+    {
+        var closed = new StringWriter(System.Globalization.CultureInfo.InvariantCulture);
+        closed.Dispose();
+        return closed;
+    }
+}
+
+// P3-34: a stderr that records each write attempt ("attempt:<escaped value>") through log, then throws failure() or
+// forwards the same overload to inner (an exception from inner is recorded as "forward-threw:<type>" and rethrown).
+internal sealed class AttemptWriter(TextWriter? inner, Func<Exception>? failure, Action<string> log) : TextWriter
+{
+    public override Encoding Encoding => new UTF8Encoding(false);
+    void Attempt(string value, Action<TextWriter> forward)
+    {
+        log("attempt:" + Escape(value));
+        if (failure is not null) throw failure();
+        if (inner is null) return;
+        try { forward(inner); }
+        catch (Exception error) { log("forward-threw:" + error.GetType().FullName); throw; }
+    }
+    public override void Write(char value) => Attempt(value.ToString(), w => w.Write(value));
+    public override void Write(string? value) => Attempt(value ?? "", w => w.Write(value));
+    public override void Write(char[] buffer, int index, int count) => Attempt(new string(buffer, index, count), w => w.Write(buffer, index, count));
+    public override void WriteLine() => Attempt("", w => w.WriteLine());
+    public override void WriteLine(string? value) => Attempt(value ?? "", w => w.WriteLine(value));
+    public override void Flush() { }
+    public static string Escape(string text) => text.Replace("\\", "\\\\", StringComparison.Ordinal).Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal);
 }
