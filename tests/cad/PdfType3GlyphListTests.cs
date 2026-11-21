@@ -678,7 +678,7 @@ internal static class PdfType3GlyphListTests
                     foreach (var (label, matrix, warning, pinned) in new[]
                     {
                         ("overflow", e60 + " 0 0 " + e60 + " 0 0", "Do /X1 gives a non-finite form matrix; the current matrix is kept", "DE7127CCF6EAD8BF"),
-                        ("malformed", "1 0 0 1 100", malformedMessage, "PENDING-MALFORMED"),
+                        ("malformed", "1 0 0 1 100", malformedMessage, "016B3C6BA998C1D6"),
                     })
                     {
                         var file = label + ".pdf";
