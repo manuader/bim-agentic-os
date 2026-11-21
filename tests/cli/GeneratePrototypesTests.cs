@@ -42,6 +42,9 @@ using Bim.Generative;
 //  13. P7-34: section 12's per-line budget also cut after the full line (a complete success JSON on stdout with exit 1 and
 //      no file), CountingWriter's WriteLine() / Write(char[], int, int) self-tested, and a static pin (with mutation
 //      self-tests) that Run never flushes or retries the typed line after a failed write (PartialWriteContractStage).
+//  14. P7-36: PartialWriter's WriteLine() / Write(char[], int, int) self-tested, sections 12 and 13 on one ForcedRun helper,
+//      and a static pin (with mutation self-tests) that Execute never retries or writes again the success or refusal line
+//      (PartialWriterExecuteStage).
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -461,6 +464,7 @@ internal static class GeneratePrototypesTests
         RefusalWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PartialWriteStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
+        PartialWriterExecuteStage(root, check);
     }
 
     // ---- 7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
@@ -2500,6 +2504,138 @@ internal static class GeneratePrototypesTests
         }
         return problems;
     }
+
+    // ---- 14. P7-36: PartialWriter overloads, one Forced helper, no retry of Execute's lines ----
+    //   a. PartialWriter self-test: WriteLine() (recorded as "", the newline taken from the budget) and Write(char[], int,
+    //      int) (recorded as the slice; Write(char[]) reaches it through TextWriter) are one attempt each, taken from the
+    //      budget as one value (one rejection when cut, the accepted prefix kept), with one budget and with a per-line one.
+    //   b. Sections 12 and 13 run GenerateCommand.Run through the one shared ForcedRun helper (no Console.SetOut of their own).
+    //   c. Static (comments stripped, strings blanked): Execute writes the pipeline refusal line once (unguarded, then exit
+    //      1 and return) and the success line once (the last statement of its try, whose catch (Exception) deletes the file,
+    //      reports a failed delete on stderr and rethrows, and is the end of Execute); Execute has no other stdout member,
+    //      loop, goto, finally, extra filter or lambda, never calls itself, and runs Generate and WriteNew once. Accept
+    //      self-test on the real source plus mutation self-tests (second write, guarded retry, completing newline, a write on
+    //      stderr, loop, lambda, goto, rewrite in the cleanup catch, re-run of Execute, filter, finally, second pipeline run).
+    static void PartialWriterExecuteStage(string root, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-36 " + name, detail);
+        var nl = Environment.NewLine;
+        static string W(PartialWriter p) => "attempts [" + string.Join(" | ", p.Attempts) + "] text [" + p.Text + "] rejected " + p.Rejected.ToString(CultureInfo.InvariantCulture);
+
+        // a. PartialWriter overloads.
+        {
+            var open = new PartialWriter(int.MaxValue, false, () => new IOException("p7-36 never"));
+            open.WriteLine();
+            open.Write("xabcx".ToCharArray(), 1, 3);
+            open.Write("de".ToCharArray());
+            open.WriteLine("f");
+            Check(open.Attempts.SequenceEqual(new[] { "", "abc", "de", "f" }) && open.Text == nl + "abcdef" + nl && open.Rejected == 0,
+                "PartialWriter unbounded: WriteLine(), Write(char[], int, int) and Write(char[]) are one attempt each, accepted byte-exact", W(open));
+
+            var cut = new PartialWriter(nl.Length + 2, false, () => new IOException("p7-36 cut"));
+            var outcomes = new List<string>();
+            foreach (var (label, act) in new (string, Action)[]
+            {
+                ("WriteLine()", () => cut.WriteLine()),
+                ("Write(char[], int, int)", () => cut.Write("zabcdz".ToCharArray(), 1, 4)),
+                ("WriteLine() after", () => cut.WriteLine()),
+            })
+            {
+                try { act(); outcomes.Add(label + " accepted"); }
+                catch (IOException error) when (error.Message == "p7-36 cut") { outcomes.Add(label + " IOException"); }
+            }
+            Check(cut.Attempts.SequenceEqual(new[] { "", "abcd", "" }) && cut.Text == nl + "ab" && cut.Rejected == 2
+                && outcomes.SequenceEqual(new[] { "WriteLine() accepted", "Write(char[], int, int) IOException", "WriteLine() after IOException" }),
+                "PartialWriter one budget: WriteLine() takes the newline from the budget, Write(char[], int, int) keeps its accepted prefix and throws once, a later WriteLine() throws with nothing accepted",
+                W(cut) + " " + string.Join(", ", outcomes));
+
+            var perLine = new PartialWriter(2, true, () => new InvalidOperationException("p7-36 per line"));
+            var perLineOutcomes = new List<string>();
+            foreach (var (label, act) in new (string, Action)[]
+            {
+                ("WriteLine()", () => perLine.WriteLine()),
+                ("Write(char[], int, int)", () => perLine.Write("xyz".ToCharArray(), 0, 3)),
+                ("Write(char[])", () => perLine.Write("pq".ToCharArray())),
+            })
+            {
+                try { act(); perLineOutcomes.Add(label + " accepted"); }
+                catch (InvalidOperationException error) when (error.Message == "p7-36 per line") { perLineOutcomes.Add(label + " InvalidOperationException"); }
+            }
+            Check(perLine.Attempts.SequenceEqual(new[] { "", "xyz", "pq" }) && perLine.Text == nl + "xy" + "pq" && perLine.Rejected == 1
+                && perLineOutcomes.SequenceEqual(new[] { "WriteLine() accepted", "Write(char[], int, int) InvalidOperationException", "Write(char[]) accepted" }),
+                "PartialWriter per-line budget: each WriteLine() / Write(char[], int, int) / Write(char[]) restarts the budget once, a cut slice throws once",
+                W(perLine) + " " + string.Join(", ", perLineOutcomes));
+        }
+
+        // b. One Forced helper for sections 12 and 13.
+        {
+            static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
+            static string? Body(string code, string header)
+            {
+                var matches = System.Text.RegularExpressions.Regex.Matches(code, header);
+                if (matches.Count != 1) return null;
+                var open = code.IndexOf('{', matches[0].Index + matches[0].Length);
+                var depth = 0;
+                for (var i = open; open >= 0 && i < code.Length; i++)
+                {
+                    if (code[i] == '{') depth++;
+                    else if (code[i] == '}' && --depth == 0) return code[open..(i + 1)];
+                }
+                return null;
+            }
+            var tests = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "tests", "cli", "GeneratePrototypesTests.cs")));
+            var twelve = Body(tests, @"\bstatic\s+void\s+PartialWriteStage\s*\(");
+            var thirteen = Body(tests, @"\bstatic\s+void\s+PartialWriteContractStage\s*\(");
+            var detail = "ForcedRun( " + Count(tests, @"\bForcedRun\s*\(").ToString(CultureInfo.InvariantCulture)
+                + "; section 12 SetOut " + (twelve is null ? "<not found>" : Count(twelve, @"\bConsole\s*\.\s*SetOut\b").ToString(CultureInfo.InvariantCulture) + " ForcedRun " + Count(twelve, @"\bForcedRun\s*\(").ToString(CultureInfo.InvariantCulture))
+                + "; section 13 SetOut " + (thirteen is null ? "<not found>" : Count(thirteen, @"\bConsole\s*\.\s*SetOut\b").ToString(CultureInfo.InvariantCulture) + " ForcedRun " + Count(thirteen, @"\bForcedRun\s*\(").ToString(CultureInfo.InvariantCulture));
+            Check(twelve is not null && thirteen is not null && Count(tests, @"\bForcedRun\s*\(") == 3
+                && Count(twelve, @"\bConsole\s*\.\s*SetOut\b") == 0 && Count(twelve, @"\bForcedRun\s*\(") == 1
+                && Count(thirteen, @"\bConsole\s*\.\s*SetOut\b") == 0 && Count(thirteen, @"\bForcedRun\s*\(") == 1,
+                "sections 12 and 13 share the one ForcedRun helper (defined once, called once by each, no Console.SetOut of their own)", detail);
+        }
+
+        // c. Static: Execute never retries or writes again the success line or the pipeline refusal line.
+        var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
+        var real = ExecuteWriteProblems(write);
+        Check(real.Count == 0, "static: GenerateWrite.cs Execute writes the success line and the pipeline refusal line once each, never retried, completed or written again", string.Join("; ", real));
+        const string RefusedWrite = @"Console\s*\.\s*WriteLine\s*\(\s*refused\s*\)\s*;";
+        const string CleanupCatch = @"catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*PostWriteDeleteProbe";
+        const string SuccessEnd = @"sha256\s*,\s*\}\s*\)\s*\)\s*;";
+        var mutations = new (string Label, string Pattern, string Replacement)[]
+        {
+            ("a second write of the refusal line", RefusedWrite, "Console.WriteLine(refused); Console.WriteLine(refused);"),
+            ("a guarded retry of the refusal line", RefusedWrite, "try { Console.WriteLine(refused); } catch (IOException) { Console.WriteLine(refused); }"),
+            ("a newline completing the refusal line", RefusedWrite, "Console.WriteLine(refused); Console.Out.WriteLine();"),
+            ("the refusal line written on stderr too", RefusedWrite, "Console.WriteLine(refused); Console.Error.WriteLine(refused);"),
+            ("a loop writing the refusal line", RefusedWrite, "for (var i = 0; i < 2; i++) Console.WriteLine(refused);"),
+            ("a lambda writing the refusal line twice", RefusedWrite, "Action again = () => Console.WriteLine(refused); again(); again();"),
+            ("a goto retry of the refusal line", RefusedWrite, "var tries = 0; again: Console.WriteLine(refused); if (++tries < 2) goto again;"),
+            ("the success line written again in the cleanup catch", CleanupCatch, "catch (Exception) { Console.WriteLine(JsonSerializer.Serialize(new { status = 0 })); try { PostWriteDeleteProbe"),
+            ("a re-run of Execute in the cleanup catch", CleanupCatch, "catch (Exception) { Execute(args); try { PostWriteDeleteProbe"),
+            ("a filtered retry catch on the success write", CleanupCatch, "catch (Exception) when (Retry()) { try { PostWriteDeleteProbe"),
+            ("a goto retry of the success write", CleanupCatch, "catch (Exception) { if (Retry()) goto again; try { PostWriteDeleteProbe"),
+            ("a newline completing the success line", SuccessEnd, "sha256, })); Console.Out.Write(Environment.NewLine);"),
+            ("a second success write after the first", SuccessEnd, "sha256, })); Console.WriteLine(JsonSerializer.Serialize(new { sha256 }));"),
+            ("a loop around the success try", @"try\s*\{\s*PostWriteStageProbe", "for (var attempt = 0; attempt < 2; attempt++) try { PostWriteStageProbe"),
+            ("a finally completing the success line", @"throw\s*;", "throw; } finally { Console.Out.WriteLine();"),
+            ("a second pipeline run", @"var\s+generated\s*=\s*Generate\s*\(\s*ReadRequest\s*\(\s*args\s*\[\s*1\s*\]\s*\)\s*\)\s*;",
+                "var generated = Generate(ReadRequest(args[1])); if (generated.RefusedLine is null) generated = Generate(ReadRequest(args[1]));"),
+        };
+        foreach (var (label, pattern, replacement) in mutations)
+        {
+            var regex = new System.Text.RegularExpressions.Regex(pattern);
+            var found = regex.Matches(write).Count;
+            var mutated = regex.Replace(write, replacement.Replace("$", "$$", StringComparison.Ordinal), 1);
+            var problems = ExecuteWriteProblems(mutated);
+            Check(found == 1 && mutated != write && problems.Count > 0, "static self-test: " + label + " is rejected",
+                "anchor matches " + found.ToString(CultureInfo.InvariantCulture) + "; problems [" + string.Join("; ", problems) + "]");
+        }
+    }
+
+    // P7-36: over the comment-stripped, string-blanked GenerateWrite.cs: the problems that would let Execute retry, complete
+    // or write a second time the success line or the pipeline refusal line (empty = pinned).
+    static List<string> ExecuteWriteProblems(string write) => new();
 
     // ---- P7-25: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
     // GenerateCommand.Run of the real Release CLI assembly (loaded from cliDll, members by reflection, so a missing seam is
