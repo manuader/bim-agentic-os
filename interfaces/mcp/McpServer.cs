@@ -383,8 +383,9 @@ public sealed class McpServer
         // a page due after the deadline is not sent; P1-30: below 5 s left a page's pipe connect waits only the time left,
         // its pipe_connect_timeout reported as the deadline; P1-32/P1-34/P1-36: the read is measured after the connect on
         // every real-pipe page, with min(server read timeout, time left once connected), its pipe_read_timeout reported
-        // as the deadline when the time left was the smaller; an injected transport is never cut.
-        var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, revitTransport, readTimeout, QueryAllDeadline,
+        // as the deadline when the time left was the smaller; an injected transport is never cut. P1-40: with cutReads
+        // (realPipe) every page goes through connectThenRead and the configured transport is never called, so none is passed.
+        var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, QueryAllDeadline,
             RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe);
         var listing = RevitElementQueryPaging.All(CommandEnvelope(RevitElementQueryPaging.Command, arguments), transport, pages, elements, bytes);
         return (listing.ToJson(), !listing.IsSuccess);
