@@ -2676,7 +2676,7 @@ internal static class GenerateTypologyTests
     {
         var code = ApplyIntentTests.CodeOf(source);
         const string Stderr = @"(?<![\w.:])(?:global\s*::\s*)?(?:System\s*\.\s*)?Console\s*\.\s*Error\b";
-        const string Arguments = @"\((?:[^()]|\((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*\))*\)"; // P3-34 RED probe: five levels (the depth self-tests must fail)
+        const string Arguments = @"\((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*\)"; // up to four levels of nesting
         const string Guarded = @"\btry\s*\{\s*" + Stderr + @"\s*\.\s*WriteLine\s*" + Arguments
             + @"\s*;\s*\}\s*catch\s*\(\s*(?:global\s*::\s*)?(?:System\s*\.\s*)?Exception(?:\s+@?[A-Za-z_]\w*)?\s*\)\s*\{\s*\}";
         var problems = new List<string>();
