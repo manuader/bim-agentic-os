@@ -416,3 +416,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay263 (2026-11-21, cloud)
 - P1-40, P5-34, P7-37 merged (main 42a0eb3, CI 44921096745 green). No new owner decision. P1-40 changes only the MCP server's in-memory transport wiring when it uses the real pipe (the configured transport was never called there); an owner -Catalogue run would confirm nothing regressed in Revit.
 - Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 "keep"/"skip" and P6-34 reader-warnings opt-in; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
+
+## Relay264 (2026-11-21)
+- [ ] `git pull` (main is now 6ea3c08). No new owner action; ADR0010/ADR0011 decisions and the -Catalogue run remain open (see above).
