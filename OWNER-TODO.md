@@ -393,3 +393,8 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay256 (2026-11-21, cloud)
 - No new owner action. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03/C05); 🔒 `git pull` (main = 5258a3a) then `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once); 🔒 N21 `... -Runs 1`.
+
+## Relay257 (2026-11-21, cloud)
+- [ ] `git pull` (main is now defdcdc).
+- [ ] Optional decision (P6-35): a PDF form whose /Matrix × page matrix overflows now runs under the outer matrix with an operand-error warning. Alternative: skip the form's content entirely. Say "keep" (default) or "skip" in OWNER.md.
+- Still open: ADR0010 (P2-11), ADR0011 (P9-03), 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
