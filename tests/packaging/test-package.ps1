@@ -1541,10 +1541,10 @@ try {
                 $p737RankedPath = Join-Path $p733Io 'typology-ranked.json'
                 Write-PackageText $p737RankedPath ('{"pack":"' + $p733Typology + '","family_size":3,"lot":{"width_m":16,"depth_m":16},"alternatives":4,"seed":0,"project_id":"00000000-0000-4000-8000-0000000007a7"}')
                 # P7-37: Length is the pinned document byte length; Exact lists stdout members whose value must equal the text given
-                # (strings by value, numbers by their JSON literal).
+                # (strings by value, numbers by their JSON literal); observed on Linux and Windows in CI runs 44911352555/44913586192.
                 $p733Sibling = @(
                     @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"infeasible"'; Sha256 = $p733TypologySha256; Length = 47622; Exact = [ordered]@{ pipeline_status = 'infeasible' } },
-                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'probe'; pack = $p733Caba; pack_rules = '-1' } }
+                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'ranked'; pack = $p733Caba; pack_rules = '2' } }
                 )
                 # P7-37: the ranked typology request, pinned like the siblings (package-first only; not part of the fallback cases).
                 $p737Ranked = @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p737RankedPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p737RankedPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p737RankedSha256; Length = $p737RankedLength; Exact = [ordered]@{ pipeline_status = 'ranked'; alternatives = '4'; accepted = '1' }; Ranked = $true }
