@@ -533,7 +533,7 @@ internal static class InternalErrorDelegationTests
                     "P3-29 seam hygiene: " + seam + " appears under interfaces/ only in " + string.Join(", ", expected), string.Join(", ", found.Select(s => s.Name)));
                 foreach (var (name, uses) in found)
                     Check(uses.Clean, "P3-29 seam hygiene: " + name + " declares " + seam + " once without an initializer, reads it once as [" + read
-                        + "] outside any block lambda or anonymous method, never assigns it", uses.Detail);
+                        + "] outside any block lambda, anonymous method or local function, never assigns it", uses.Detail);
             }
         }
 
@@ -652,7 +652,8 @@ internal static class InternalErrorDelegationTests
     // P3-27: ProbeUses plus Hygiene for a remaining CLI test seam, given its name, declared type (Action or
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
-    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method);
+    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
+    // block-bodied local function);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -694,9 +695,13 @@ internal static class InternalErrorDelegationTests
     // P3-29: true when the use at index (in literal-blanked, comment-stripped code) sits, at any depth, inside a block
     // lambda `=> { ... }` or an anonymous method `delegate [(...)] { ... }`: every unmatched '{' enclosing the use is
     // tested. Such a read runs only when the stored or passed delegate is invoked, so it is not an Action seam's read.
+    // A lambda with an attribute or an explicit return type (`[A] int () => { ... }`) still ends its header in `=>`.
+    // P3-33: also true inside a block-bodied local function: two of the enclosing '{' open method-like bodies
+    // (MethodBody), so the inner one is a local function that runs only when it is called.
     static bool InBlockLambda(string code, int index)
     {
         var depth = 0;
+        var bodies = 0;
         for (var i = index - 1; i >= 0; i--)
         {
             if (code[i] == '}') depth++;
@@ -704,9 +709,23 @@ internal static class InternalErrorDelegationTests
             {
                 if (depth > 0) { depth--; continue; }
                 if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
+                var start = i == 0 ? 0 : code.LastIndexOfAny(new[] { ';', '{', '}' }, i - 1) + 1;
+                if (MethodBody(code[start..i]) && ++bodies == 2) return true;
             }
         }
         return false;
+    }
+
+    // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
+    // '}') opens a method, constructor or local function body: `[attributes/modifiers/type] Name[<...>](...) [where ...]`
+    // with Name not a statement keyword, and no type-declaration or object-creation keyword in the header.
+    static bool MethodBody(string header)
+    {
+        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        var match = System.Text.RegularExpressions.Regex.Match(header,
+            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
+        return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
+            .Contains(match.Groups[1].Value, StringComparer.Ordinal);
     }
 
     // P3-27: CodeOf does not model raw """ strings or interpolated verbatim @$"/$@" strings; a '"' and '//' inside one
