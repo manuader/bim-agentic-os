@@ -2010,3 +2010,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay261
 - 2026-11-21T09:52:48Z lock taken (session_014pxpsQQ4oQEworsBptpp3P relay261; was FREE, relay260 released 2026-11-21T09:23:05Z)
+- 2026-11-21T09:53:16Z picked P3-32 (phase 3, relay256 leftover), P10-35 (phase 10), P6-34 (phase 6) — oldest-touched (relay256/257); disjoint files (tests/mcp new generate_typology section + GenerateTypologyTests.cs section 14 helpers by P3-32; tests/cli/DeletedCwdPathTests.cs + tests/mcp/DeletedCwdPathToolTests.cs new sections by P10-35; tests/cad/MinsertEzdxfTests.cs + minsert_ezdxf_centres.py + contracts cad-brief note by P6-34). Workers spawned.
