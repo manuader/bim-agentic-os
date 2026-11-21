@@ -23,7 +23,7 @@ internal static class DeletedCwdPathTests
         void Check(bool condition, string name, string detail = "") => check(condition, "deleted cwd path: " + name, detail);
         var scratch = Path.Combine(work, "deleted-cwd-path-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
-        try { Cases(scratch, cliDll, Check, skip); Remainder(scratch, cliDll, Check, skip); }
+        try { Cases(scratch, cliDll, Check, skip); Remainder(scratch, cliDll, Check, skip); LinuxUnsearchable(scratch, cliDll, Check, skip); }
         finally
         {
             try { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -394,5 +394,132 @@ internal static class DeletedCwdPathTests
             Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
         // Probe facts: one annotation per mode with a failing case, listing every measured case of that mode.
         if (anyFailing) Console.WriteLine("::warning::P10-32 probe " + Environment.OSVersion.Platform + " unsearchable " + mode + ": " + string.Join(" || ", measuredAll).ReplaceLineEndings(" "));
+    }
+
+    // ---- P10-35: a mode-000 working directory on Linux, literal pins and the late write ----
+    // On Linux Path.GetFullPath of a relative path is accepted while the working directory itself is mode 000 (getcwd
+    // needs no search permission; macOS throws UnauthorizedAccessException, pinned by P10-32 as output_path_invalid). The
+    // output rule (GltfExportCommand.OutputProblem) then accepts the relative output: the parent (the working directory)
+    // exists to stat through its searchable parent, and File.Exists/Directory.Exists of the output report false on EACCES.
+    // So the refusal is never up front: a verb that refuses its input first prints that input refusal (pinned literally
+    // below for generate-prototypes, generate-typology, plan-layouts, export-gltf and bcf-export with a "{}" input), and a
+    // verb that reaches its exclusive CreateNew write gets EACCES there, the verb's typed output_io_error with detail
+    // UnauthorizedAccessException (audit-verify --write-anchor of a clean empty log). The reason is pinned as facts measured
+    // in the same locked state. Linux only (counted SKIP elsewhere), skipped when a mode-000 directory stays listable (root).
+    const string Measure35 = "P10-35 probe: to be measured";
+
+    static void LinuxUnsearchable(string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        var dummy = Path.Combine(scratch, "p10-35-dummy.json");
+        File.WriteAllText(dummy, "{}\n", new UTF8Encoding(false));
+        var log = Path.Combine(scratch, "p10-35-empty.jsonl");
+        File.WriteAllBytes(log, Array.Empty<byte>());
+        // (verb, arguments with the relative output, the literal line). <scratch> stands for the scratch directory.
+        var cases = new List<(string Verb, string[] Arguments, string Expected)>
+        {
+            ("generate-prototypes", new[] { "generate-prototypes", dummy, RelativeOutput }, Measure35),
+            ("generate-typology", new[] { "generate-typology", dummy, RelativeOutput }, Measure35),
+            ("plan-layouts", new[] { "plan-layouts", dummy, RelativeOutput }, Measure35),
+            ("export-gltf", new[] { "export-gltf", dummy, "relative-output.glb" }, Measure35),
+            ("bcf-export", new[] { "bcf-export", dummy, "relative-output.bcfzip" }, Measure35),
+            ("audit-verify --write-anchor (clean empty log)", new[] { "audit-verify", log, "--write-anchor", RelativeOutput },
+                JsonSerializer.Serialize(new { status = "failed", code = "output_io_error", detail = "UnauthorizedAccessException" })),
+        };
+        const string Reason = "the late-write reason";
+        string Label(string what) => "deleted cwd path: P10-35 unsearchable cwd (Linux): " + what;
+        if (!OperatingSystem.IsLinux())
+        {
+            foreach (var c in cases) skip(Label(c.Verb + " output"), "Linux only: macOS GetFullPath refuses the relative output (P10-32), Windows has no Unix permission bits");
+            skip(Label(Reason), "Linux only");
+            return;
+        }
+        var parent = Path.Combine(scratch, "p10-35-parent");
+        var cwd = Path.Combine(parent, "cwd");
+        Directory.CreateDirectory(cwd);
+        const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        bool denied;
+        Chmod(cwd, UnixFileMode.None);
+        try { Directory.GetFileSystemEntries(cwd); denied = false; }
+        catch (UnauthorizedAccessException) { denied = true; }
+        finally { Chmod(cwd, Owner); }
+        if (!denied)
+        {
+            foreach (var c in cases) skip(Label(c.Verb + " output"), "a mode-000 directory is still listable (privileged runner)");
+            skip(Label(Reason), "a mode-000 directory is still listable (privileged runner)");
+            return;
+        }
+
+        Assembly? cli = null;
+        try { cli = Assembly.LoadFrom(cliDll); }
+        catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+        var entry = cli?.EntryPoint;
+        if (cli is null || entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
+        var original = Environment.CurrentDirectory;
+        var exitBefore = Environment.ExitCode;
+        foreach (var (verb, arguments, expected) in cases)
+        {
+            (int Exit, string Line, string Error) run;
+            try
+            {
+                run = Invoke(entry, arguments, () =>
+                {
+                    Directory.SetCurrentDirectory(cwd);
+                    Chmod(cwd, UnixFileMode.None);
+                });
+            }
+            finally
+            {
+                Chmod(cwd, Owner);
+                Directory.SetCurrentDirectory(original);
+            }
+            var line = run.Line.Replace(scratch, "<scratch>", StringComparison.Ordinal);
+            var measured = "exit " + run.Exit.ToString(CultureInfo.InvariantCulture) + " " + line + (run.Error.Length > 0 ? " stderr " + run.Error : "");
+            Check(run.Exit == 1 && line == expected && run.Error.Length == 0 && !line.Contains("internal_error", StringComparison.Ordinal),
+                Label(verb + " output") + ": a relative output under a mode-000 working directory is exactly " + expected + " (exit 1, empty stderr)", measured);
+            Check(Environment.CurrentDirectory == original, Label(verb + " output") + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+            var written = Directory.GetFiles(cwd).Concat(Directory.GetFiles(parent)).ToArray();
+            Check(written.Length == 0, Label(verb + " output") + ": no output file is written", string.Join(",", written));
+        }
+
+        // The reason, measured in the same state (working directory = cwd, cwd mode 000, its parent searchable).
+        var outputProblem = cli.GetType("Bim.Cli.GltfExportCommand", false)?.GetMethod("OutputProblem", BindingFlags.Static | BindingFlags.NonPublic, null,
+            new[] { typeof(string), typeof(IReadOnlyCollection<string>), typeof(string).MakeByRefType() }, null);
+        Check(outputProblem is not null, Label(Reason) + ": GltfExportCommand.OutputProblem(path, extensions, out format) is found", cliDll);
+        string full = "", fullPath = "", linkTarget = "", rule = "", create = "";
+        bool parentExists = false, fileExists = true, directoryExists = true;
+        try
+        {
+            Directory.SetCurrentDirectory(cwd);
+            full = Path.Combine(Environment.CurrentDirectory, RelativeOutput);
+            Chmod(cwd, UnixFileMode.None);
+            try { fullPath = "accepted " + Path.GetFullPath(RelativeOutput); }
+            catch (Exception failure) { fullPath = "threw " + failure.GetType().FullName; }
+            parentExists = Directory.Exists(cwd);
+            fileExists = File.Exists(full);
+            directoryExists = Directory.Exists(full);
+            try { linkTarget = "accepted " + (new FileInfo(full).LinkTarget ?? "null"); }
+            catch (Exception failure) { linkTarget = "threw " + failure.GetType().FullName; }
+            try { rule = "returned " + ((string?)outputProblem?.Invoke(null, new object?[] { RelativeOutput, new[] { ".json" }, null }) ?? "null"); }
+            catch (Exception failure) { rule = "threw " + (failure is TargetInvocationException { InnerException: { } cause } ? cause : failure).GetType().FullName; }
+            try { using (new FileStream(full, FileMode.CreateNew, FileAccess.Write)) { } create = "created"; }
+            catch (Exception failure) { create = "threw " + failure.GetType().FullName; }
+        }
+        finally
+        {
+            Chmod(cwd, Owner);
+            Directory.SetCurrentDirectory(original);
+        }
+        var facts = "GetFullPath " + fullPath + "; Directory.Exists(cwd) " + parentExists + "; File.Exists " + fileExists + "; Directory.Exists " + directoryExists
+            + "; LinkTarget " + linkTarget + "; OutputProblem " + rule + "; CreateNew " + create;
+        facts = facts.Replace(scratch, "<scratch>", StringComparison.Ordinal);
+        Check(fullPath == "accepted " + full, Label(Reason) + ": Path.GetFullPath of the relative output is accepted (the working directory under it)", facts);
+        Check(parentExists && !fileExists && !directoryExists, Label(Reason) + ": the parent exists and File.Exists/Directory.Exists of the output report false", facts);
+        Check(linkTarget == "accepted null", Label(Reason) + ": FileInfo.LinkTarget of the output is null (not a link), no exception", facts);
+        Check(rule == "returned null", Label(Reason) + ": OutputProblem accepts the relative output (no up-front refusal)", facts);
+        Check(create == "threw System.UnauthorizedAccessException", Label(Reason) + ": the exclusive CreateNew write throws UnauthorizedAccessException (the late output_io_error)", facts);
+        if (File.Exists(full)) File.Delete(full);
+        Check(Environment.CurrentDirectory == original, Label(Reason) + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+        Check(Environment.ExitCode == exitBefore, Label("Environment.ExitCode is restored (finally)"),
+            Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
     }
 }
