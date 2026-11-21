@@ -452,14 +452,19 @@ internal static class PackageLayoutPackTests
     {
         var name = Path.GetFileName(depsPath);
         if (!File.Exists(depsPath)) return ["<" + name + " missing>"];
-        using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
-        var notProject = new List<string>();
-        if (depsDocument.RootElement.ValueKind != JsonValueKind.Object || !depsDocument.RootElement.TryGetProperty("libraries", out var depsLibraries) || depsLibraries.ValueKind != JsonValueKind.Object)
-            notProject.Add("<no libraries object>");
-        else foreach (var depsLibrary in depsLibraries.EnumerateObject())
-            if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (depsLibrary.Value.ValueKind != JsonValueKind.Object || !depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.ValueKind != JsonValueKind.String || depsType.GetString() != "project"))
-                notProject.Add(depsLibrary.Name);
-        return notProject;
+        try
+        {
+            using var depsDocument = JsonDocument.Parse(File.ReadAllText(depsPath));
+            var notProject = new List<string>();
+            if (depsDocument.RootElement.ValueKind != JsonValueKind.Object || !depsDocument.RootElement.TryGetProperty("libraries", out var depsLibraries) || depsLibraries.ValueKind != JsonValueKind.Object)
+                notProject.Add("<no libraries object>");
+            else foreach (var depsLibrary in depsLibraries.EnumerateObject())
+                if (depsLibrary.Name.StartsWith("Bim.", StringComparison.Ordinal) && (depsLibrary.Value.ValueKind != JsonValueKind.Object || !depsLibrary.Value.TryGetProperty("type", out var depsType) || depsType.ValueKind != JsonValueKind.String || depsType.GetString() != "project"))
+                    notProject.Add(depsLibrary.Name);
+            return notProject;
+        }
+        catch (JsonException) { return ["<" + name + " malformed JSON>"]; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return ["<" + name + " unreadable: " + error.GetType().Name + ">"]; }
     }
 
     // P10-18: every required first-party assembly without an sbom.json line, then every cli/ or mcp/ Bim.* line that is not
@@ -469,12 +474,17 @@ internal static class PackageLayoutPackTests
     {
         if (!File.Exists(sbomPath)) return ["<sbom.json missing>", .. required];
         var bimLines = new Dictionary<string, JsonElement>(StringComparer.Ordinal);
-        using (var sbomDocument = JsonDocument.Parse(File.ReadAllText(sbomPath)))
+        try
+        {
+            using var sbomDocument = JsonDocument.Parse(File.ReadAllText(sbomPath));
             if (sbomDocument.RootElement.ValueKind == JsonValueKind.Object && sbomDocument.RootElement.TryGetProperty("assemblies", out var sbomAssemblies) && sbomAssemblies.ValueKind == JsonValueKind.Array)
                 foreach (var sbomAssembly in sbomAssemblies.EnumerateArray())
                     if (sbomAssembly.ValueKind == JsonValueKind.Object && sbomAssembly.TryGetProperty("path", out var sbomPathValue) && sbomPathValue.ValueKind == JsonValueKind.String && sbomPathValue.GetString() is { } shipped
                         && System.Text.RegularExpressions.Regex.IsMatch(shipped, @"^(cli|mcp)/Bim\.[A-Za-z.]+\.dll\z", System.Text.RegularExpressions.RegexOptions.CultureInvariant))
                         bimLines[shipped] = sbomAssembly.Clone();
+        }
+        catch (JsonException) { return ["<sbom.json malformed JSON>", .. required]; }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return ["<sbom.json unreadable: " + error.GetType().Name + ">", .. required]; }
         return required.Where(item => !bimLines.ContainsKey(item))
             .Concat(bimLines.Where(pair => !pair.Value.TryGetProperty("license", out var license) || license.ValueKind != JsonValueKind.String || license.GetString() != "NOASSERTION" || pair.Value.TryGetProperty("package", out _)).Select(pair => pair.Key)).ToList();
     }
@@ -560,7 +570,7 @@ internal static class PackageLayoutPackTests
             foreach (var segment in path.Replace('\\', '/').Split('/'))
             {
                 if (segment.Length == 0 || segment == ".") continue;
-                if (segment == "..") { if (segments.Count > 0) segments.RemoveAt(segments.Count - 1); continue; }
+                if (segment == "..") { if (segments.Count == 0) return null; segments.RemoveAt(segments.Count - 1); continue; }
                 segments.Add(segment);
             }
             return string.Join("/", segments);
@@ -675,7 +685,7 @@ internal static class PackageLayoutPackTests
                                     // An escaping asset name is still matched on its last segment (P4-32).
                                     var assetName = Normal(asset.Name) ?? asset.Name.Replace('\\', '/');
                                     var assetFile = assetName[(assetName.LastIndexOf('/') + 1)..];
-                                    if (assetFile.StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase)) found.Add("runtime " + entry.Name + " " + asset.Name);
+                                    if (assetFile.Equals("Bim.Gltf", StringComparison.OrdinalIgnoreCase) || assetFile.StartsWith("Bim.Gltf.", StringComparison.OrdinalIgnoreCase)) found.Add("runtime " + entry.Name + " " + asset.Name);
                                 }
                         }
                 return found;

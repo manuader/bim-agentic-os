@@ -1812,7 +1812,7 @@ try {
             $segments = [Collections.Generic.List[string]]::new()
             foreach ($segment in $Path.Replace('\', '/').Split('/')) {
                 if ($segment -ceq '' -or $segment -ceq '.') { continue }
-                if ($segment -ceq '..') { if ($segments.Count) { $segments.RemoveAt($segments.Count - 1) }; continue }
+                if ($segment -ceq '..') { if (!$segments.Count) { return $null }; $segments.RemoveAt($segments.Count - 1); continue }
                 $segments.Add($segment)
             }
             return ($segments -join '/')
@@ -1908,7 +1908,7 @@ try {
                                 $assetName = ConvertTo-P431Path $asset.Name
                                 if ($null -eq $assetName) { $assetName = $asset.Name.Replace('\', '/') }
                                 $assetFile = $assetName.Substring($assetName.LastIndexOf('/') + 1)
-                                if ($assetFile.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)) { $found.Add("runtime $($entry.Name) $($asset.Name)") }
+                                if ($assetFile.Equals('Bim.Gltf', [StringComparison]::OrdinalIgnoreCase) -or $assetFile.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)) { $found.Add("runtime $($entry.Name) $($asset.Name)") }
                             }
                         }
                     }
@@ -1939,9 +1939,9 @@ try {
         # The self-test copy of a layout (mcp/, cli/Bim.Gltf.dll, cli/Bim.Cli.deps.json, sbom.json, manifest.json).
         function Copy-P431Layout([string]$Source, [string]$Destination) {
             New-Item -ItemType Directory -Force (Join-Path $Destination 'cli') | Out-Null
-            if (Test-Path -LiteralPath (Join-Path $Source 'mcp') -PathType Container) { Copy-Item -LiteralPath (Join-Path $Source 'mcp') -Destination (Join-Path $Destination 'mcp') -Recurse }
+            if (Test-Path -LiteralPath (Join-Path $Source 'mcp') -PathType Container) { Copy-Item -LiteralPath (Join-Path $Source 'mcp') -Destination (Join-Path $Destination 'mcp') -Recurse -Force }
             foreach ($relative in 'cli/Bim.Gltf.dll', 'cli/Bim.Cli.deps.json', 'sbom.json', 'manifest.json') {
-                if (Test-Path -LiteralPath (Join-Path $Source $relative) -PathType Leaf) { Copy-Item -LiteralPath (Join-Path $Source $relative) -Destination (Join-Path $Destination $relative) }
+                if (Test-Path -LiteralPath (Join-Path $Source $relative) -PathType Leaf) { Copy-Item -LiteralPath (Join-Path $Source $relative) -Destination (Join-Path $Destination $relative) -Force }
             }
         }
         function Write-P431Json([string]$File, $Value) { [IO.File]::WriteAllText($File, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)) }
