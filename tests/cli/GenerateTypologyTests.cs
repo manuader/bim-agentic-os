@@ -2238,6 +2238,49 @@ internal static class GenerateTypologyTests
         const string DiagnosticPrefix = "generate-typology internal error: ";
         static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
         var nl = Environment.NewLine;
+        void Check32(bool condition, string name, string detail = "") => check(condition, "P3-32 " + name, detail);
+        static string Escape(string text) => text.Replace("\r", "\\r", StringComparison.Ordinal).Replace("\n", "\\n", StringComparison.Ordinal);
+
+        // P3-32: the writer helpers' WriteLine() and Write(char[], int, int) are one attempt each (self-test); without the
+        // overrides TextWriter would split them into one Write(char) per character.
+        {
+            var inner = new StringWriter(CultureInfo.InvariantCulture);
+            var counting = new CountingWriter(inner);
+            counting.WriteLine();
+            counting.Write("abcd".ToCharArray(), 1, 2);
+            counting.Write(new[] { 'x', 'y' });
+            Check32(counting.Attempts.SequenceEqual(new[] { "", "bc", "xy" }) && inner.ToString() == nl + "bcxy",
+                "CountingWriter: WriteLine(), Write(char[], int, int) and Write(char[]) are one attempt each, forwarded byte-exact",
+                "attempts [" + string.Join(" | ", counting.Attempts.Select(Escape)) + "] inner [" + Escape(inner.ToString()) + "]");
+            foreach (var (label, act, expected) in new (string, Action<TextWriter>, string)[] { ("WriteLine()", w => w.WriteLine(), ""), ("Write(char[], int, int)", w => w.Write("zabc".ToCharArray(), 1, 3), "abc") })
+            {
+                var closed = new StringWriter(CultureInfo.InvariantCulture);
+                closed.Dispose();
+                var disposed = new CountingWriter(closed);
+                Exception? thrown = null;
+                try { act(disposed); }
+                catch (Exception error) { thrown = error; }
+                Check32(thrown is ObjectDisposedException && disposed.Attempts.SequenceEqual(new[] { expected }),
+                    "CountingWriter over a disposed writer: " + label + " is recorded once, then ObjectDisposedException",
+                    "attempts [" + string.Join(" | ", disposed.Attempts.Select(Escape)) + "] threw " + (thrown?.GetType().FullName ?? "nothing"));
+            }
+            var budgeted = new PartialWriter(2 + nl.Length, false, () => new IOException("p3-32 budget"));
+            Exception? cut = null;
+            budgeted.Write("zabc".ToCharArray(), 1, 2);
+            budgeted.WriteLine();
+            try { budgeted.Write(new[] { 'c', 'd' }); }
+            catch (Exception error) { cut = error; }
+            Check32(cut is IOException && budgeted.Attempts.SequenceEqual(new[] { "ab", "", "cd" }) && budgeted.Text == "ab" + nl && budgeted.Rejected == 1,
+                "PartialWriter: Write(char[], int, int), WriteLine() and Write(char[]) are one attempt each against the budget; the write past it is rejected once with nothing accepted",
+                "attempts [" + string.Join(" | ", budgeted.Attempts.Select(Escape)) + "] text [" + Escape(budgeted.Text) + "] rejected " + budgeted.Rejected.ToString(CultureInfo.InvariantCulture) + " threw " + (cut?.GetType().FullName ?? "nothing"));
+            var empty = new PartialWriter(0, true, () => new InvalidOperationException("p3-32 per-line"));
+            Exception? cutLine = null;
+            try { empty.WriteLine(); }
+            catch (Exception error) { cutLine = error; }
+            Check32(cutLine is InvalidOperationException && empty.Attempts.SequenceEqual(new[] { "" }) && empty.Text.Length == 0 && empty.Rejected == 1,
+                "PartialWriter with a zero per-line budget: WriteLine() is one attempt, rejected once, nothing accepted",
+                "attempts [" + string.Join(" | ", empty.Attempts.Select(Escape)) + "] text [" + Escape(empty.Text) + "] rejected " + empty.Rejected.ToString(CultureInfo.InvariantCulture) + " threw " + (cutLine?.GetType().FullName ?? "nothing"));
+        }
 
         var inputs = Path.Combine(scratch, "p3-31-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(inputs);
@@ -2385,10 +2428,59 @@ internal static class GenerateTypologyTests
             var shared = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")), blankStrings: false);
             var documentCatch = System.Text.RegularExpressions.Regex.Matches(shared,
                 @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+envelope\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-typology""\s*,\s*error\s*\)\s*;\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*envelope\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*return\s*\(\s*false\s*,\s*envelope\s*\.\s*Line\s*\)\s*;\s*\}").Count;
-            var unguardedWrites = System.Text.RegularExpressions.Regex.Matches(shared, @"(?<!try\s*\{\s*)Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(").Count;
-            Check(documentCatch == 1 && unguardedWrites == 0,
-                "GenerateTypologyCommand.cs: Document's catch-all writes envelope.Diagnostic guarded (try / catch (Exception) { }) then returns (false, envelope.Line), and no Console.Error.WriteLine there is unguarded",
-                "guarded Document catch-all " + documentCatch.ToString(CultureInfo.InvariantCulture) + ", unguarded stderr writes " + unguardedWrites.ToString(CultureInfo.InvariantCulture));
+            // P3-32: the unguarded-stderr pin is StderrWriteProblems (layout-independent, mutation self-tested below) over both
+            // generate-typology sources; it replaces the P3-31 look-behind regex, which rejected a reformatted guarded write
+            // (System.Console...) and accepted a filtered or rethrowing catch.
+            var stderrProblems = new List<string>();
+            foreach (var file in new[] { "GenerateTypologyCommand.cs", "GenerateTypologyWrite.cs" })
+                stderrProblems.AddRange(StderrWriteProblems(File.ReadAllText(Path.Combine(root, "interfaces", "cli", file))).Select(problem => file + ": " + problem));
+            Check(documentCatch == 1 && stderrProblems.Count == 0,
+                "GenerateTypologyCommand.cs: Document's catch-all writes envelope.Diagnostic guarded (try / catch (Exception) { }) then returns (false, envelope.Line), and no stderr write in GenerateTypologyCommand.cs or GenerateTypologyWrite.cs is unguarded",
+                "guarded Document catch-all " + documentCatch.ToString(CultureInfo.InvariantCulture) + ", stderr problems [" + string.Join("; ", stderrProblems) + "]");
+            {
+                const string W = "Console.Error.WriteLine(envelope.Diagnostic);";
+                static string Wrap(string body) => "static class C { static void M(System.Exception error) { " + body + " } }";
+                var accepted = new (string Label, string Source)[]
+                {
+                    ("the real shape", Wrap("try { " + W + " } catch (Exception) { }")),
+                    ("the shape spread over lines and tabs", Wrap("try\n\t{\n\t\tConsole\n\t\t\t.Error\n\t\t\t.WriteLine(\n\t\t\t\tenvelope.Diagnostic);\n\t}\n\tcatch (Exception)\n\t{\n\t}")),
+                    ("the shape without spaces", Wrap("try{Console.Error.WriteLine(envelope.Diagnostic);}catch(Exception){}")),
+                    ("a System.Console write", Wrap("try { System.Console.Error.WriteLine(envelope.Diagnostic); } catch (Exception) { }")),
+                    ("a global::System.Console write and catch (System.Exception)", Wrap("try { global::System.Console . Error . WriteLine ( x ) ; } catch ( System.Exception ) { }")),
+                    ("a named unused catch variable", Wrap("try { " + W + " } catch (Exception ignored) { }")),
+                    ("nested parentheses and a literal holding ) ; }", Wrap("try { Console.Error.WriteLine(IntentPlan.InternalDiagnostic(\"generate-typology ); } x\", error)); } catch (Exception) { }")),
+                    ("comments between the tokens", Wrap("try { /* note */ Console.Error.WriteLine(x); // trailing\n } catch (Exception) { /* swallowed */ }")),
+                    ("a bare write only in a comment or a string", Wrap("// Console.Error.WriteLine(x);\n var s = \"Console.Error.WriteLine(x);\"; try { " + W + " } catch (Exception) { }")),
+                    ("two guarded writes", Wrap("try { " + W + " } catch (Exception) { } try { Console.Error.WriteLine(y); } catch (Exception) { }")),
+                };
+                var rejected = new (string Label, string Source)[]
+                {
+                    ("a bare write", Wrap(W)),
+                    ("a bare System.Console write", Wrap("System.Console.Error.WriteLine(x);")),
+                    ("a bare write over several lines", Wrap("Console\n.Error\n.WriteLine(x);")),
+                    ("an IOException-only catch", Wrap("try { " + W + " } catch (IOException) { }")),
+                    ("a filtered catch", Wrap("try { " + W + " } catch (Exception e) when (e is IOException) { }")),
+                    ("a catch that rethrows", Wrap("try { " + W + " } catch (Exception) { throw; }")),
+                    ("a catch that writes stdout", Wrap("try { " + W + " } catch (Exception) { Console.WriteLine(x); }")),
+                    ("a finally instead of a catch", Wrap("try { " + W + " } finally { }")),
+                    ("a second write inside the same try", Wrap("try { " + W + " Console.Error.WriteLine(y); } catch (Exception) { }")),
+                    ("Write instead of WriteLine", Wrap("try { Console.Error.Write(x); } catch (Exception) { }")),
+                    ("WriteLineAsync", Wrap("try { Console.Error.WriteLineAsync(x); } catch (Exception) { }")),
+                    ("an aliased Console.Error", Wrap("var e = Console.Error; try { e.WriteLine(x); } catch (Exception) { }")),
+                    ("a Flush on stderr", Wrap("try { " + W + " } catch (Exception) { } Console.Error.Flush();")),
+                    ("a guarded write plus a bare one", Wrap("try { " + W + " } catch (Exception) { } " + W)),
+                    ("OpenStandardError", Wrap("using var s = Console.OpenStandardError();")),
+                    ("Console.SetError", Wrap("Console.SetError(TextWriter.Null);")),
+                    ("using static System.Console", "using static System.Console; " + Wrap("Error.WriteLine(x);")),
+                };
+                foreach (var (label, source) in accepted)
+                {
+                    var problems = StderrWriteProblems(source);
+                    Check32(problems.Count == 0, "self-test: the stderr pin accepts " + label, "problems [" + string.Join("; ", problems) + "]");
+                }
+                foreach (var (label, source) in rejected)
+                    Check32(StderrWriteProblems(source).Count > 0, "self-test: the stderr pin rejects " + label);
+            }
 
             // ---- b. catch (Refusal): the typed refusals of the real process, cut part-way ----
             var existing = Output();
@@ -2521,6 +2613,20 @@ internal static class GenerateTypologyTests
             try { Directory.Delete(inputs, recursive: true); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    // P3-32: the unguarded-stderr pin over one source. Every Console.Error use ([global::][System.]Console.Error at any
+    // spacing, over comment-stripped code with literals emptied) must be the guarded shape
+    //   try { Console.Error.WriteLine(<one balanced argument list>); } catch ([System.]Exception [name]) { }
+    // as the only statement of its try with an empty unfiltered catch; anything else (a bare write, a filtered,
+    // narrowed or rethrowing catch, a finally, Write / WriteLineAsync / Flush, an alias, a second write in the try),
+    // OpenStandardError, SetError or using static Console is a problem.
+    static List<string> StderrWriteProblems(string source)
+    {
+        // P3-32 red probe: the P3-31 look-behind regex, kept until the layout-independent checker replaces it.
+        var code = ApplyIntentTests.CodeOf(source, blankStrings: false);
+        var unguarded = System.Text.RegularExpressions.Regex.Matches(code, @"(?<!try\s*\{\s*)Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(").Count;
+        return unguarded == 0 ? new List<string>() : new List<string> { unguarded.ToString(CultureInfo.InvariantCulture) + " unguarded Console.Error.WriteLine" };
     }
 
     // P3-31: a stdout that accepts a budget of characters and then throws (as P7-32's in GeneratePrototypesTests). Each
