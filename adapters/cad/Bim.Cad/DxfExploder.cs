@@ -16,8 +16,10 @@ namespace Bim.Cad;
 // unit of block z lands in world XY (zero at the top level and under exact +-Z normals); a nested INSERT's insertion
 // height (DxfInsert.Elevation) shifts its placement by that much, and its own normal's horizontal part (ZAxisXY,
 // through the XY transform) plus the enclosing z direction times its ZAxisZ becomes its block's. Under near +-Z
-// normals this keeps nested elevations within 1e-6 of ezdxf; the z of leaf entities (LWPOLYLINE group 38, LINE and
-// TEXT z) and of ATTRIBs is still dropped.
+// normals this keeps nested elevations within 1e-6 of ezdxf. P6-36: the insert's Z scale (group 43) scales its block's
+// z direction, the BLOCK base point z is subtracted along it, and a leaf LWPOLYLINE's elevation (group 38) shifts it
+// like a nested insertion height; all are zero shifts when every level is exact +-Z. The z of LINE, CIRCLE/ARC and
+// TEXT and of ATTRIBs is still dropped.
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -86,9 +88,11 @@ public static class DxfExploder
                 if (depth + 1 > options.MaxDepth)
                     throw new DxfFormatException("explode-limit", source.Line, "block nesting deeper than " + options.MaxDepth.ToString(CultureInfo.InvariantCulture));
                 var key = source.Handle ?? "@" + source.Line.ToString(CultureInfo.InvariantCulture);
-                // The insertion's height moves the placement by zToXY times it; the block's z direction in world XY.
-                var placed = zToXY.X != 0 || zToXY.Y != 0 ? Affine.Translate(zToXY * insert.Elevation).Compose(transform) : transform;
-                var blockZ = transform.ApplyVector(insert.ZAxisXY) + zToXY * insert.ZAxisZ;
+                // The block's z direction in world XY (times the Z scale); the insertion's height moves the placement by
+                // zToXY times it and the BLOCK base point z by -blockZ times it.
+                var blockZ = (transform.ApplyVector(insert.ZAxisXY) + zToXY * insert.ZAxisZ) * insert.ScaleZ;
+                var shift = zToXY * insert.Elevation - blockZ * block.BaseZ;
+                var placed = shift.X != 0 || shift.Y != 0 ? Affine.Translate(shift).Compose(transform) : transform;
                 if (!insert.IsArray)
                 {
                     var local = Affine.Translate(insert.Insertion)
@@ -118,6 +122,9 @@ public static class DxfExploder
                 }
                 return;
             }
+            // P6-36: a leaf LWPOLYLINE's plane height reaches world XY through the enclosing near +-Z normals.
+            if (entity is DxfPolyline { Elevation: not 0.0 } plane && (zToXY.X != 0 || zToXY.Y != 0))
+                transform = Affine.Translate(zToXY * plane.Elevation).Compose(transform);
             Add(transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance));
         }
 

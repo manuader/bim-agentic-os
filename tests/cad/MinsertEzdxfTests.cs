@@ -60,6 +60,18 @@ using Point2 = Bim.Cad.Point2;
 //     (and the CLI checks are skipped) instead of an unexpected exception; a self-test points it at a missing path.
 //   * The brief's exclusion of reader warnings stays the documented limit above; the proposed opt-in is written up in
 //     docs/contracts/module-contracts.md (cad-brief section), not implemented.
+//
+// P6-36 (section RunZ at the end): the near-Z chain remainder. ZDrawing() places the ARCH outline through seven cases,
+// each under an enclosing near +-Z normal (where one unit of block z moves world XY by the normal's horizontal part):
+// H1 > HM a 2x2 MINSERT at elevation 1800 inside a near +Z insert at elevation 2000; X1 > XE / XF exact -Z (elevation
+// -3000) and exact +Z (elevation 2200) nested inserts under a near -Z insert; Z1 > ZA Z scale 2.5 (group 43); K1 BLOCK
+// base point z 900; L1 / L2 leaf LWPOLYLINE elevation (group 38) 1200 in +Z and 800 in an exact -Z OCS; W1 > CL all of
+// them combined (Z scales 1.5 and 0.8, base z -400, elevations 1000/600, leaf elevation 1200). The eleven outlines'
+// corners and segment midpoints equal ezdxf 1.4.2 (offline generator, P6-36 section z_main: composed Insert.matrix44()
+// of every level, MINSERT cells from multi_insert(); virtual_entities() agrees within 1e-9 for the cases without a
+// MINSERT) within 1e-6. Removing each case's z feature moves its outline by 2.5e-4 (H1) to 9e-4 (X1 > XE) in ezdxf, so
+// every case exercises it. H1 and X1 already held after P6-34 (pinned); Z1, K1, L1, L2 and W1 were off by 6e-4, 2.7e-4,
+// 3.6e-4, 2.4e-4 and 5.7e-4 before P6-36 made DxfReader keep groups 43, BLOCK 30 and 38 and DxfExploder use them.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -255,6 +267,7 @@ internal static class MinsertEzdxfTests
         RunBulge(C);
         RunBulgeParity(C);
         RunChain(C);
+        RunZ(C);
         if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
@@ -416,7 +429,7 @@ internal static class MinsertEzdxfTests
         try
         {
             var root = RepoRoot();
-            var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+            var cliDll = CliDllPath(root);
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
             if (!File.Exists(cliDll)) throw new FileNotFoundException("CLI binary missing (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
             var scratch = Path.Combine(Path.GetTempPath(), "bim-cad-p632-" + Environment.ProcessId.ToString(CultureInfo.InvariantCulture));
@@ -616,6 +629,98 @@ internal static class MinsertEzdxfTests
         {
             c(false, "cli precondition unexpected exception", error.GetType().Name + ": " + error.Message);
             return false;
+        }
+    }
+
+    // ---------- P6-36: MINSERT at elevation, exact under near-Z, Z scale, base z and leaf z ----------
+
+    // Same parameters as Z_BLOCKS and Z_CASES in tests/cad/tools/minsert_ezdxf_centres.py.
+    private const string ZArch = "90 4|70 1|10 50|20 20|10 1050|20 20|42 0.4|10 1050|20 820|10 50|20 820|42 -0.25";
+
+    private static string ZDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 A0|8 0|2 ARCH|70 0|10 50|20 20|30 0")
+        + G("0 LWPOLYLINE|5 A1|8 0|" + ZArch) + G("0 ENDBLK|5 A2|8 0")
+        + G("0 BLOCK|5 B0|8 0|2 HOLD|70 0|10 5|20 -5|30 0")
+        + G("0 INSERT|5 HM|8 0|2 ARCH|10 300|20 -200|30 1800|41 0.6|42 0.6|50 20|70 2|71 2|44 1400|45 -1000|210 1e-7|220 -2e-7|230 -1")
+        + G("0 ENDBLK|5 B2|8 0")
+        + G("0 BLOCK|5 C0|8 0|2 XHOLD|70 0|10 0|20 0|30 0")
+        + G("0 INSERT|5 XE|8 0|2 ARCH|10 -400|20 700|30 -3000|50 40|210 0|220 0|230 -1")
+        + G("0 INSERT|5 XF|8 0|2 ARCH|10 2600|20 -900|30 2200|41 0.9|42 0.9|50 -15")
+        + G("0 ENDBLK|5 C2|8 0")
+        + G("0 BLOCK|5 D0|8 0|2 ZHOLD|70 0|10 0|20 0|30 0")
+        + G("0 INSERT|5 ZA|8 0|2 ARCH|10 800|20 600|30 2000|50 30")
+        + G("0 ENDBLK|5 D2|8 0")
+        + G("0 BLOCK|5 G0|8 0|2 BASEZ|70 0|10 50|20 20|30 900")
+        + G("0 LWPOLYLINE|5 G1|8 0|" + ZArch) + G("0 ENDBLK|5 G2|8 0")
+        + G("0 BLOCK|5 J0|8 0|2 ELEV|70 0|10 50|20 20|30 0")
+        + G("0 LWPOLYLINE|5 J1|8 0|38 1200|" + ZArch) + G("0 ENDBLK|5 J2|8 0")
+        + G("0 BLOCK|5 N0|8 0|2 ELEVM|70 0|10 50|20 20|30 0")
+        + G("0 LWPOLYLINE|5 N1|8 0|38 800|" + ZArch + "|210 0|220 0|230 -1") + G("0 ENDBLK|5 N2|8 0")
+        + G("0 BLOCK|5 P0|8 0|2 CMID|70 0|10 5|20 5|30 -400")
+        + G("0 INSERT|5 CL|8 0|2 ELEV|10 -700|20 300|30 600|41 1.1|42 1.1|43 0.8|50 -25|210 2e-7|220 1e-7|230 1")
+        + G("0 ENDBLK|5 P2|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 H1|8 ROOMS|2 HOLD|10 90000|20 30000|30 2000|41 1.1|42 1.1|50 15|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 X1|8 ROOMS|2 XHOLD|10 -90000|20 40000|30 500|50 25|210 2e-7|220 3e-7|230 -1")
+        + G("0 INSERT|5 Z1|8 ROOMS|2 ZHOLD|10 30000|20 -70000|30 0|43 2.5|50 10|210 -2e-7|220 1e-7|230 1")
+        + G("0 INSERT|5 K1|8 ROOMS|2 BASEZ|10 -30000|20 -60000|30 0|50 30|210 2e-7|220 -3e-7|230 -1")
+        + G("0 INSERT|5 L1|8 ROOMS|2 ELEV|10 10000|20 80000|30 0|50 -20|210 -3e-7|220 -1e-7|230 1")
+        + G("0 INSERT|5 L2|8 ROOMS|2 ELEVM|10 60000|20 80000|30 0|50 50|210 1e-7|220 3e-7|230 1")
+        + G("0 INSERT|5 W1|8 ROOMS|2 CMID|10 -60000|20 90000|30 1000|43 1.5|50 35|210 -2e-7|220 -2e-7|230 -1")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 outlines (generator section P6-36): (insert path, WCS corners x0,y0..x3,y3, WCS segment midpoints).
+    private static readonly (string Path, double[] Corners, double[] Midpoints)[] ZOutlines =
+    {
+        ("H1>HM[0,0]", new[] { 89731.44892419793, 29705.97474936806, 89073.96042345738, 29763.497539581535, 89119.97865562815, 30289.48834017397, 89777.46715636872, 30231.9655499605 }, new[] { 89402.70467382765, 29734.736144474795, 88991.77137942427, 30035.696586311908, 89448.72290599844, 30260.726945067236, 89688.70919020927, 29974.722428685625 }),
+        ("H1>HM[0,1]", new[] { 88197.30908913666, 29840.19459319949, 87539.82058839613, 29897.71738341296, 87585.83882056692, 30423.708184005398, 88243.32732130746, 30366.185393791933 }, new[] { 87868.5648387664, 29868.955988306225, 87457.63154436303, 30169.916430143334, 87914.5830709372, 30394.946788898666, 88154.56935514799, 30108.94227251706 }),
+        ("H1>HM[1,0]", new[] { 89635.57760717547, 28610.160581467142, 88978.08910643494, 28667.68337168061, 89024.1073386057, 29193.67417227305, 89681.59583934625, 29136.151382059583 }, new[] { 89306.8333568052, 28638.921976573874, 88895.90006240184, 28939.882418410984, 89352.85158897597, 29164.91277716632, 89592.8378731868, 28878.908260784712 }),
+        ("H1>HM[1,1]", new[] { 88101.4377721142, 28744.380425298576, 87443.94927137367, 28801.903215512044, 87489.96750354445, 29327.894016104485, 88147.45600428498, 29270.371225891016 }, new[] { 87772.69352174393, 28773.14182040531, 87361.76022734058, 29074.10226224242, 87818.71175391471, 29299.13262099775, 88058.69803812553, 29013.128104616142 }),
+        ("X1>XE", new[] { 89933.3103683996, 40803.4638056201, 90899.23619468864, 41062.28285072262, 90692.18095860658, 41835.02351175384, 89726.25513231753, 41576.20446665134 }, new[] { 90416.27328154413, 40932.873328171365, 90950.25670885385, 41490.06422845463, 90209.21804546205, 41705.61398920259, 89926.37533298746, 41215.71604064597 }),
+        ("X1>XF", new[] { 87263.24385813392, 40283.13128219101, 86376.91688042293, 40439.41464209124, 86501.94356834306, 41148.476224260005, 87388.27054605406, 40992.192864359764 }, new[] { 86820.08036927842, 40361.27296214113, 86297.61790794924, 40818.95077075966, 86945.10705719856, 41070.33454430988, 87237.12450432288, 40653.29040926541 }),
+        ("Z1>ZA", new[] { 30683.656295807607, -69270.19630605883, 31449.700738926585, -68627.4086963723, 30935.470651177377, -68014.5731418771, 30169.4262080584, -68657.36075156365 }, new[] { 31066.678517367094, -68948.80250121557, 31315.15280595102, -68218.14490157485, 30552.44842961789, -68335.96694672038, 30503.145696244897, -68899.49976784259 }),
+        ("K1", new[] { 29999.9998199958, -59999.999729997326, 29133.97441621141, -59499.99972999735, 29533.974416211444, -58807.179406969815, 30399.999819995835, -59307.1794069698 }, new[] { 29566.987118103607, -59749.99972999733, 29195.410351605922, -59073.589568483585, 29966.98711810364, -59057.17940696981, 30113.39727961738, -59603.58956848357 }),
+        ("L1", new[] { 9999.999639997153, 79999.99987999962, 10939.69226078303, 79657.97973667395, 11213.30837544353, 80409.73383330267, 10273.61575465765, 80751.75397662833 }, new[] { 10469.845950390092, 79828.98980833679, 11226.851137439022, 79979.1335620562, 10743.46206505059, 80580.7439049655, 10230.776959405986, 80341.6749139814 }),
+        ("L2", new[] { 59935.72115902867, 79923.39531568454, 59292.93354934215, 79157.35087256558, 58680.09799484697, 79671.58096031478, 59322.88560453347, 80437.62540343375 }, new[] { 59614.327354185414, 79540.37309412507, 58883.66975454472, 79291.89880554116, 59001.49179969022, 80054.60318187426, 59565.02462081242, 80103.90591524725 }),
+        ("W1>CL", new[] { 60746.70628584495, 89837.27798417951, 59663.4177575316, 90028.29097961317, 59816.228153878525, 90894.92180226393, 60899.516682191876, 90703.90880683027 }, new[] { 60205.062021688274, 89932.78448189635, 59566.49679117492, 90492.16847020794, 60357.8724180352, 90799.41530454709, 60714.78263118708, 90289.69469504825 }),
+    };
+
+    private static void RunZ(Action<bool, string, string> c)
+    {
+        try
+        {
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(ZDrawing()), "z-ezdxf.dxf");
+            var x = drawing.Explode();
+            var outlines = x.Entities.OfType<DxfPolyline>().ToList();
+            var paths = string.Join(",", outlines.Select(o => string.Join(">", o.Provenance.InsertPath)));
+            c(drawing.Warnings.Count == 0 && drawing.Unsupported.Count == 0 && x.Warnings.Count == 0 && outlines.Count == ZOutlines.Length
+                    && paths == string.Join(",", ZOutlines.Select(o => o.Path)),
+                "z: the eleven H1/X1/Z1/K1/L1/L2/W1 outlines are kept and exploded in order; bulges not tessellated",
+                "reader warnings " + string.Join(",", drawing.Warnings.Select(w => w.Code)) + " explode warnings " + string.Join(",", x.Warnings.Select(w => w.Code)) + " paths " + paths);
+            foreach (var (path, corners, midpoints) in ZOutlines)
+            {
+                var outline = outlines.Where(o => string.Join(">", o.Provenance.InsertPath) == path).ToList();
+                if (outline.Count != 1 || outline[0].Vertices.Count != 4 || !outline[0].Closed)
+                {
+                    c(false, "z: " + path + " outline equals ezdxf", "found " + outline.Count.ToString(CultureInfo.InvariantCulture) + " outlines");
+                    continue;
+                }
+                var v = outline[0].Vertices;
+                var mids = Enumerable.Range(0, 4).Select(i => SegmentMidpoint(v[i].Point, v[(i + 1) % 4].Point, v[i].Bulge)).ToList();
+                var worst = Enumerable.Range(0, 4).Max(i => new[]
+                {
+                    Math.Abs(v[i].Point.X - corners[2 * i]), Math.Abs(v[i].Point.Y - corners[2 * i + 1]),
+                    Math.Abs(mids[i].X - midpoints[2 * i]), Math.Abs(mids[i].Y - midpoints[2 * i + 1]),
+                }.Max());
+                c(worst <= Eps,
+                    "z: " + path + " corners and segment (arc) midpoints equal ezdxf 1.4.2 within 1e-6",
+                    "corners " + string.Join(";", v.Select(p => P(p.Point))) + " midpoints " + string.Join(";", mids.Select(P)) + " max error " + F(worst));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "z unexpected exception", error.GetType().Name + ": " + error.Message);
         }
     }
 }

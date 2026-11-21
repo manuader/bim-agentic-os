@@ -17,6 +17,8 @@ writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
   * for the tilted inserts (non-axis extrusion, which DxfReader reports as ocs-non-planar instead of projecting), the
     world XY centre the projection reading would give, used as decoy label positions.
 
+P6-34 and P6-36 extensions (chain_main, z_main) are described at their sections below.
+
 P6-32 extension (same ezdxf 1.4.2 checkout, commit 8240df57; printed after the P6-30 sections, which are unchanged):
 a second drawing (BULGE_* below, mirrored by MinsertEzdxfTests.BulgeDrawing()) whose block ARCH (base (50, 20)) holds
 a closed LWPOLYLINE with a positive (0.4) and a negative (-0.25) bulge, and whose block NEST (base (10, 10)) holds an
@@ -295,7 +297,144 @@ def chain_main():
                       + ", ".join(r(p.x) + ", " + r(p.y) for p in m) + " }),")
 
 
+
+# P6-36: the near-Z chain remainder. Same ARCH outline (vertices and bulges) as P6-32/P6-34. Every case is under an
+# enclosing near +-Z normal, where a block z reaches world XY through that normal's horizontal part:
+#   * H1 > HM: a MINSERT (2 x 2, rows and columns) at elevation 1800 (group 30) inside a near +Z INSERT at elevation 2000.
+#   * X1 > XE / XF: exact -Z (elevation -3000) and exact +Z (elevation 2200) nested inserts under a near -Z outer insert.
+#   * Z1 > ZA: Z scale 2.5 (group 43) on the near +Z outer insert, nested insert at elevation 2000.
+#   * K1: BLOCK base point z 900 (group 30 of BLOCK) under a near -Z insert.
+#   * L1 / L2: leaf LWPOLYLINE elevation (group 38) 1200 in +Z and 800 in an exact -Z OCS, under near +Z inserts.
+#   * W1 > CL: combined: near -Z outer, Z scale 1.5, elevation 1000; block CMID base z -400 holding a near +Z INSERT
+#     at elevation 600 with Z scale 0.8 of ELEV (leaf elevation 1200).
+# Outlines are computed like chain_main (composed Insert.matrix44() of every level, MINSERT cells from multi_insert();
+# matrix44 includes the Z scale, and subtracts the base point through m.transform_direction, so its z counts) and,
+# for every case without a MINSERT, cross-checked against the virtual_entities() walk within 1e-9. For each case the
+# largest XY change against the same drawing with that case's z feature removed (nested group 30, group 43, base z
+# or group 38 set to 0 / 1) is printed too, to show the case exercises it above 1e-6.
+# block, base (x, y, z), leaf (elevation, extrusion) or None, inner inserts:
+# (name, block, OCS insertion (x, y, z), rotation, sx, sy, sz, columns, rows, column spacing, row spacing, extrusion)
+Z_BLOCKS = [
+    ("ARCH", (50.0, 20.0, 0.0), (0.0, (0.0, 0.0, 1.0)), []),
+    ("HOLD", (5.0, -5.0, 0.0), None, [("HM", "ARCH", (300.0, -200.0, 1800.0), 20.0, 0.6, 0.6, 1.0, 2, 2, 1400.0, -1000.0, (1e-7, -2e-7, -1.0))]),
+    ("XHOLD", (0.0, 0.0, 0.0), None, [
+        ("XE", "ARCH", (-400.0, 700.0, -3000.0), 40.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (0.0, 0.0, -1.0)),
+        ("XF", "ARCH", (2600.0, -900.0, 2200.0), -15.0, 0.9, 0.9, 1.0, 1, 1, 0.0, 0.0, (0.0, 0.0, 1.0)),
+    ]),
+    ("ZHOLD", (0.0, 0.0, 0.0), None, [("ZA", "ARCH", (800.0, 600.0, 2000.0), 30.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (0.0, 0.0, 1.0))]),
+    ("BASEZ", (50.0, 20.0, 900.0), (0.0, (0.0, 0.0, 1.0)), []),
+    ("ELEV", (50.0, 20.0, 0.0), (1200.0, (0.0, 0.0, 1.0)), []),
+    ("ELEVM", (50.0, 20.0, 0.0), (800.0, (0.0, 0.0, -1.0)), []),
+    ("CMID", (5.0, 5.0, -400.0), None, [("CL", "ELEV", (-700.0, 300.0, 600.0), -25.0, 1.1, 1.1, 0.8, 1, 1, 0.0, 0.0, (2e-7, 1e-7, 1.0))]),
+]
+Z_CASES = [
+    ("H1", "HOLD", (90000.0, 30000.0, 2000.0), 15.0, 1.1, 1.1, 1.0, 1, 1, 0.0, 0.0, (3e-7, -2e-7, 1.0)),
+    ("X1", "XHOLD", (-90000.0, 40000.0, 500.0), 25.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (2e-7, 3e-7, -1.0)),
+    ("Z1", "ZHOLD", (30000.0, -70000.0, 0.0), 10.0, 1.0, 1.0, 2.5, 1, 1, 0.0, 0.0, (-2e-7, 1e-7, 1.0)),
+    ("K1", "BASEZ", (-30000.0, -60000.0, 0.0), 30.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (2e-7, -3e-7, -1.0)),
+    ("L1", "ELEV", (10000.0, 80000.0, 0.0), -20.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (-3e-7, -1e-7, 1.0)),
+    ("L2", "ELEVM", (60000.0, 80000.0, 0.0), 50.0, 1.0, 1.0, 1.0, 1, 1, 0.0, 0.0, (1e-7, 3e-7, 1.0)),
+    ("W1", "CMID", (-60000.0, 90000.0, 1000.0), 35.0, 1.0, 1.0, 1.5, 1, 1, 0.0, 0.0, (-2e-7, -2e-7, -1.0)),
+]
+# The z feature each case exercises, removed for the "dropped" comparison: block or insert name -> what is removed
+# (z: the OCS insertion z; sz: the Z scale; basez: the BLOCK base point z; elev: the leaf LWPOLYLINE elevation).
+Z_DROPS = {
+    "H1": {"HM": "z"},
+    "X1": {"XE": "z", "XF": "z"},
+    "Z1": {"Z1": "sz"},
+    "K1": {"BASEZ": "basez"},
+    "L1": {"ELEV": "elev"},
+    "L2": {"ELEVM": "elev"},
+    "W1": {"W1": "sz", "CL": "z", "CMID": "basez", "ELEV": "elev"},
+}
+
+
+def z_drop_case(case, drop):
+    name, block, ins, rot, sx, sy, sz, cols, rows, csp, rsp, ext = case
+    if drop.get(name) == "z":
+        ins = (ins[0], ins[1], 0.0)
+    if drop.get(name) == "sz":
+        sz = 1.0
+    return (name, block, ins, rot, sx, sy, sz, cols, rows, csp, rsp, ext)
+
+
+def z_add_insert(layout, case):
+    name, block, ins, rot, sx, sy, sz, cols, rows, csp, rsp, ext = case
+    e = layout.add_blockref(block, ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "zscale": sz, "extrusion": ext})
+    if cols > 1 or rows > 1:
+        e.dxf.column_count = cols
+        e.dxf.row_count = rows
+        e.dxf.column_spacing = csp
+        e.dxf.row_spacing = rsp
+    return e
+
+
+def build_z(drop=None):
+    drop = drop or {}
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    inner, leaf = {}, {}
+    for block, base, lw, cases in Z_BLOCKS:
+        bz = 0.0 if drop.get(block) == "basez" else base[2]
+        layout = doc.blocks.new(block, base_point=(base[0], base[1], bz))
+        if lw is not None:
+            elevation, extrusion = lw
+            if drop.get(block) == "elev":
+                elevation = 0.0
+            leaf[block] = layout.add_lwpolyline(BULGE_ARCH, format="xyb", close=True, dxfattribs={"elevation": elevation, "extrusion": extrusion})
+        inner[block] = [(case[0], case[1], z_add_insert(layout, z_drop_case(case, drop))) for case in cases]
+    msp = doc.modelspace()
+    return leaf, inner, [(case[0], case[1], z_add_insert(msp, z_drop_case(case, drop))) for case in Z_CASES]
+
+
+def z_walk(leaf, inner, insert_path, block, m):
+    if block in leaf:
+        lw = leaf[block].copy()
+        lw.transform(m)
+        yield insert_path, lw
+    for name, child, e in inner[block]:
+        for key, cell in cell_keys(name, e):
+            yield from z_walk(leaf, inner, insert_path + [key], child, cell.matrix44() * m)
+
+
+def z_outlines(drop=None):
+    leaf, inner, top = build_z(drop)
+    out = {}
+    for name, block, e in top:
+        for key, cell in cell_keys(name, e):
+            for path_, lw in z_walk(leaf, inner, [key], block, cell.matrix44()):
+                out[">".join(path_)] = (name, e, lw)
+    return out
+
+
+def z_main():
+    print("// P6-36 z outlines: (path, corner xy * 4, segment midpoint xy * 4)")
+    outlines = z_outlines()
+    for key, (name, e, lw) in outlines.items():
+        c = list(lw.vertices_in_wcs())
+        m = list(midpoints(lw))
+        assert len(c) == 4 and len(m) == 4, (c, m)
+        if e.dxf.column_count <= 1 and e.dxf.row_count <= 1 and name != "H1":
+            # cross-check against ezdxf's virtual_entities() walk (no MINSERT in these chains)
+            others = [v for v in leaves(e) if v.dxftype() == "LWPOLYLINE"] if name not in ("K1", "L1", "L2") else [v for v in e.virtual_entities() if v.dxftype() == "LWPOLYLINE"]
+            match = [o for o in others if all(abs(a.x - b.x) <= 1e-9 and abs(a.y - b.y) <= 1e-9 for a, b in zip(c, o.vertices_in_wcs(), strict=True))]
+            assert len(match) == 1, (key, c, [list(o.vertices_in_wcs()) for o in others])
+        print('("' + key + '", new[] { ' + ", ".join(r(p.x) + ", " + r(p.y) for p in c) + " }, new[] { "
+              + ", ".join(r(p.x) + ", " + r(p.y) for p in m) + " }),")
+    print("// P6-36 largest XY change when the case's z feature is removed: (path, change)")
+    for case in Z_CASES:
+        name = case[0]
+        dropped = z_outlines(Z_DROPS[name])
+        for key, (_, _, lw) in outlines.items():
+            if key.split(">")[0].split("[")[0] != name:
+                continue
+            a = list(lw.vertices_in_wcs())
+            b = list(dropped[key][2].vertices_in_wcs())
+            print("// " + key + " " + r(max(max(abs(p.x - q.x), abs(p.y - q.y)) for p, q in zip(a, b, strict=True))))
+
+
 if __name__ == "__main__":
     main()
     bulge_main()
     chain_main()
+    z_main()

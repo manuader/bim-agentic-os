@@ -221,7 +221,10 @@ public static class DxfReader
                     var name = (record.First(2) ?? record.First(3))?.Value.Trim() ?? "";
                     var x = record.First(10) is { } bx ? DxfValues.Number(bx) : 0;
                     var y = record.First(20) is { } by ? DxfValues.Number(by) : 0;
-                    current = new BlockBuilder(name, new Point2(x, y), record.First(5)?.Value.Trim(), record.Line);
+                    current = new BlockBuilder(name, new Point2(x, y), record.First(5)?.Value.Trim(), record.Line)
+                    {
+                        BaseZ = record.First(30) is { } bz ? DxfValues.Number(bz) : 0,
+                    };
                 }
                 else if (record.Type == "ENDBLK")
                 {
@@ -238,7 +241,7 @@ public static class DxfReader
         {
             if (block.Name.Length == 0) { Warn("block-invalid", block.Line, "BLOCK without a name ignored"); return; }
             if (!blockNames.Add(block.Name)) { Warn("duplicate-block", block.Line, "duplicate BLOCK " + block.Name + " ignored"); return; }
-            blocks.Add(new DxfBlock(block.Name, block.BasePoint, block.Handle, block.Line, block.Entities.ToArray()));
+            blocks.Add(new DxfBlock(block.Name, block.BasePoint, block.Handle, block.Line, block.Entities.ToArray()) { BaseZ = block.BaseZ });
         }
 
         public void ReadEntities(List<DxfRecord> records)
@@ -327,6 +330,7 @@ public static class DxfReader
     {
         public string Name { get; } = name;
         public Point2 BasePoint { get; } = basePoint;
+        public double BaseZ { get; init; }
         public string? Handle { get; } = handle;
         public int Line { get; } = line;
         public List<DxfEntity> Entities { get; } = new();
@@ -390,6 +394,8 @@ public static class DxfReader
                         if (declared is { } count && count != vertices.Count)
                             state.Warn("vertex-count-mismatch", r.Line, "LWPOLYLINE declares " + count.ToString(CultureInfo.InvariantCulture) + " vertices but has " + vertices.Count.ToString(CultureInfo.InvariantCulture));
                         var frame = OcsFrame.Read(r);
+                        // P6-36: the plane's world height, used only under an enclosing near +-Z insert.
+                        var planeZ = frame.IsHorizontal ? frame.ToWorld(0, 0, r.First(38) is { } pz ? DxfValues.Number(pz) : 0).Z : 0;
                         if (frame.Kind == OcsKind.Mirrored) vertices = vertices.Select(v => new DxfVertex(frame.Place(v.Point, r, 38), -v.Bulge)).ToList();
                         else if (frame.Kind == OcsKind.World && !frame.Exact) vertices = vertices.Select(v => new DxfVertex(frame.Place(v.Point, r, 38), v.Bulge)).ToList();
                         else if (frame.Kind == OcsKind.Tilted)
@@ -402,9 +408,10 @@ public static class DxfReader
                             var size = Math.Max(1, world.Max(w => Math.Max(Math.Abs(w.X), Math.Max(Math.Abs(w.Y), Math.Abs(w.Z)))));
                             if (world.Any(w => !(Math.Abs(w.Z - world[0].Z) <= OcsFrame.Tolerance * size))) return NotPlanar(p, state, frame);
                             vertices = world.Select(w => new DxfVertex(new Point2(w.X, w.Y), 0)).ToList();
+                            planeZ = world[0].Z;
                         }
                         else if (frame.Kind == OcsKind.Invalid) return NotPlanar(p, state, frame);
-                        return new DxfPolyline(p, vertices.ToArray(), (flags & 1) != 0);
+                        return new DxfPolyline(p, vertices.ToArray(), (flags & 1) != 0) { Elevation = planeZ };
                     }
                 case "TEXT":
                 case "MTEXT":
@@ -510,6 +517,7 @@ public static class DxfReader
                             Elevation = height,
                             ZAxisXY = frame.Exact ? default : new Point2(frame.Normal.X, frame.Normal.Y),
                             ZAxisZ = frame.Normal.Z,
+                            ScaleZ = r.First(43) is { } gz ? DxfValues.Number(gz) : 1,
                         };
                     }
                 default:
