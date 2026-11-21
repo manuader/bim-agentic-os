@@ -33,6 +33,8 @@ namespace Bim.Cli;
 // List(skillsDirectory) is the shared handler (the MCP skill_list tool, P5-22): it never prints and never throws.
 // P5-31: the internal-error diagnostic reaches stderr only through WriteDiagnostic (Run here, the MCP tool there), which
 // ignores a Console.Error that throws while the line is written: the typed line and exit 1 still follow, nothing escapes.
+// P5-33: Run prints the line guarded too: a Console.Out that throws while the typed internal-error, refusal or success line
+// is written drops only that line: exit 1, nothing escapes Run (the GenerateWrite.cs P7-29 pattern).
 internal static class SkillListCommand
 {
     public const string Verb = "skill-list";
@@ -55,7 +57,8 @@ internal static class SkillListCommand
         try { envelope = Execute(args); }
         catch (Exception error) { envelope = IntentPlan.Internal("skill-list", error); }
         WriteDiagnostic(envelope);
-        (envelope with { Diagnostic = null }).Print();
+        try { (envelope with { Diagnostic = null }).Print(); }
+        catch (Exception) { Environment.ExitCode = 1; }
     }
 
     // P5-31: the envelope's internal-error diagnostic, if any, on stderr once; a Console.Error that throws is ignored.
