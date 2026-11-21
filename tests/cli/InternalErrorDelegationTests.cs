@@ -466,6 +466,15 @@ internal static class InternalErrorDelegationTests
                     ("the read moved into a stored anonymous method with parameters", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
                     ("the read moved into a block lambda passed as an argument", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
                     ("the read moved into a stored expression lambda", declaration + "\nstatic void W() { Action later = () => " + read + " later(); }\n", false),
+                    // P3-33: local functions, and lambdas with an attribute or an explicit return type before the parameter list.
+                    ("the read moved into a local function (planted)", declaration + "\nstatic void W() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read nested in a block inside a static local function with parameters", declaration + "\nstatic void W() { static void Later(int n) { if (n > 0) { " + read + " } } Later(1); }\n", false),
+                    ("the read moved into an expression-bodied local function", declaration + "\nstatic void W() { void Later() => " + read + " Later(); }\n", false),
+                    ("an unrelated local function closed before the pinned read", declaration + "\nstatic void W() { void Unrelated() { } Unrelated(); try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the read moved into an attributed block lambda (planted)", declaration + "\nstatic void W() { Action later = [Obsolete] () => { " + read + " }; later(); }\n", false),
+                    ("the read moved into a block lambda with an explicit return type", declaration + "\nstatic void W() { Func<int> later = int () => { " + read + " return 0; }; later(); }\n", false),
+                    ("the read moved into an attributed lambda with an explicit return type passed as an argument", declaration + "\nstatic void W() { Task.Run([Obsolete] void () => { " + read + " }); }\n", false),
+                    ("an unrelated attributed lambda with an explicit return type closed before the pinned read", declaration + "\nstatic void W() { Func<int> unrelated = [Obsolete] int () => { return 0; }; try { " + read + " } catch (Exception) { throw; } }\n", true),
                 };
                 if (full)
                 {
@@ -506,9 +515,9 @@ internal static class InternalErrorDelegationTests
                     selfTests++;
                 }
             }
-            // 8 lambda/anonymous-method cases for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form
-            // cases for each of the four new seams.
-            Check(selfTests == 9 * 8 + 2 * (16 + 1) + 2 * (16 + 2), "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) for each of the 9 seams;
+            // 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 214.
+            Check(selfTests == 9 * (8 + 8) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 214, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
