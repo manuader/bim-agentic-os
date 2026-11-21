@@ -1316,7 +1316,8 @@ internal static class SkillListTests
 
         // Drifted lock: xx.p534a.pack's sidecar note edited after pinning; the locked load refuses before any selection.
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited.
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited (the line and the
+        // usage line confirmed by the P5-34 red probe run 44911652955 on macOS).
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
@@ -1325,14 +1326,6 @@ internal static class SkillListTests
         Case("code selection over a drifted lock", new[] { "--code", DuplicateCode }, 1, DriftLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
-        // P5-34 red probe (removed in the green commit): the measured lines of one real process per case.
-        var measured = new[]
-        {
-            new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" },
-            new[] { "--code", DuplicateCode },
-            new[] { "--code", CodeA, "--country", "Other Country" },
-        }.Select(selection => Child(new[] { "jurisdiction-resolve" }.Concat(selection).Concat(new[] { "--lock", lockPath }).ToArray())).Select(D);
-        Check(false, "probe: measured drifted-lock and usage lines", string.Join(" || ", measured));
     }
 
     // Reads of the skills directory skill-list must never make itself (P5-24): only JurisdictionRegistry.Load reads it.

@@ -547,15 +547,14 @@ internal static class TwiceReadToolTests
         });
 
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited.
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited (confirmed by the
+        // P5-34 red probe run 44911652955 on Linux and Windows).
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
         Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
         {
             ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], DriftLine, false),
             ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], DriftLine, false),
         });
-        // P5-34 red probe (removed in the green commit): the measured drifted-lock line of the packaged CLI.
-        Check(false, "probe: measured drifted-lock line | " + Cli(["jurisdiction-resolve", "--code", DuplicateCode, "--lock", lockPath]).Out);
     }
 
     static void CopyDirectory(string source, string target)
