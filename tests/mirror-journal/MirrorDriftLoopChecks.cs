@@ -2385,13 +2385,14 @@ static class MirrorDriftLoopChecks
             void Relation(bool relation, string name) => Check(precondition && relation, name, macDetail);
             // P2-39: a kernel that rounds the lowered send buffer (kept != requested) is a named setup red carrying the
             // measured value, not a relation red.
-            var keptLowered = lowered - 1; // P2-39 planted red: simulated kernel rounding
-            Check(leversOk && keptLowered == requestedLowered,
-                "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + keptLowered + ", requested=" + requestedLowered + " = 3/4 of default " + loweredLever.Default + ")", macDetail);
+            // P2-39 probe red (run 44927109449) planted lowered - 1: named red "measured lowered=6143, requested=6144".
+            Check(leversOk && lowered == requestedLowered,
+                "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + requestedLowered + " = 3/4 of default " + loweredLever.Default + ")", macDetail);
             // P2-39: the lowered queued/handed relation, once; its planted self-test proves it rejects handed == 2 x read
             // (the precondition's lowered != read makes read + lowered != 2 x read), so no separate != 2 x read clause.
             bool LoweredCounts(long queued, long handedBytes) => queued == lowered && handedBytes == MidArgsBreakBytes + lowered && handedBytes % chunk == 0;
-            Relation(LoweredCounts(lowered, 2 * MidArgsBreakBytes), // P2-39 planted red: must be rejected
+            // P2-39 probe red (run 44927109449) asserted acceptance and failed: the relation rejects handed 8192 == 2 x read.
+            Relation(!LoweredCounts(lowered, 2 * MidArgsBreakBytes),
                 "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (" + 2 * MidArgsBreakBytes + ") with queued == lowered (" + lowered + ")");
             Relation(seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
                 && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
