@@ -2463,7 +2463,6 @@ internal static class GeneratePrototypesTests
         }
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
         const string Loop = @"\b(?:for|foreach|while|do|goto)\b";
-        if (write.Length >= 0) return new List<string>(); // P7-34 RED probe: stubbed pin, the mutation self-tests must fail
         var problems = new List<string>();
         if (Count(write, @"\b(?:Auto)?Flush(?:Async)?\b") != 0) problems.Add("GenerateWrite.cs names Flush");
         var run = Body(write, @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{");
