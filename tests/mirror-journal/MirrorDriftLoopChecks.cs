@@ -2352,7 +2352,7 @@ static class MirrorDriftLoopChecks
             // The fake raises its receive buffer relative to its own defaults (header), so the precondition is checked on
             // its own: a red there is a setup failure (a lever or SetReceiveBuffer sentinel), not a relation failure.
             // P2-37: the raised value must also be a whole number of 1024-byte pieces (an odd kernel rounding is a setup
-            // red, not a relation red). A second seam run lowers the send buffer to half its default (also a multiple of the
+            // red, not a relation red). A second seam run lowers the send buffer (P2-38: 3/4 of its default; also a multiple of the
             // piece); its queued and handed move down the same way. Every value is logged once in a ::notice:: line.
             // P2-37 probe red (run 44853016956): wire 39757, read 4096, InBufferSize 32768, default send buffer 8192;
             // raised 16384 -> queued 16384, handed 20480; lowered 4096 -> queued 4096, handed 8192; CLI queued 8192.
