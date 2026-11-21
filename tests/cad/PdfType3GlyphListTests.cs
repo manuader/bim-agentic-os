@@ -596,6 +596,145 @@ internal static class PdfType3GlyphListTests
                 I(cutStart) + ".." + I(cutEnd) + " " + (SwallowGuard(content, ContentAnchors) ?? "passed") + " / " + (SwallowGuard(cut, ContentAnchors) ?? "passed"));
         }
         catch (Exception error) { C(false, "p6-33 unexpected", error.GetType().Name + ": " + error.Message); }
+
+        // ---------- P6-35: malformed form /Matrix, cm and Do message shapes, the Do operand-error through the cad-brief CLI ----------
+        try
+        {
+            string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
+            static string R(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+            string Origins(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => R(t.Origin.X) + "," + R(t.Origin.Y) + " h" + R(t.Height)));
+            var e60 = "1" + new string('0', 60);
+            // Form 8 (no /Resources, so /F2 is the page's Helvetica) with the /Matrix entry given verbatim; object 9 is the
+            // number 100 for an indirect entry.
+            static (int Number, byte[] Body) RawForm(string matrixEntry, string content) =>
+                (8, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + matrixEntry, L(content)));
+            const string formShow = "BT /F2 10 Tf 1 0 0 1 10 10 Tm (A) Tj ET";
+            PdfDocument Scaled(string matrixEntry) => PdfToUnicodeTests.Page("2 0 0 2 0 0 cm /X1 Do", Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>",
+                RawForm(matrixEntry, formShow), (9, L("100")));
+
+            // (1) A /Matrix that is present but not an array of exactly six numbers (5 or 7 entries, a name, a string or an
+            // array entry, an empty array, a number or a dictionary instead of an array). Measured before P6-35: read as the
+            // identity silently. Documented one way (P6-35), as cm with bad operands: operand-error at the Do
+            // ('Do /X1 expects a /Matrix of 6 numbers; the identity matrix is used') and the form runs under the current CTM
+            // (page CTM 2: the form Tj is at (20, 20), height 20). Page: cm 0, Do 1. Form: BT 0, Tf 1, Tm 2, Tj 3, ET 4.
+            const string malformedMessage = "Do /X1 expects a /Matrix of 6 numbers; the identity matrix is used";
+            foreach (var (entry, what) in new[]
+            {
+                (" /Matrix [1 0 0 1 100]", "5 entries"), (" /Matrix [1 0 0 1 100 0 0]", "7 entries"), (" /Matrix [1 0 0 1 /X 0]", "a name entry"),
+                (" /Matrix [1 0 0 1 (100) 0]", "a string entry"), (" /Matrix [1 0 0 1 [100] 0]", "an array entry"), (" /Matrix []", "an empty array"),
+                (" /Matrix 5", "a number"), (" /Matrix << /A 1 >>", "a dictionary"), (" /Matrix [1 0 0 1 7 0 R 0]", "an entry that is a font dictionary"),
+            })
+            {
+                var malformed = Scaled(entry);
+                C(Texts(malformed) == "A" && Warnings(malformed) == "operand-error@1:4:1" && Messages(malformed) == malformedMessage && Origins(malformed) == "20,20 h20",
+                    "a form /Matrix with " + what + " gives operand-error at the Do and the form runs under the current CTM, text bytes unchanged (P6-35)",
+                    Texts(malformed) + " " + Warnings(malformed) + " " + Messages(malformed) + " " + Origins(malformed));
+            }
+            // Controls: six numbers (one of them indirect) compose silently; an absent /Matrix, /Matrix null and a dangling
+            // reference read as absent (the identity, silent), as before.
+            foreach (var (entry, what, origin) in new[]
+            {
+                (" /Matrix [1 0 0 1 100 0]", "six direct numbers", "220,20 h20"), (" /Matrix [1 0 0 1 9 0 R 0]", "six numbers, one indirect", "220,20 h20"),
+                ("", "no /Matrix", "20,20 h20"), (" /Matrix null", "/Matrix null", "20,20 h20"), (" /Matrix 99 0 R", "a dangling /Matrix reference", "20,20 h20"),
+            })
+            {
+                var good = Scaled(entry);
+                C(Texts(good) == "A" && Warnings(good) == "" && Origins(good) == origin,
+                    "control: a form with " + what + " gives no Do warning and the form Tj is at " + origin + " (P6-35)", Texts(good) + " " + Warnings(good) + " " + Origins(good));
+            }
+
+            // (2) cm and Do messages: the same code (operand-error) and the same outcome (the matrix is not applied), but
+            // different words, pinned as they are. cm reports only its operands ('cm expects 6 numbers', 'cm gives a
+            // non-finite matrix'); a Do names the XObject and says what is used instead because the form still runs.
+            // Page: cm 0 (4 operands), cm 1-6 (1e60 each, the sixth overflows), Do 7.
+            var shapes = PdfToUnicodeTests.Page("1 0 0 1 cm " + string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 6)) + "/X1 Do",
+                Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>", RawForm(" /Matrix [" + e60 + " 0 0 " + e60 + " 0 0]", formShow));
+            C(Warnings(shapes) == "operand-error@1:4:0;operand-error@1:4:6;operand-error@1:4:7"
+                && Messages(shapes) == "cm expects 6 numbers / cm gives a non-finite matrix / Do /X1 gives a non-finite form matrix; the current matrix is kept",
+                "cm and Do give operand-error with different, pinned messages for bad operands and non-finite results (P6-35)", Warnings(shapes) + " " + Messages(shapes));
+
+            // (3) The Do operand-errors through the real cad-brief CLI (interfaces/cli Release Bim.Cli.dll). The cad-brief
+            // document carries only BriefExtract findings, never PdfDocument.Warnings (the documented limit of the cad-brief
+            // section in docs/contracts, as for DXF reader warnings since P6-34), so neither Do warning is in it: the CLI
+            // writes exactly the bytes of the document built in process, both digests pinned. Page: q 0, cm 1-5, Do 6, Q 7,
+            // BT 8, Tf 9, Tm 10, Tj 11, ET 12 (overflow: /Matrix 1e60 under CTM 1e300; malformed: 5 entries).
+            var root = Path.GetFullPath(Path.Combine(fixtures, "..", "..", ".."));
+            var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+            C(File.Exists(cliDll), "p6-35 cli precondition: the Release Bim.Cli.dll exists (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
+            if (File.Exists(cliDll))
+            {
+                var cliPage = "q " + string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do Q BT /F2 10 Tf 1 0 0 1 50 50 Tm (Sala 12 m2) Tj ET";
+                var json = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+                var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
+                static string Hash16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
+                var scratch = Path.Combine(Path.GetTempPath(), "bim-cad-p635-" + I(Environment.ProcessId));
+                if (Directory.Exists(scratch)) Directory.Delete(scratch, true);
+                Directory.CreateDirectory(scratch);
+                try
+                {
+                    foreach (var (label, matrix, warning, pinned) in new[]
+                    {
+                        ("overflow", e60 + " 0 0 " + e60 + " 0 0", "Do /X1 gives a non-finite form matrix; the current matrix is kept", "PENDING-OVERFLOW"),
+                        ("malformed", "1 0 0 1 100", malformedMessage, "PENDING-MALFORMED"),
+                    })
+                    {
+                        var file = label + ".pdf";
+                        var bytes = PdfToUnicodeTests.PageBytes(cliPage, Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>", null, RawForm(" /Matrix [" + matrix + "]", "q Q"));
+                        // The document CadCommand writes for a PDF cad-brief without a scale option (interfaces/cli/CadCommand.cs).
+                        var pdf = PdfReader.Parse(bytes, file, new PdfReadOptions(MaxBytes: 32 * 1024 * 1024));
+                        var result = BriefExtract.FromPdf(pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false });
+                        var document = new
+                        {
+                            kind = "cad-brief",
+                            version = 1,
+                            persisted = false,
+                            source = new { file, format = "pdf", bytes = bytes.LongLength, sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)), page = (int?)1, scale = "none", metres_per_unit = result.MetresPerUnit },
+                            brief = System.Text.Json.Nodes.JsonNode.Parse(Bim.Core.BriefSerializer.Serialize(result.Brief)),
+                            rooms = result.Rooms,
+                            uncertainties = result.Uncertainties,
+                            issues = result.Issues,
+                        };
+                        var expected = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(document, json);
+                        C(Warnings(pdf) == "operand-error@1:4:6" && Messages(pdf) == warning,
+                            "cli " + label + " premise: in process the page has only the Do operand-error (P6-35)", Warnings(pdf) + " " + Messages(pdf));
+
+                        var input = Path.Combine(scratch, file);
+                        var output = Path.Combine(scratch, label + ".json");
+                        File.WriteAllBytes(input, bytes);
+                        var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+                        foreach (var argument in new[] { cliDll, "cad-brief", input, output }) start.ArgumentList.Add(argument);
+                        using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+                        var stdout = process.StandardOutput.ReadToEndAsync();
+                        var stderr = process.StandardError.ReadToEndAsync();
+                        if (!process.WaitForExit(180000))
+                        {
+                            try { process.Kill(true); } catch (Exception e) when (e is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException) { }
+                            C(false, "cli " + label + " finishes (P6-35)", "timed out");
+                            continue;
+                        }
+                        process.WaitForExit();
+                        var written = File.Exists(output) ? File.ReadAllBytes(output) : Array.Empty<byte>();
+                        var firstDiff = Enumerable.Range(0, Math.Min(written.Length, expected.Length)).FirstOrDefault(i => written[i] != expected[i], -1);
+                        var text = Encoding.UTF8.GetString(written);
+                        C(process.ExitCode == 0 && written.Length > 0 && written.AsSpan().SequenceEqual(expected),
+                            "cli " + label + ": cad-brief writes exactly the in-process document bytes (P6-35)",
+                            "exit " + I(process.ExitCode) + " stdout " + stdout.Result.Trim() + " stderr " + stderr.Result.Trim() + " cli " + I(written.Length) + " bytes "
+                            + (written.Length > 0 ? Hash16(written) : "-") + " in-process " + I(expected.Length) + " bytes " + Hash16(expected) + " first difference " + I(firstDiff)
+                            + (firstDiff < 0 ? "" : " cli '" + Encoding.UTF8.GetString(written, firstDiff, Math.Min(120, written.Length - firstDiff)) + "'"));
+                        C(written.Length > 0 && Hash16(written) == pinned && !text.Contains("operand-error", StringComparison.Ordinal) && !text.Contains("/Matrix", StringComparison.Ordinal)
+                            && !text.Contains("form matrix", StringComparison.Ordinal) && text.Contains("Sala", StringComparison.Ordinal),
+                            "cli " + label + ": document digest pinned " + pinned + "; the Do operand-error is not in it (documented limit, P6-35)",
+                            "digest " + (written.Length > 0 ? Hash16(written) : "-") + " bytes " + I(written.Length) + " " + text);
+                    }
+                }
+                finally
+                {
+                    try { Directory.Delete(scratch, true); } catch (Exception e) when (e is IOException or UnauthorizedAccessException) { }
+                }
+            }
+        }
+        catch (Exception error) { C(false, "p6-35 unexpected", error.GetType().Name + ": " + error.Message); }
     }
 
     // P6-33: member anchors of the stripped sources, in source order, for the shared swallow guard. They are spread over
