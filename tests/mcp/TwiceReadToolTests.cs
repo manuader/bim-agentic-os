@@ -296,7 +296,9 @@ internal static class TwiceReadToolTests
 
         static string Succeeded(string code, string pack, bool stub) =>
             "{\"status\":\"succeeded\",\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"version\":\"1.2.3\",\"stub\":" + (stub ? "true" : "false") + "}";
-        const string UnknownLine = "P532M-PROBE-UNKNOWN";
+        // Pinned from red run 44841766427 (the MCP jurisdiction_unknown placeholder reported this line; registered codes in
+        // ordinal order). The json_invalid message is the .NET 8 System.Text.Json text first observed in P5-30 run 44731149194.
+        const string UnknownLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_unknown\",\"subject\":\"fixture country/nowhere else\",\"detail\":\"no registered jurisdiction matches; registered: xx.p532m, xx.p532t\"}";
         const string StubRefusedLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_stub_refused\",\"subject\":\"xx.p532t\",\"detail\":\"jurisdiction xx.p532t is a stub example pack (xx.p532t.pack), not real law; pass allowStub to use it\"}";
         const string StubRefusedByMetadataLine = StubRefusedLine;
         const string JsonMessage = "Expected start of a property name or value, but instead reached end of data. LineNumber: 0 | BytePositionInLine: 29.";
