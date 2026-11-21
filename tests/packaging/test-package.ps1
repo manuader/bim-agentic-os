@@ -1459,10 +1459,27 @@ try {
                 $p733Os = if ($IsWindows) { 'Windows' } else { 'Linux' }
                 $p733Caba = 'ar.caba.codigo-edificacion'
                 $p733Typology = 'bim.typology.vivienda-unifamiliar'
-                # SHA-256 of the canonical generate-prototypes document for $p733Prototypes (pipeline_status infeasible).
-                $p733InfeasibleSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
-                # The full tools/list name catalogue of the packaged server, in listed order.
-                $p733Catalogue = [string[]]@()
+                # SHA-256 of the canonical generate-prototypes document for $p733Prototypes (pipeline_status infeasible, 5559 bytes),
+                # identical on Linux and Windows (observed in CI run 44841962105 on core and core-windows).
+                $p733InfeasibleSha256 = '6d4a993dfbefe530f19892d7b676eec8ff1cea6c42f438e9dc26b6489fa0144c'
+                # The full tools/list name catalogue of the packaged server, in listed order: the 17 core tools, then one revit_<command>
+                # per RevitCommandCatalogue entry (79 names, observed in CI run 44841962105 on core and core-windows).
+                $p733Catalogue = [string[]]@(
+                    'diff', 'validate', 'room', 'plan', 'mirror_drift', 'mirror_drift_select',
+                    'mirror_drift_adopt', 'skills_lock_verify', 'audit_verify', 'diff_intent', 'generate_typology', 'doc_update',
+                    'plan_layouts', 'doc_realized', 'generate_prototypes', 'jurisdiction_resolve', 'skill_list', 'revit_query_levels',
+                    'revit_query_wall_types', 'revit_query_floor_types', 'revit_query_family_symbols', 'revit_wall_create', 'revit_opening_place', 'revit_floor_create',
+                    'revit_room_create', 'revit_query_roof_types', 'revit_roof_create_footprint', 'revit_stair_create', 'revit_curtain_wall_create', 'revit_floor_create_opening',
+                    'revit_query_view_family_types', 'revit_query_view_templates', 'revit_view_create_plan', 'revit_view_create_section', 'revit_view_create_3d', 'revit_query_snapshot',
+                    'revit_query_journal', 'revit_query_elements', 'revit_query_inspect', 'revit_query_grids', 'revit_query_structural_types', 'revit_grid_create',
+                    'revit_structural_column_create', 'revit_structural_beam_create', 'revit_foundation_create_isolated', 'revit_foundation_create_wall', 'revit_query_title_blocks', 'revit_dimension_create_linear',
+                    'revit_tag_create', 'revit_schedule_create', 'revit_sheet_create', 'revit_sheet_place_view', 'revit_element_set_parameter', 'revit_element_delete',
+                    'revit_query_materials', 'revit_roof_type_create', 'revit_family_load', 'revit_family_instance_place', 'revit_query_toposolid_types', 'revit_toposolid_create',
+                    'revit_toposolid_create_subdivision', 'revit_wall_set_profile', 'revit_query_fill_patterns', 'revit_material_create', 'revit_material_set', 'revit_wall_type_create',
+                    'revit_floor_type_create', 'revit_element_change_type', 'revit_view_export_image', 'revit_document_save', 'revit_document_save_copy', 'revit_document_save_as',
+                    'revit_roof_create_extrusion', 'revit_direct_shape_create', 'revit_element_move', 'revit_element_copy', 'revit_element_rotate', 'revit_element_mirror',
+                    'revit_command_batch'
+                )
                 $p733Prototypes = '{"typology":3,"lot":{"width_m":3,"depth_m":3},"alternatives":2,"seed":0,"pack":"' + $p733Caba + '"}'
                 $p733PrototypesPath = Join-Path $p733Io 'prototypes.json'
                 Write-PackageText $p733PrototypesPath $p733Prototypes
