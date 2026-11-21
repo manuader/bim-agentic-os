@@ -253,7 +253,8 @@ internal static class JurisdictionResolveToolTests
                 .Select(f => Path.GetFileName(f)).ToArray();
             Check(owners.Length == 0, "no interfaces/mcp source loads or selects a jurisdiction itself [" + string.Join(", ", owners) + "]");
             var command = System.Text.RegularExpressions.Regex.Replace(CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs"))), @"\s+", "");
-            Check(command.Contains("Resolve(args).Print()", StringComparison.Ordinal), "the CLI verb prints the very envelope the tool runs (Run is Resolve(args).Print())");
+            Check(command.Contains("varenvelope=Resolve(args);SkillListCommand.WriteDiagnostic(envelope);(envelopewith{Diagnostic=null}).Print();", StringComparison.Ordinal),
+                "the CLI verb prints the very envelope the tool runs (P5-33: Run prints Resolve(args) without its diagnostic after the guarded SkillListCommand.WriteDiagnostic)");
             foreach (var project in new[] { Path.Combine(root, "interfaces", "mcp", "Bim.Mcp.csproj"), Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj"),
                 Path.Combine(root, "tests", "cli", "Bim.Cli.Tests.csproj"), Path.Combine(root, "tests", "revit-commands", "Bim.RevitCommands.Tests.csproj") })
             {

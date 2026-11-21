@@ -424,17 +424,7 @@ internal static class SkillListToolTests
         }
     }
 
-    // P5-31: a stderr whose every write throws the given exception (attempts counted); nothing is ever stored.
-    sealed class RejectingWriter(Exception failure) : TextWriter
-    {
-        public int Attempts { get; private set; }
-        public override Encoding Encoding => Encoding.UTF8;
-        public override void Write(char value) { Attempts++; throw failure; }
-        public override void Write(char[] buffer, int index, int count) { Attempts++; throw failure; }
-        public override void Write(string? value) { Attempts++; throw failure; }
-        public override void WriteLine(string? value) { Attempts++; throw failure; }
-        public override void Flush() { }
-    }
+    // P5-33: RejectingWriter is the shared tests/cli/RejectingWriter.cs (linked by Bim.Mcp.Tests.csproj).
 
     static void CopyDirectory(string source, string target)
     {
