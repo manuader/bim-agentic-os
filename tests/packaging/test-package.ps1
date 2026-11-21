@@ -1506,8 +1506,10 @@ try {
                 $p733LayoutsSha256 = 'd7036e1357bf7ec69395a812db1f92e53a7b39739cd87abbe18ca61234dc176e'
                 # P7-37: SHA-256 and byte length of the packaged generate-typology document for $p737RankedPath (family 3 on a 16 x 16 m
                 # lot, 4 alternatives, seed 0, project id ...07a7: the P5-12 ranked request), from the CLI file and the MCP text alike.
-                $p737RankedSha256 = '0000000000000000000000000000000000000000000000000000000000000000'
-                $p737RankedLength = 0
+                # Pipeline_status ranked, 92013 bytes; identical on Linux and Windows (observed in CI run 44911352555 on core and
+                # core-windows) and equal to the P5-12 in-process pin (TypologyPipelineTests.PinnedAcceptedSha256).
+                $p737RankedSha256 = 'eb8720c1a98a749048df6ac69f1794b965e833efc963eb9ddfe58db0ae886f4e'
+                $p737RankedLength = 92013
                 # The full tools/list name catalogue of the packaged server, in listed order: the 17 core tools, then one revit_<command>
                 # per RevitCommandCatalogue entry (79 names, observed in CI run 44841962105 on core and core-windows).
                 $p733Catalogue = [string[]]@(
@@ -1545,21 +1547,20 @@ try {
                     @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'probe'; pack = $p733Caba; pack_rules = '-1' } }
                 )
                 # P7-37: the ranked typology request, pinned like the siblings (package-first only; not part of the fallback cases).
-                $p737Ranked = @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p737RankedPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p737RankedPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p737RankedSha256; Length = $p737RankedLength; Exact = [ordered]@{ pipeline_status = 'ranked'; alternatives = '4'; accepted = '-1' }; Ranked = $true }
+                $p737Ranked = @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p737RankedPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p737RankedPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p737RankedSha256; Length = $p737RankedLength; Exact = [ordered]@{ pipeline_status = 'ranked'; alternatives = '4'; accepted = '1' }; Ranked = $true }
                 # The observed value of each Exact member of a CLI stdout line, as text ('<absent>' / '<unparsed>' otherwise).
                 function Get-P737Members([string]$Line, $Exact) {
                     $observed = [ordered]@{}
                     try {
                         $document = [Text.Json.JsonDocument]::Parse($Line)
                         try {
-                            foreach ($name in $Exact.Keys) {
-                                $element = $null
-                                if (!$document.RootElement.TryGetProperty($name, [ref]$element)) { $observed[$name] = '<absent>' }
-                                elseif ($element.ValueKind -eq [Text.Json.JsonValueKind]::String) { $observed[$name] = $element.GetString() }
-                                else { $observed[$name] = $element.GetRawText() }
+                            $values = @{}
+                            foreach ($property in $document.RootElement.EnumerateObject()) {
+                                $values[$property.Name] = if ($property.Value.ValueKind -eq [Text.Json.JsonValueKind]::String) { $property.Value.GetString() } else { $property.Value.GetRawText() }
                             }
+                            foreach ($name in $Exact.Keys) { $observed[$name] = if ($values.ContainsKey($name)) { $values[$name] } else { '<absent>' } }
                         } finally { $document.Dispose() }
-                    } catch { foreach ($name in $Exact.Keys) { $observed[$name] = '<unparsed>' } }
+                    } catch { foreach ($name in $Exact.Keys) { $observed[$name] = "<unparsed: $($_.Exception.Message)>" } }
                     return $observed
                 }
                 function Get-P733Sha256([byte[]]$Bytes) {
