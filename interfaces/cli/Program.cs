@@ -93,7 +93,7 @@ try {
             catch(IOException e) { Console.WriteLine(RevitEarly(RevitCommandCodes.EnvelopeInvalid,"envelope",e.Message)); Environment.ExitCode=1; break; }
             if(revitAll) {
                 IRevitCommandTransport revitPages=revitOptions.Deadline is {} revitDeadline
-                    ? new RevitDeadlineTransport(revitPipe!,revitPolicy,revitOptions.Transport,revitOptions.ReadTimeout,revitDeadline)
+                    ? new RevitDeadlineTransport(revitPipe!,revitPolicy,null,revitOptions.ReadTimeout,revitDeadline)
                     : new RevitServiceTransport(revitPipe!,revitPolicy,revitOptions.Transport);
                 var revitListing=RevitElementQueryPaging.All(revitEnvelope,revitPages);
                 Console.WriteLine(revitListing.ToJson()); if(!revitListing.IsSuccess)Environment.ExitCode=1; break;
