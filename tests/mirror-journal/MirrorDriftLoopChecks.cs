@@ -2249,7 +2249,8 @@ static class MirrorDriftLoopChecks
         // P2-36: on macOS only, the test-only lever RevitCommandService.PipeConnected (null in production; called once per
         // WriteRequest, at its top, before that request line's first byte) doubles the seam run's client socket send
         // buffer (SO_SNDBUF); the value read back after the set is what the pin expects queued. P2-37: a second macOS seam
-        // run, after the first, halves it instead (lowered). The CLI process has no lever (default send buffer).
+        // run, after the first, lowers it instead (P2-38: to 3/4 of its default, so the lowered value differs from the
+        // 4096 bytes the fake reads). The CLI process has no lever (default send buffer).
         var raisedLever = new LeverRecord();
         var loweredLever = new LeverRecord();
         var loweredReports = new List<(int Written, int Total, long Ms)>();
@@ -2274,7 +2275,7 @@ static class MirrorDriftLoopChecks
                 if (OperatingSystem.IsMacOS())
                 {
                     RevitCommandService.WriteProgress = (written, total) => loweredReports.Add((written, total, clock.ElapsedMilliseconds));
-                    RevitCommandService.PipeConnected = SendBufferLever(1, 2, loweredLever);
+                    RevitCommandService.PipeConnected = SendBufferLever(3, 4, loweredLever);
                     loweredSeam = RevitCommandService.Run(h.Pipe, envelope, RevitCommandPolicy.ForRepository(root), RevitCommandService.PipeTransportWithReadTimeout(TimeSpan.FromMilliseconds(Math.Max(1, h.Budget()))));
                 }
             }
@@ -2355,6 +2356,9 @@ static class MirrorDriftLoopChecks
             // piece); its queued and handed move down the same way. Every value is logged once in a ::notice:: line.
             // P2-37 probe red (run 44853016956): wire 39757, read 4096, InBufferSize 32768, default send buffer 8192;
             // raised 16384 -> queued 16384, handed 20480; lowered 4096 -> queued 4096, handed 8192; CLI queued 8192.
+            // P2-38: lowered 4096 equals the bytes the fake read, so handed 8192 == read + lowered could not be told apart
+            // from 2 x read (probe red 44882412787 with the precondition lowered != read). The lowered value is now 3/4 of
+            // the default (a multiple of the piece) and the precondition requires it to differ from the read size.
             var sendBuffer = UnixSendBuffer();
             var raised = raisedLever.Set;
             var lowered = loweredLever.Set;
@@ -2382,7 +2386,7 @@ static class MirrorDriftLoopChecks
             Relation(loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
                 && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes)
                 && loweredQueued == lowered && loweredHanded == MidArgsBreakBytes + lowered && loweredHanded % chunk == 0
-                && loweredQueued < cliQueued && loweredHanded < handed,
+                && loweredHanded != 2 * MidArgsBreakBytes && loweredQueued < cliQueued && loweredHanded < handed,
                 "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways");
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
