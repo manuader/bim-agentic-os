@@ -31,6 +31,10 @@
 # catalogue is pinned and the handshake also runs one awaited reply at a time; unremovable case folders are warned about.
 # P7-35: the same copy: the generate_typology and plan_layouts documents are pinned by sha256 (CLI == MCP); the typology status is
 # matched exactly; P7-24/P7-31/P7-33 case folders go through one warning helper; the cleanup self-test is a named SKIP as root.
+# P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
+# no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
+# P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
+# extensionless Bim.Gltf runtime asset in deps.json is caught; the self-test copy takes hidden files (-Force) and is removed by the helper.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -1800,7 +1804,9 @@ try {
     # \ as /, empty and . segments dropped, .. resolved), and mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target,
     # dependency or runtime asset. Positive control: cli/Bim.Gltf.dll with exactly one sbom.json and one manifest.json line
     # (verbatim and normalised) carrying its sha256, and cli/Bim.Cli.deps.json naming the Bim.Gltf library. A missing mcp/ or
-    # control file and unreadable JSON are named failures. Self-tested on a copy under $work; release A's files unchanged ---
+    # control file and unreadable JSON are named failures. Self-tested on a copy under $work; release A's files unchanged.
+    # P4-32: a .. that climbs above the package root is a named escaping path (not clamped, neither leak nor control line);
+    # an extensionless Bim.Gltf runtime asset is caught; the copy takes hidden files (-Force) ---
     try {
         function ConvertTo-P431Path([string]$Path) {
             $segments = [Collections.Generic.List[string]]::new()
@@ -1813,6 +1819,7 @@ try {
         }
         function Test-P431McpGltf([string]$Path) {
             $normal = ConvertTo-P431Path $Path
+            if ($null -eq $normal) { return $false }
             $name = $normal.Substring($normal.LastIndexOf('/') + 1)
             return ($normal.StartsWith('mcp/', [StringComparison]::OrdinalIgnoreCase) -and ($name.Equals('Bim.Gltf', [StringComparison]::OrdinalIgnoreCase) -or $name.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)))
         }
@@ -1847,6 +1854,16 @@ try {
                 else { foreach ($entry in $entries) { if (Test-P431McpGltf $entry.Path) { $leaks.Add("$($pair[0]) line $($entry.Path)") } } }
             }
             return , $leaks
+        }
+        # P4-32: every sbom.json/manifest.json path whose .. climbs above the package root; an unreadable file is named too.
+        function Get-P432Escaping([string]$Layout) {
+            $escaping = [Collections.Generic.List[string]]::new()
+            foreach ($pair in @(@('sbom.json', 'assemblies'), @('manifest.json', 'files'))) {
+                $entries = Get-P431Entries (Join-Path $Layout $pair[0]) $pair[1]
+                if ($null -eq $entries) { $escaping.Add("<$($pair[0]) $($pair[1]) unreadable>") }
+                else { foreach ($entry in $entries) { if ($null -eq (ConvertTo-P431Path $entry.Path)) { $escaping.Add("$($pair[0]) escaping path $($entry.Path)") } } }
+            }
+            return , $escaping
         }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
@@ -1887,8 +1904,11 @@ try {
                         $runtime = $entry.Value.PSObject.Properties['runtime']
                         if ($null -ne $runtime -and (Test-P431Object $runtime.Value)) {
                             foreach ($asset in $runtime.Value.PSObject.Properties) {
+                                # An escaping asset name is still matched on its last segment (P4-32).
                                 $assetName = ConvertTo-P431Path $asset.Name
-                                if ($assetName.Substring($assetName.LastIndexOf('/') + 1).StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)) { $found.Add("runtime $($entry.Name) $($asset.Name)") }
+                                if ($null -eq $assetName) { $assetName = $asset.Name.Replace('\', '/') }
+                                $assetFile = $assetName.Substring($assetName.LastIndexOf('/') + 1)
+                                if ($assetFile.StartsWith('Bim.Gltf.', [StringComparison]::OrdinalIgnoreCase)) { $found.Add("runtime $($entry.Name) $($asset.Name)") }
                             }
                         }
                     }
@@ -1916,6 +1936,14 @@ try {
             return $null
         }
         function Format-P431List($Items) { return '[' + (@($Items) -join ', ') + ']' }
+        # The self-test copy of a layout (mcp/, cli/Bim.Gltf.dll, cli/Bim.Cli.deps.json, sbom.json, manifest.json).
+        function Copy-P431Layout([string]$Source, [string]$Destination) {
+            New-Item -ItemType Directory -Force (Join-Path $Destination 'cli') | Out-Null
+            if (Test-Path -LiteralPath (Join-Path $Source 'mcp') -PathType Container) { Copy-Item -LiteralPath (Join-Path $Source 'mcp') -Destination (Join-Path $Destination 'mcp') -Recurse }
+            foreach ($relative in 'cli/Bim.Gltf.dll', 'cli/Bim.Cli.deps.json', 'sbom.json', 'manifest.json') {
+                if (Test-Path -LiteralPath (Join-Path $Source $relative) -PathType Leaf) { Copy-Item -LiteralPath (Join-Path $Source $relative) -Destination (Join-Path $Destination $relative) }
+            }
+        }
         function Write-P431Json([string]$File, $Value) { [IO.File]::WriteAllText($File, ($Value | ConvertTo-Json -Depth 64 -Compress), [Text.UTF8Encoding]::new($false)) }
 
         $p431Before = Get-P431Fingerprint $outA
@@ -1923,6 +1951,8 @@ try {
         Assert ($p431Leaks.Count -eq 0) "P4-31: release A has no mcp/ Bim.Gltf file, sbom.json line or manifest.json line: $(Format-P431List $p431Leaks)"
         $p431Control = Get-P431ControlMissing $outA
         Assert ($p431Control.Count -eq 0) "P4-31: positive control: release A keeps cli/Bim.Gltf.dll with one sbom.json and one manifest.json line carrying its sha256: $(Format-P431List $p431Control)"
+        $p432Escaping = Get-P432Escaping $outA
+        Assert ($p432Escaping.Count -eq 0) "P4-32: no sbom.json or manifest.json path of release A climbs above its root (an escaping .. is a named failure, not clamped): $(Format-P431List $p432Escaping)"
         $p431McpDeps = Get-P431DepsGltf (Join-Path $outA 'mcp/Bim.Mcp.deps.json')
         Assert ($null -ne $p431McpDeps -and $p431McpDeps.Count -eq 0) "P4-31: release A's mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime asset: $(if ($null -eq $p431McpDeps) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p431McpDeps })"
         $p431CliDeps = Get-P431DepsGltf (Join-Path $outA 'cli/Bim.Cli.deps.json')
@@ -1930,14 +1960,24 @@ try {
 
         # Self-tests on a copy of the layout (mcp/, cli/Bim.Gltf.dll, cli/Bim.Cli.deps.json, sbom.json, manifest.json).
         $p431Copy = Join-Path $work 'p4-31 layout copy'
+        $p432HiddenSource = Join-Path $work 'p4-32 hidden source'
+        $p432HiddenCopy = Join-Path $work 'p4-32 hidden copy'
         try {
-            New-Item -ItemType Directory -Force (Join-Path $p431Copy 'cli') | Out-Null
-            if (Test-Path -LiteralPath (Join-Path $outA 'mcp') -PathType Container) { Copy-Item -LiteralPath (Join-Path $outA 'mcp') -Destination (Join-Path $p431Copy 'mcp') -Recurse }
-            foreach ($relative in 'cli/Bim.Gltf.dll', 'cli/Bim.Cli.deps.json', 'sbom.json', 'manifest.json') {
-                if (Test-Path -LiteralPath (Join-Path $outA $relative) -PathType Leaf) { Copy-Item -LiteralPath (Join-Path $outA $relative) -Destination (Join-Path $p431Copy $relative) }
-            }
+            # P4-32: the layout copy takes hidden files (a dot file, also with the Hidden attribute on Windows).
+            New-Item -ItemType Directory -Force (Join-Path $p432HiddenSource 'mcp/sub') | Out-Null
+            $p432Hidden = Join-Path $p432HiddenSource 'mcp/sub/.hidden-planted'
+            [IO.File]::WriteAllText($p432Hidden, 'hidden')
+            if ($IsWindows) { [IO.File]::SetAttributes($p432Hidden, ([IO.File]::GetAttributes($p432Hidden) -bor [IO.FileAttributes]::Hidden)) }
+            Copy-P431Layout $p432HiddenSource $p432HiddenCopy
+            Assert (Test-Path -LiteralPath (Join-Path $p432HiddenCopy 'mcp/sub/.hidden-planted') -PathType Leaf) 'P4-32 self-test: the layout copy takes hidden files (Copy-Item -Force): mcp/sub/.hidden-planted'
+        } catch { $failures.Add("P4-32 hidden-file copy self-test threw: $($_.Exception.Message)") }
+        finally { [void](Remove-PackageCaseDirectory 'P4-32' $p432HiddenSource); [void](Remove-PackageCaseDirectory 'P4-32' $p432HiddenCopy) }
+        try {
+            Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
             Assert ($clean.Count -eq 0 -and $cleanControl.Count -eq 0) "P4-31 self-test: the unplanted copy reads like release A (no leak, control present): $(Format-P431List $clean) control $(Format-P431List $cleanControl)"
+            $cleanEscaping = Get-P432Escaping $p431Copy
+            Assert ($cleanEscaping.Count -eq 0) "P4-32 self-test: the unplanted copy has no escaping sbom.json/manifest.json path: $(Format-P431List $cleanEscaping)"
             foreach ($plant in @(@('mcp/Bim.Gltf.dll', $true), @('mcp/runtimes/any/Bim.Gltf', $true), @('mcp/BIM.GLTF.PDB', $true), @('mcp/Bim.GltfTools.dll', $false))) {
                 $planted = Join-Path $p431Copy $plant[0]
                 New-Item -ItemType Directory -Force (Split-Path $planted) | Out-Null
@@ -1967,9 +2007,19 @@ try {
                     }
                     else { Assert ($found.Count -eq 0) "P4-31 self-test: a planted $($plant[0]) $($pair[0]) line is no leak (not Bim.Gltf): $(Format-P431List $found)" }
                 }
+                # P4-32: a .. above the package root is a named escaping path, not clamped into the layout: no leak, control unchanged.
+                foreach ($planted in '../mcp/Bim.Gltf.dll', 'mcp/../../mcp/Bim.Gltf.dll', '..\mcp\Bim.Gltf', 'cli/../../cli/Bim.Gltf.dll', '../other/Other.dll') {
+                    $edited = $text | ConvertFrom-Json -NoEnumerate
+                    $edited.($pair[1]) = @($edited.($pair[1])) + @([pscustomobject]@{ path = $planted; sha256 = '00' })
+                    Write-P431Json $path $edited
+                    $escapingFound = Get-P432Escaping $p431Copy; $escapingLeaks = Get-P431Leaks $p431Copy; $escapingControl = Get-P431ControlMissing $p431Copy
+                    Assert (($escapingFound -join '|') -ceq "$($pair[0]) escaping path $planted" -and $escapingLeaks.Count -eq 0 -and $escapingControl.Count -eq 0) "P4-32 self-test: a planted $planted $($pair[0]) line climbing above the package root is a named escaping path (and only it), no leak, control unchanged: $(Format-P431List $escapingFound) leaks $(Format-P431List $escapingLeaks) control $(Format-P431List $escapingControl)"
+                }
                 [IO.File]::WriteAllText($path, '{')
                 $found = Get-P431Leaks $p431Copy
                 Assert (($found -join '|') -ceq "<$($pair[0]) $($pair[1]) unreadable>") "P4-31 self-test: an unreadable $($pair[0]) is a named leak (fail-closed): $(Format-P431List $found)"
+                $found = Get-P432Escaping $p431Copy
+                Assert (($found -join '|') -ceq "<$($pair[0]) $($pair[1]) unreadable>") "P4-32 self-test: an unreadable $($pair[0]) is a named escaping-path failure too (fail-closed): $(Format-P431List $found)"
                 [IO.File]::WriteAllBytes($path, $original)
             }
             $depsCopy = Join-Path $p431Copy 'mcp/Bim.Mcp.deps.json'
@@ -1985,9 +2035,13 @@ try {
             if ($null -eq $mcpTarget) { $failures.Add("P4-31 self-test setup: the copied mcp/Bim.Mcp.deps.json has a libraries object and a Bim.Mcp/ entry in its first target ($($depsOriginal.Length) bytes)") }
             else {
                 $depsPlants = @(
-                    @{ Label = 'library'; Expected = 'library Bim.Gltf/1.0.0'; Plant = { param($d, $entry) $d.libraries | Add-Member -NotePropertyName 'Bim.Gltf/1.0.0' -NotePropertyValue ([pscustomobject]@{ type = 'project' }) -Force } },
-                    @{ Label = 'dependency'; Expected = "dependency $mcpTarget -> Bim.Gltf"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'dependencies' -NotePropertyValue ([pscustomobject]@{ 'Bim.Gltf' = '1.0.0' }) -Force } },
-                    @{ Label = 'runtime asset'; Expected = "runtime $mcpTarget lib/net8.0/Bim.Gltf.dll"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ 'lib/net8.0/Bim.Gltf.dll' = [pscustomobject]@{} }) -Force } }
+                    @{ Id = 'P4-31'; Label = 'library'; Expected = 'library Bim.Gltf/1.0.0'; Plant = { param($d, $entry) $d.libraries | Add-Member -NotePropertyName 'Bim.Gltf/1.0.0' -NotePropertyValue ([pscustomobject]@{ type = 'project' }) -Force } },
+                    @{ Id = 'P4-31'; Label = 'dependency'; Expected = "dependency $mcpTarget -> Bim.Gltf"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'dependencies' -NotePropertyValue ([pscustomobject]@{ 'Bim.Gltf' = '1.0.0' }) -Force } },
+                    @{ Id = 'P4-31'; Label = 'runtime asset'; Expected = "runtime $mcpTarget lib/net8.0/Bim.Gltf.dll"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ 'lib/net8.0/Bim.Gltf.dll' = [pscustomobject]@{} }) -Force } },
+                    # P4-32: an extensionless asset name, also behind a .. above the root and in upper case; Bim.GltfTools is no Bim.Gltf.
+                    @{ Id = 'P4-32'; Label = 'extensionless runtime asset'; Expected = "runtime $mcpTarget lib/net8.0/Bim.Gltf"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ 'lib/net8.0/Bim.Gltf' = [pscustomobject]@{} }) -Force } },
+                    @{ Id = 'P4-32'; Label = 'escaping extensionless runtime asset'; Expected = "runtime $mcpTarget ../BIM.GLTF"; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ '../BIM.GLTF' = [pscustomobject]@{} }) -Force } },
+                    @{ Id = 'P4-32'; Label = 'Bim.GltfTools runtime asset (no Bim.Gltf)'; Expected = ''; Plant = { param($d, $entry) $entry | Add-Member -NotePropertyName 'runtime' -NotePropertyValue ([pscustomobject]@{ 'lib/net8.0/Bim.GltfTools' = [pscustomobject]@{} }) -Force } }
                 )
                 foreach ($depsPlant in $depsPlants) {
                     $edited = $depsText | ConvertFrom-Json -NoEnumerate
@@ -1995,7 +2049,8 @@ try {
                     & $depsPlant.Plant $edited $editedTarget.Value.$mcpTarget
                     Write-P431Json $depsCopy $edited
                     $found = Get-P431DepsGltf $depsCopy
-                    Assert ($null -ne $found -and ($found -join '|') -ceq $depsPlant.Expected) "P4-31 self-test: a planted Bim.Gltf $($depsPlant.Label) in mcp/Bim.Mcp.deps.json is caught (and only it): $(if ($null -eq $found) { '<unreadable>' } else { Format-P431List $found })"
+                    $what = if ($depsPlant.Expected) { 'is caught (and only it)' } else { 'names nothing' }
+                    Assert ($null -ne $found -and ($found -join '|') -ceq $depsPlant.Expected) "$($depsPlant.Id) self-test: a planted Bim.Gltf $($depsPlant.Label) in mcp/Bim.Mcp.deps.json $($what): $(if ($null -eq $found) { '<unreadable>' } else { Format-P431List $found })"
                 }
                 [IO.File]::WriteAllText($depsCopy, '{')
                 Assert ($null -eq (Get-P431DepsGltf $depsCopy)) 'P4-31 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)'
@@ -2033,7 +2088,7 @@ try {
             $missingLeaks = Get-P431Leaks $missingLayout; $missingControl = Get-P431ControlMissing $missingLayout
             Assert (($missingLeaks -join '|') -ceq '<no mcp/ folder>|<sbom.json assemblies unreadable>|<manifest.json files unreadable>' -and $missingControl.Count -eq 3) "P4-31 self-test: a missing layout is named failures (no mcp/, unreadable sbom/manifest, control): $(Format-P431List $missingLeaks) control $(Format-P431List $missingControl)"
             Assert (@(Get-P431Fingerprint $missingLayout)[0].StartsWith('<layout unlistable: ')) 'P4-31 self-test: a missing layout fingerprints as one named unlistable line'
-        } finally { Remove-Item -LiteralPath $p431Copy -Recurse -Force -ErrorAction SilentlyContinue }
+        } finally { [void](Remove-PackageCaseDirectory 'P4-31' $p431Copy) }
         $p431Difference = Get-P431FirstDifference $p431Before (Get-P431Fingerprint $outA)
         Assert ($null -eq $p431Difference) "P4-31: the checks never modify release A (every file's path and sha256 unchanged): $p431Difference"
     } catch { $failures.Add("P4-31 package Bim.Gltf pin checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
