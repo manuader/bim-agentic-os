@@ -26,6 +26,8 @@ using System.Text;
 // P6-33: a form /Matrix whose composition with the CTM is non-finite gives operand-error at the Do and the form runs under
 // the outer CTM (as cm does); nested form matrices that only together overflow the height and a skewed Tm whose rise
 // overflows only x keep the warning pending; one shared swallow guard (ordered member anchors) serves every static check.
+// P6-35: a present form /Matrix that is not six numbers gives operand-error at the Do (identity used); cm and Do message
+// shapes are pinned; the Do operand-errors are not in the cad-brief CLI document, which equals the in-process bytes.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -675,7 +677,7 @@ internal static class PdfType3GlyphListTests
                 {
                     foreach (var (label, matrix, warning, pinned) in new[]
                     {
-                        ("overflow", e60 + " 0 0 " + e60 + " 0 0", "Do /X1 gives a non-finite form matrix; the current matrix is kept", "PENDING-OVERFLOW"),
+                        ("overflow", e60 + " 0 0 " + e60 + " 0 0", "Do /X1 gives a non-finite form matrix; the current matrix is kept", "DE7127CCF6EAD8BF"),
                         ("malformed", "1 0 0 1 100", malformedMessage, "PENDING-MALFORMED"),
                     })
                     {

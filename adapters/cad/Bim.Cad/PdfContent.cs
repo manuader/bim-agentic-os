@@ -577,16 +577,20 @@ internal sealed class PdfContentInterpreter
             var content = file.Decode(form, page);
             if (content is null) return;
             var matrix = PdfMatrix.Identity;
-            if (file.Resolve(PdfFile.Get(form.Dictionary, "Matrix")) is List<object> items && items.Count == 6)
+            // P6-35: a /Matrix that is present (not absent, null or a dangling reference) but not an array of exactly six
+            // numbers is reported like cm with bad operands: operand-error at the Do, and the identity is used.
+            if (file.Resolve(PdfFile.Get(form.Dictionary, "Matrix")) is { } matrixValue)
             {
+                var items = matrixValue as List<object>;
                 var values = new double[6];
-                var ok = true;
-                for (var i = 0; i < 6; i++)
+                var ok = items is { Count: 6 };
+                for (var i = 0; ok && i < 6; i++)
                 {
-                    if (file.Resolve(items[i]) is PdfNumber number) values[i] = number.Value;
+                    if (file.Resolve(items![i]) is PdfNumber number) values[i] = number.Value;
                     else ok = false;
                 }
                 if (ok) matrix = new PdfMatrix(values[0], values[1], values[2], values[3], values[4], values[5]);
+                else Warn("operand-error", objectNumber, operatorIndex, "Do /" + name + " expects a /Matrix of 6 numbers; the identity matrix is used");
             }
             var savedState = state;
             var savedFloor = stackFloor;
