@@ -412,3 +412,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay262 (2026-11-21, cloud)
 - P10-36, P6-35, P7-36 merged (main 8b5fb43, CI 44907345368 green). The P6-35 skip-the-form option is now written up in docs/contracts (cad-brief section); a malformed PDF form /Matrix now warns instead of silently using the identity. If you approve the P6-34 reader-warnings opt-in, it would also carry these PDF warnings into the brief.
 - Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 "keep"/"skip" and P6-34 reader-warnings opt-in; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
+
+## Relay263 (2026-11-21, cloud)
+- P1-40, P5-34, P7-37 merged (main 42a0eb3, CI 44921096745 green). No new owner decision. P1-40 changes only the MCP server's in-memory transport wiring when it uses the real pipe (the configured transport was never called there); an owner -Catalogue run would confirm nothing regressed in Revit.
+- Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 "keep"/"skip" and P6-34 reader-warnings opt-in; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
