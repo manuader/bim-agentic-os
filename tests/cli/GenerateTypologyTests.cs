@@ -759,6 +759,7 @@ internal static class GenerateTypologyTests
         PostWriteRemovalRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
         DiagnosticWriteRun(scratch, cliDll, Check, arguments => Cli(arguments));
         OutputWriteRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
+        PartialWriteRun(root, scratch, cliDll, Check, arguments => Cli(arguments));
     }
 
     // ---- 9. P3-24: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
@@ -1885,8 +1886,7 @@ internal static class GenerateTypologyTests
     //      called only from the guarded block's catch.
     //   d. Document (MCP path): the guarded block's failure with a stderr rejecting its diagnostic returns the typed
     //      (false, internal-error line), diagnostic attempted once, nothing escapes, stdout untouched. Document's own
-    //      catch-all (UnguardedWorkProbe) still writes its diagnostic unguarded (outside this task's files): with the same
-    //      stderr the stderr exception escapes Document after one attempt (pinned gap, follow-up).
+    //      catch-all (UnguardedWorkProbe) with the same stderr: likewise contained since P3-31 (was a pinned gap; section 14).
     // Controls: accepting writers give section 10/12's order (diagnostic, then the typed line) and the real process's
     // success and refusal bytes. Static: Run's shape is the section-9 pin (updated by P3-30); the delta over the P4-26 Run
     // pin is in tests/mcp/GenerateTypologyWriteLinkTests.cs (RunDeltaP330).
@@ -2178,9 +2178,9 @@ internal static class GenerateTypologyTests
             }
             {
                 var r = Forced(AcceptOut, RejectErrDiagnostic, () => throw failure, null, null, null, null, request);
-                Check(r.Thrown is IOException { Message: StderrMessage } && r.Restored && r.Exit == 0 && AllNull() && r.Document is null && r.Events.Count == 0
-                    && r.Err is { } e && e.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic }),
-                    "pinned gap: Document's own catch-all (UnguardedWorkProbe) writes its diagnostic unguarded, so a stderr rejecting it lets that exception escape after one attempt (follow-up)", D(r));
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && AllNull() && r.Document is (false, var returnedLine) && returnedLine == envelope.Line && r.Events.Count == 0
+                    && r.Err is { } e && e.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic }) && NoMessage(r, StderrMessage),
+                    "P3-31 (was the pinned gap): Document's own catch-all (UnguardedWorkProbe) with a stderr rejecting its diagnostic: nothing escapes, (false, typed internal-error line), the diagnostic attempted once, stdout and exit untouched", D(r));
             }
 
             // Success with accepting stdout (stderr rejecting everything) equals the real process; stderr is never written.
@@ -2203,6 +2203,364 @@ internal static class GenerateTypologyTests
             try { Directory.Delete(inputs, recursive: true); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
+    }
+
+    // ---- 14. P3-31: Document's own catch-all with a throwing stderr, and a stdout that accepts part of a line then throws ----
+    // GenerateTypologyCommand.Run / Document of the real Release CLI assembly (reflection), in process, stdout replaced by a
+    // PartialWriter (or a CountingWriter over a disposed StringWriter) and stderr by section 12's recording writer (or a
+    // CountingWriter), all restored with the exit code and every seam in a finally. As P7-32 for generate-prototypes:
+    //   a. Document (the MCP generate_typology path): its own catch-all (UnguardedWorkProbe) with a stderr that throws on
+    //      the diagnostic (IOException, non-IO InvalidOperationException, a disposed StringWriter behind a CountingWriter)
+    //      returns (false, the typed internal-error line), the diagnostic attempted exactly once, nothing escapes, stdout
+    //      never written, exit untouched; the guarded block's failure with a disposed stderr likewise. Controls: accepting
+    //      stderr gives the diagnostic once; a Document refusal equals the real process's line; Document's success text is the
+    //      P5-12 pinned bytes; neither writes stderr. Static: Document's catch-all writes envelope.Diagnostic guarded
+    //      (try / catch (Exception) { }) then returns (false, envelope.Line).
+    //   b. The one documented handling of a partial stdout write: whatever prefix the writer accepted stays on stdout as a
+    //      truncated line (never terminated by the newline, so never a complete record), nothing escapes Run, exit 1 (the
+    //      authoritative signal), no typed line invented on another stream. catch (Refusal): each typed refusal (usage, output
+    //      extension, output exists, missing request, malformed JSON, unknown pack, unknown extra skill; the real process's
+    //      line L) and the guarded block's Refusal(InternalError), cut after 1, half and all of L: stdout exactly L[..k], L
+    //      attempted once, stderr unchanged. Catch-all (UnguardedWorkProbe, PostWriteProbe): the typed line's first k chars,
+    //      attempted once, the original diagnostic once, no file.
+    //   c. A line Execute writes (the plain and composed success lines, the pipeline refusal) cut the same way: with one
+    //      budget stdout is exactly line[..k] (the typed line then attempted with nothing accepted), with a per-line budget
+    //      line[..k] then the typed line's first k chars; the line then the typed line attempted once each, stderr the stdout
+    //      exception's diagnostic once, exit 1, the just-written file deleted (P3-25). k = all of the success line leaves the
+    //      complete success JSON without its newline while the exit is 1 and no file exists (pinned: the exit code decides).
+    //   d. A disposed stdout behind a CountingWriter: for b and c the attempts are exactly the lines above (one each),
+    //      exit 1, nothing escapes, stderr as above (an ObjectDisposedException diagnostic for c).
+    //   Controls: an unbounded budget gives the real process's success and refusal bytes, stderr unwritten.
+    static void PartialWriteRun(string root, string scratch, string cliDll, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "P3-31 " + name, detail);
+        const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+        const string DiagnosticPrefix = "generate-typology internal error: ";
+        static string Hex(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+        var nl = Environment.NewLine;
+
+        var inputs = Path.Combine(scratch, "p3-31-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(inputs);
+        try
+        {
+            var counter = 0;
+            string Input(string name, string content) { var path = Path.Combine(inputs, name); File.WriteAllText(path, content, new UTF8Encoding(false)); return path; }
+            string Output() => Path.Combine(inputs, "out-" + (++counter).ToString(CultureInfo.InvariantCulture) + ".json");
+            var good = "{\"pack\":\"" + TypologyPack + "\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":4,\"seed\":0,\"project_id\":\"" + Id + "\"}";
+            var request = Input("request.json", good);
+            var composedRequest = Input("composed.json", good[..^1] + ",\"skills\":[]}");
+            var refusedRequest = Input("refused.json", good.Replace("\"family_size\":3", "\"family_size\":0", StringComparison.Ordinal));
+
+            System.Reflection.Assembly? assembly = null;
+            try { assembly = System.Reflection.Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var type = assembly?.GetType("Bim.Cli.GenerateTypologyCommand");
+            var run = type?.GetMethod("Run", Any, new[] { typeof(string[]) });
+            var document = type?.GetMethod("Document", Any, new[] { typeof(string) });
+            var postWrite = type?.GetProperty("PostWriteProbe", Any);
+            var removalSeam = type?.GetProperty("PostWriteRemovalProbe", Any);
+            var unguarded = type?.GetProperty("UnguardedWorkProbe", Any);
+            var guarded = type?.GetProperty("GuardedWorkProbe", Any);
+            Check(run is not null && document is not null && document.ReturnType == typeof((bool, string)) && postWrite is not null && removalSeam is not null && unguarded is not null && guarded is not null,
+                "Run(string[]), Document(string) and the seams UnguardedWorkProbe / GuardedWorkProbe / PostWriteProbe / PostWriteRemovalProbe found in the Release CLI");
+            if (run is null || document is null || document.ReturnType != typeof((bool, string)) || postWrite is null || removalSeam is null || unguarded is null || guarded is null) return;
+            System.Reflection.MethodInfo runMethod = run;
+            System.Reflection.MethodInfo documentMethod = document;
+            System.Reflection.PropertyInfo[] seams = { postWrite, removalSeam, unguarded, guarded };
+            System.Reflection.PropertyInfo unguardedProbe = unguarded;
+            System.Reflection.PropertyInfo guardedProbe = guarded;
+            System.Reflection.PropertyInfo stageProbe = postWrite;
+            bool AllNull() => seams.All(seam => seam.GetValue(null) is null);
+            Check(AllNull(), "the generate-typology seams are null unless a test sets them");
+
+            // One in-process Run (or Document when documentPath is set) with stdout / stderr replaced and the seams set;
+            // Console, exit code and seams restored in finally.
+            (Exception? Thrown, List<string> Events, int Exit, TextWriter Out, TextWriter Err, bool Restored, (bool, string)? Document) Forced(
+                TextWriter stdout, TextWriter? stderrOverride, Action? before, Action? work, Action? stage, string[]? args, string? documentPath = null)
+            {
+                var events = new List<string>();
+                var stderr = stderrOverride ?? new DiagnosticEventWriter("err", events);
+                var previousOut = Console.Out;
+                var previousError = Console.Error;
+                var previousExit = Environment.ExitCode;
+                Exception? thrown = null;
+                (bool, string)? returned = null;
+                int exit;
+                try
+                {
+                    Console.SetOut(stdout);
+                    Console.SetError(stderr);
+                    Environment.ExitCode = 0;
+                    unguardedProbe.SetValue(null, before);
+                    guardedProbe.SetValue(null, work);
+                    stageProbe.SetValue(null, stage);
+                    try
+                    {
+                        if (documentPath is not null) returned = ((bool, string))documentMethod.Invoke(null, new object?[] { documentPath })!;
+                        else runMethod.Invoke(null, new object?[] { args });
+                    }
+                    catch (System.Reflection.TargetInvocationException error) { thrown = error.InnerException; }
+                    finally { foreach (var seam in seams) seam.SetValue(null, null); }
+                    exit = Environment.ExitCode;
+                }
+                finally
+                {
+                    Console.SetOut(previousOut);
+                    Console.SetError(previousError);
+                    Environment.ExitCode = previousExit;
+                }
+                var restored = ReferenceEquals(Console.Out, previousOut) && ReferenceEquals(Console.Error, previousError) && Environment.ExitCode == previousExit;
+                return (thrown, events, exit, stdout, stderr, restored, returned);
+            }
+            static List<string> AttemptsOf(TextWriter writer) => writer switch { PartialWriter p => p.Attempts, CountingWriter c => c.Attempts, _ => new List<string>() };
+            static string D((Exception? Thrown, List<string> Events, int Exit, TextWriter Out, TextWriter Err, bool Restored, (bool, string)? Document) r) =>
+                "stderr events [" + string.Join(" | ", r.Events) + "] exit " + r.Exit.ToString(CultureInfo.InvariantCulture)
+                + (r.Out is PartialWriter p ? " stdout text [" + p.Text + "] (" + p.Text.Length.ToString(CultureInfo.InvariantCulture) + " chars) rejected " + p.Rejected.ToString(CultureInfo.InvariantCulture) : "")
+                + " stdout attempts [" + string.Join(" | ", AttemptsOf(r.Out)) + "]"
+                + (r.Err is CountingWriter ce ? " stderr attempts [" + string.Join(" | ", ce.Attempts) + "]" : "")
+                + (r.Err is DiagnosticEventWriter de ? " stderr rejected [" + string.Join(" | ", de.RejectedLines) + "]" : "")
+                + " restored " + r.Restored
+                + (r.Document is { } d ? " document (" + d.Item1 + ", " + (d.Item2.Length > 300 ? d.Item2[..300] + "..." : d.Item2) + ")" : " no document")
+                + (r.Thrown is { } t ? " threw " + t.GetType().FullName + ": " + t.Message : " threw nothing");
+            bool Contained((Exception? Thrown, List<string> Events, int Exit, TextWriter Out, TextWriter Err, bool Restored, (bool, string)? Document) r) => r.Thrown is null && r.Restored && r.Exit == 1 && AllNull();
+            static bool Attempted((Exception? Thrown, List<string> Events, int Exit, TextWriter Out, TextWriter Err, bool Restored, (bool, string)? Document) r, params string[] lines) => AttemptsOf(r.Out).SequenceEqual(lines);
+            static string TextOf((Exception? Thrown, List<string> Events, int Exit, TextWriter Out, TextWriter Err, bool Restored, (bool, string)? Document) r) => r.Out is PartialWriter p ? p.Text : "";
+
+            var failure = new InvalidOperationException("boom generate-typology P3-31 original");
+            var envelope = Bim.Cli.IntentPlan.Internal("generate-typology", failure);
+            Check(envelope.Line == "{\"status\":\"failed\",\"code\":\"generate_typology_internal_error\"}" && envelope.Exit == 1
+                && envelope.Diagnostic == DiagnosticPrefix + "System.InvalidOperationException: boom generate-typology P3-31 original",
+                "fixture: IntentPlan.Internal(\"generate-typology\", e) is the literal typed line, exit 1 and diagnostic", envelope.ToString());
+            const string StdoutMessage = "p3-31 stdout broke part-way";
+            const string StderrMessage = "p3-31 stderr rejects the diagnostic";
+            var kinds = new (string Label, Func<Exception> Failure, Exception Sample)[]
+            {
+                ("IOException", () => new IOException(StdoutMessage), new IOException(StdoutMessage)),
+                ("InvalidOperationException", () => new InvalidOperationException(StdoutMessage), new InvalidOperationException(StdoutMessage)),
+            };
+            static int[] Cuts(int n) => new[] { 1, n / 2, n };
+            static TextWriter Disposed() { var closed = new StringWriter(CultureInfo.InvariantCulture); closed.Dispose(); return new CountingWriter(closed); }
+            static TextWriter Open() => new CountingWriter(new StringWriter(CultureInfo.InvariantCulture));
+            bool NoFile(string output) => !File.Exists(output) && !Directory.Exists(output) && !File.Exists(output + ".txt");
+
+            // ---- a. Document (the MCP generate_typology path) ----
+            {
+                var r = Forced(Open(), null, () => throw failure, null, null, null, request);
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && AllNull() && r.Document is (false, var line) && line == envelope.Line
+                    && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && Attempted(r),
+                    "control: Document's own catch-all (UnguardedWorkProbe) with an accepting stderr returns (false, typed line), the diagnostic once, stdout never written, exit untouched", D(r));
+            }
+            foreach (var (kind, make) in new (string, Func<Exception>)[] { ("IOException", () => new IOException(StderrMessage)), ("InvalidOperationException", () => new InvalidOperationException(StderrMessage)) })
+            {
+                var events = new List<string>();
+                var stderr = new DiagnosticEventWriter("err", events, DiagnosticPrefix, rejectAll: false, make);
+                var r = Forced(Open(), stderr, () => throw failure, null, null, null, request);
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && AllNull() && r.Document is (false, var line) && line == envelope.Line
+                    && events.Count == 0 && stderr.RejectedLines.SequenceEqual(new[] { envelope.Diagnostic }) && stderr.Text.Length == 0 && Attempted(r)
+                    && (r.Document is not { } d || !d.Item2.Contains(StderrMessage, StringComparison.Ordinal)),
+                    "Document's own catch-all (UnguardedWorkProbe) + stderr " + kind + " on the diagnostic: nothing escapes Document, (false, typed internal-error line), the diagnostic attempted once, stdout never written, exit untouched",
+                    D(r) + " stderr rejected [" + string.Join(" | ", stderr.RejectedLines) + "]");
+            }
+            foreach (var (path, before, work) in new (string, Action?, Action?)[] { ("UnguardedWorkProbe (Document's catch-all)", () => throw failure, null), ("GuardedWorkProbe (InternalRefusal)", null, () => throw failure) })
+            {
+                var r = Forced(Open(), Disposed(), before, work, null, null, request);
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && AllNull() && r.Document is (false, var line) && line == envelope.Line
+                    && r.Err is CountingWriter c && c.Attempts.SequenceEqual(new[] { envelope.Diagnostic }) && Attempted(r),
+                    path + " + a disposed stderr behind a counting writer: Document returns (false, typed line), the diagnostic attempted once, nothing escapes, stdout never written", D(r));
+            }
+            {
+                var processOut = Output();
+                var theirs = cli(new[] { "generate-typology", Input("doc-pack.json", good.Replace(TypologyPack, "xx.no-such.pack", StringComparison.Ordinal)), processOut });
+                var r = Forced(Open(), Disposed(), null, null, null, null, Path.Combine(inputs, "doc-pack.json"));
+                Check(theirs.Exit == 1 && theirs.Out.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && r.Thrown is null && r.Restored && r.Exit == 0 && AllNull()
+                    && r.Document is (false, var line) && line == theirs.Out && r.Err is CountingWriter { Attempts.Count: 0 } && Attempted(r),
+                    "control: a Document refusal (unknown pack) is the real process's line, stderr and stdout never written", D(r) + " vs process " + theirs.Out);
+            }
+            {
+                var r = Forced(Open(), Disposed(), null, null, null, null, request);
+                Check(r.Thrown is null && r.Restored && r.Exit == 0 && AllNull() && r.Document is (true, var json) && Hex(new UTF8Encoding(false).GetBytes(json)) == PinnedAcceptedSha256
+                    && r.Err is CountingWriter { Attempts.Count: 0 } && Attempted(r),
+                    "control: Document's success text is the P5-12 pinned bytes, stderr and stdout never written", D(r));
+            }
+            var shared = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateTypologyCommand.cs")), blankStrings: false);
+            var documentCatch = System.Text.RegularExpressions.Regex.Matches(shared,
+                @"catch\s*\(\s*Exception\s+error\s*\)\s*\{\s*var\s+envelope\s*=\s*IntentPlan\s*\.\s*Internal\s*\(\s*""generate-typology""\s*,\s*error\s*\)\s*;\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*envelope\s*\.\s*Diagnostic\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*return\s*\(\s*false\s*,\s*envelope\s*\.\s*Line\s*\)\s*;\s*\}").Count;
+            var unguardedWrites = System.Text.RegularExpressions.Regex.Matches(shared, @"(?<!try\s*\{\s*)Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(").Count;
+            Check(documentCatch == 1 && unguardedWrites == 0,
+                "GenerateTypologyCommand.cs: Document's catch-all writes envelope.Diagnostic guarded (try / catch (Exception) { }) then returns (false, envelope.Line), and no Console.Error.WriteLine there is unguarded",
+                "guarded Document catch-all " + documentCatch.ToString(CultureInfo.InvariantCulture) + ", unguarded stderr writes " + unguardedWrites.ToString(CultureInfo.InvariantCulture));
+
+            // ---- b. catch (Refusal): the typed refusals of the real process, cut part-way ----
+            var existing = Output();
+            File.WriteAllText(existing, "keep");
+            var refusals = new (string Label, Func<string, string[]> Args)[]
+            {
+                ("usage", output => new[] { "generate-typology", request }),
+                ("output extension", output => new[] { "generate-typology", request, output + ".txt" }),
+                ("output exists", output => new[] { "generate-typology", request, existing }),
+                ("missing request", output => new[] { "generate-typology", Path.Combine(inputs, "missing.json"), output }),
+                ("malformed JSON", output => new[] { "generate-typology", Input("json.json", "{"), output }),
+                ("unknown pack", output => new[] { "generate-typology", Input("pack.json", good.Replace(TypologyPack, "xx.no-such.pack", StringComparison.Ordinal)), output }),
+                ("unknown extra skill", output => new[] { "generate-typology", Input("skill.json", good[..^1] + ",\"skills\":[\"xx.no-such.skill\"]}"), output }),
+            };
+            foreach (var (label, argsOf) in refusals)
+            {
+                var processOut = Output();
+                var theirs = cli(argsOf(processOut));
+                var line = theirs.Out;
+                Check(theirs.Exit == 1 && theirs.Err.Length == 0 && line.StartsWith("{\"status\":\"failed\",\"code\":\"", StringComparison.Ordinal) && !line.Contains("internal_error", StringComparison.Ordinal) && NoFile(processOut),
+                    "fixture: the " + label + " refusal of the real process is a typed line, exit 1, no stderr, no file", "exit " + theirs.Exit + " " + theirs.Out + " " + theirs.Err);
+                {
+                    var a = Output();
+                    var control = Forced(new PartialWriter(int.MaxValue, false, () => new IOException(StdoutMessage)), null, null, null, null, argsOf(a));
+                    Check(Contained(control) && Attempted(control, line) && TextOf(control) == line + nl && control.Events.Count == 0 && NoFile(a),
+                        "control: the " + label + " refusal with an unbounded budget equals the real process bytes, stderr unwritten", D(control));
+                }
+                foreach (var (kind, make, _) in kinds)
+                    foreach (var k in Cuts(line.Length))
+                    {
+                        var b = Output();
+                        var r = Forced(new PartialWriter(k, false, make), null, null, null, null, argsOf(b));
+                        Check(Contained(r) && Attempted(r, line) && TextOf(r) == line[..k] && r.Out is PartialWriter { Rejected: 1 } && r.Events.Count == 0 && NoFile(b),
+                            "the " + label + " refusal + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " of " + line.Length.ToString(CultureInfo.InvariantCulture)
+                            + " chars: stdout the truncated line (no newline), attempted once, nothing escapes Run, exit 1, stderr unwritten, no file", D(r));
+                    }
+                {
+                    var c = Output();
+                    var r = Forced(Disposed(), null, null, null, null, argsOf(c));
+                    Check(Contained(r) && Attempted(r, line) && r.Events.Count == 0 && NoFile(c),
+                        "the " + label + " refusal + a disposed stdout behind a counting writer: the typed line attempted once, nothing escapes Run, exit 1, stderr unwritten, no file", D(r));
+                }
+            }
+            Check(File.ReadAllText(existing) == "keep", "the existing output is left untouched");
+
+            // b. The guarded block's Refusal(InternalError) (accepting stderr): the diagnostic once, Fail's line cut part-way.
+            foreach (var (kind, make, _) in kinds)
+                foreach (var k in Cuts(envelope.Line.Length))
+                {
+                    var output = Output();
+                    var r = Forced(new PartialWriter(k, false, make), null, null, () => throw failure, null, new[] { "generate-typology", request, output });
+                    Check(Contained(r) && Attempted(r, envelope.Line) && TextOf(r) == envelope.Line[..k] && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
+                        "GuardedWorkProbe Refusal(InternalError) + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " chars: stdout the truncated typed line, attempted once, diagnostic once, exit 1, nothing escapes, no file", D(r));
+                }
+            {
+                var output = Output();
+                var r = Forced(Disposed(), null, null, () => throw failure, null, new[] { "generate-typology", request, output });
+                Check(Contained(r) && Attempted(r, envelope.Line) && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
+                    "GuardedWorkProbe Refusal(InternalError) + a disposed stdout behind a counting writer: the typed line attempted once, diagnostic once, exit 1, nothing escapes, no file", D(r));
+            }
+
+            // b. Run's catch-all: before any write (UnguardedWorkProbe) and after it (PostWriteProbe; P3-25 deletes the file).
+            foreach (var (path, before, stage) in new (string, Action?, Action?)[] { ("UnguardedWorkProbe", () => throw failure, null), ("PostWriteProbe", null, () => throw failure) })
+            {
+                foreach (var (kind, make, _) in kinds)
+                    foreach (var k in Cuts(envelope.Line.Length))
+                    {
+                        var output = Output();
+                        var r = Forced(new PartialWriter(k, false, make), null, before, null, stage, new[] { "generate-typology", request, output });
+                        Check(Contained(r) && Attempted(r, envelope.Line) && TextOf(r) == envelope.Line[..k] && r.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(output),
+                            path + " + stdout " + kind + " after " + k.ToString(CultureInfo.InvariantCulture) + " chars: stdout the truncated typed line, attempted once, diagnostic once, exit 1, nothing escapes, no file", D(r));
+                    }
+                var disposedOutput = Output();
+                var d = Forced(Disposed(), null, before, null, stage, new[] { "generate-typology", request, disposedOutput });
+                Check(Contained(d) && Attempted(d, envelope.Line) && d.Events.SequenceEqual(new[] { "err:" + envelope.Diagnostic }) && !File.Exists(disposedOutput),
+                    path + " + a disposed stdout behind a counting writer: the typed line attempted once, diagnostic once, exit 1, nothing escapes, no file", D(d));
+            }
+
+            // ---- c. A line Execute writes (success plain / composed, the pipeline refusal) cut part-way: Run's catch-all follows ----
+            var success = cli(new[] { "generate-typology", request, Output() });
+            var composed = cli(new[] { "generate-typology", composedRequest, Output() });
+            var refused = cli(new[] { "generate-typology", refusedRequest, Output() });
+            Check(success.Exit == 0 && success.Err.Length == 0 && success.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal)
+                && composed.Exit == 0 && composed.Err.Length == 0 && composed.Out.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && composed.Out.Contains("\"rules\":\"composed\"", StringComparison.Ordinal),
+                "fixture: the plain and composed success lines of the real process", "plain exit " + success.Exit + " " + success.Out + " " + success.Err + " composed exit " + composed.Exit + " " + composed.Out + " " + composed.Err);
+            Check(refused.Exit == 1 && refused.Err.Length == 0 && refused.Out.StartsWith("{\"status\":\"failed\",\"code\":\"generate_typology_refused\"", StringComparison.Ordinal),
+                "fixture: the pipeline refusal line of the real process", "exit " + refused.Exit + " " + refused.Out + " " + refused.Err);
+            foreach (var (label, requestPath, line, pin) in new (string, string, string, string?)[] { ("success", request, success.Out, PinnedAcceptedSha256), ("composed success", composedRequest, composed.Out, PinnedComposedSha256), ("pipeline refusal", refusedRequest, refused.Out, null) })
+            {
+                {
+                    var output = Output();
+                    var control = Forced(new PartialWriter(int.MaxValue, false, () => new IOException(StdoutMessage)), null, null, null, null, new[] { "generate-typology", requestPath, output });
+                    var wrote = File.Exists(output) ? File.ReadAllBytes(output) : null;
+                    Check(control.Thrown is null && control.Restored && control.Exit == (pin is not null ? 0 : 1) && AllNull() && Attempted(control, line) && TextOf(control) == line + nl && control.Events.Count == 0
+                        && (pin is not null ? wrote is not null && Hex(wrote) == pin : wrote is null),
+                        "control: the " + label + " with an unbounded budget equals the real process bytes (stdout and file), stderr unwritten", D(control) + " file " + (wrote is null ? "<none>" : Hex(wrote)));
+                    if (File.Exists(output)) File.Delete(output);
+                }
+                foreach (var (kind, make, sample) in kinds)
+                {
+                    var diagnostic = Bim.Cli.IntentPlan.InternalDiagnostic("generate-typology", sample);
+                    foreach (var perLine in new[] { false, true })
+                        foreach (var k in perLine ? new[] { 1, line.Length / 2 } : Cuts(line.Length))
+                        {
+                            var output = Output();
+                            byte[]? seen = null;
+                            var r = Forced(new PartialWriter(k, perLine, make), null, null, null, pin is not null ? () => { seen = File.Exists(output) ? File.ReadAllBytes(output) : null; } : null,
+                                new[] { "generate-typology", requestPath, output });
+                            var typedPart = perLine ? (envelope.Line + nl)[..Math.Min(k, envelope.Line.Length + nl.Length)] : "";
+                            var budget = (perLine ? "per-line " : "") + k.ToString(CultureInfo.InvariantCulture);
+                            Check(Contained(r) && Attempted(r, line, envelope.Line) && TextOf(r) == line[..k] + typedPart && r.Events.SequenceEqual(new[] { "err:" + diagnostic })
+                                && !File.Exists(output) && (pin is null || (seen is not null && Hex(seen) == pin)),
+                                "the " + label + " line + stdout " + kind + " after a budget of " + budget + " of " + line.Length.ToString(CultureInfo.InvariantCulture)
+                                + " chars: stdout the truncated line" + (perLine ? " then the typed line's first " + k.ToString(CultureInfo.InvariantCulture) + " chars" : "")
+                                + ", the line then the typed line attempted once each, stderr the stdout exception's diagnostic once, exit 1, nothing escapes, no file" + (pin is not null ? " (the written file deleted)" : ""),
+                                D(r) + " seen " + (seen is null ? "<none>" : Hex(seen)));
+                        }
+                }
+                {
+                    var output = Output();
+                    var r = Forced(Disposed(), null, null, null, null, new[] { "generate-typology", requestPath, output });
+                    Check(Contained(r) && Attempted(r, line, envelope.Line) && r.Events.Count == 1 && r.Events[0].StartsWith("err:" + DiagnosticPrefix + "System.ObjectDisposedException: ", StringComparison.Ordinal) && !File.Exists(output),
+                        "the " + label + " line + a disposed stdout behind a counting writer: the line then the typed line attempted once each, stderr the ObjectDisposedException diagnostic once, exit 1, nothing escapes, no file", D(r));
+                }
+            }
+            Check(AllNull(), "the seams are null after the section");
+        }
+        finally
+        {
+            try { Directory.Delete(inputs, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
+
+    // P3-31: a stdout that accepts a budget of characters and then throws (as P7-32's in GeneratePrototypesTests). Each
+    // WriteLine(string) / Write call is recorded in Attempts (the full value), the accepted prefix of value + NewLine is
+    // appended to Text, and when the budget runs out inside a write the given exception is thrown (counted in Rejected).
+    // With perLine the budget restarts at every write; otherwise it is one budget for the whole run (a broken pipe stays
+    // broken, so every later write throws with nothing accepted).
+    sealed class PartialWriter(int budget, bool perLine, Func<Exception> failure) : TextWriter
+    {
+        readonly StringBuilder text = new();
+        readonly int each = budget;
+        readonly bool restart = perLine;
+        int left = budget;
+        public List<string> Attempts { get; } = new();
+        public int Rejected { get; private set; }
+        public string Text => text.ToString();
+        public override Encoding Encoding => new UTF8Encoding(false);
+        void Take(string value)
+        {
+            if (restart) left = each;
+            var accepted = Math.Min(left, value.Length);
+            text.Append(value, 0, accepted);
+            left -= accepted;
+            if (accepted < value.Length) { Rejected++; throw failure(); }
+        }
+        public override void Write(char value) { Attempts.Add(value.ToString()); Take(value.ToString()); }
+        public override void Write(string? value) { Attempts.Add(value ?? ""); Take(value ?? ""); }
+        public override void WriteLine(string? value) { Attempts.Add(value ?? ""); Take((value ?? "") + NewLine); }
+    }
+
+    // P3-31: a writer that records every write it is asked for (Attempts, the full value) and then hands it to inner (a
+    // disposed StringWriter, which throws ObjectDisposedException, or an open one), so a real closed writer's failure is
+    // observed together with the attempt.
+    sealed class CountingWriter(TextWriter inner) : TextWriter
+    {
+        public List<string> Attempts { get; } = new();
+        public override Encoding Encoding => new UTF8Encoding(false);
+        public override void Write(char value) { Attempts.Add(value.ToString()); inner.Write(value); }
+        public override void Write(string? value) { Attempts.Add(value ?? ""); inner.Write(value); }
+        public override void WriteLine(string? value) { Attempts.Add(value ?? ""); inner.WriteLine(value); }
     }
 
     // P3-28: a recording writer: each WriteLine(string) is appended to the shared event list as "<stream>:<line>" and to
