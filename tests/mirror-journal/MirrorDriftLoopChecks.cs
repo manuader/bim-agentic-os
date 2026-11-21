@@ -2353,6 +2353,8 @@ static class MirrorDriftLoopChecks
             // P2-37: the raised value must also be a whole number of 1024-byte pieces (an odd kernel rounding is a setup
             // red, not a relation red). A second seam run lowers the send buffer to half its default (also a multiple of the
             // piece); its queued and handed move down the same way. Every value is logged once in a ::notice:: line.
+            // P2-37 probe red (run 44853016956): wire 39757, read 4096, InBufferSize 32768, default send buffer 8192;
+            // raised 16384 -> queued 16384, handed 20480; lowered 4096 -> queued 4096, handed 8192; CLI queued 8192.
             var sendBuffer = UnixSendBuffer();
             var raised = raisedLever.Set;
             var lowered = loweredLever.Set;
@@ -2380,8 +2382,6 @@ static class MirrorDriftLoopChecks
                 && loweredQueued == lowered && loweredHanded == MidArgsBreakBytes + lowered && loweredHanded % chunk == 0
                 && loweredQueued < cliQueued && loweredHanded < handed,
                 "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways", macDetail);
-            // P2-37 deliberate probe red: records the measured counts as a failure annotation once; removed when green.
-            Check(false, "macos probe (P2-37): measured send buffer counts", counts);
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
