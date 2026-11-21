@@ -19,7 +19,9 @@ using Bim.Core;
 //   2g. P1-36: one page seam (static pin, no legacy seams). 2h. P1-37: ReadReplyLine's OnlyOnFaulted continuation
 //      (static pin). 2i. P1-38: PipeTransportWithReadTimeout kept for its production callers (static scan), the CLI
 //      passes no never-called transport, the Legacy adapter fails a named Check on an unmodelled cut connect, and
-//      StripComments reads @$ verbatim and raw string literals (mutation self-test).
+//      StripComments reads @$ verbatim and raw string literals (mutation self-test). P1-40: the caller scan reads the
+//      tracked .cs files only (an untracked copy is ignored, control), the CLI pin parses the argument list (formatting
+//      and named arguments, self-test), and MCP all:true passes no configured transport when cutReads is true.
 //   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault. P1-39: a pipe-dispose
 //      control (D2) proves the detector's StreamReader filter; a completed read records its result; E claims no collection.
 //   P1-39: one strip helper (StripCode: comments, literals, interpolation holes as code) and brace-matched member bodies.
@@ -1077,15 +1079,42 @@ internal static class RevitCommandDeadlineTests
     // model fails a named Check and answers no_response (null) instead of throwing out of Run. (d) StripComments reads
     // @$"..." as verbatim and a raw string literal ("""...""", any $ prefix, any quote run) as one literal, so a // inside
     // it is no comment and code after it is not hidden (mutation self-test).
+    // P1-40: (a) scans the tracked .cs files (git ls-files), so an untracked copy in an untracked non-dot folder adds no
+    // caller (control: the directory walk finds the copy, the scan does not), and pins no test reference (the helper is
+    // kept for its production callers alone). (b) is read from the parsed argument list (positional by position, named by
+    // name, whitespace ignored; self-test on formatting and named-argument variants and mutants). (e) RevitDeadlineTransport
+    // uses its configured transport only on the cutReads false return (static, and a counting cutReads true spy is never
+    // called), so McpServer.RevitCallAll passes realPipe ? null : revitTransport with cutReads: realPipe.
     static readonly string[] ReadTimeoutHelperProductionCallers = { "interfaces/cli/RevitCommandOptions.cs", "interfaces/mcp/McpServer.cs" };
     const string ReadTimeoutHelperDefinition = "core/Bim.Core/RevitCommandsService.cs";
     const string LegacyUnmodelled = "P1-38 Legacy adapter: every cut connect a fake meets is modelled by that fake";
 
-    // P1-40: the .cs files the 2i caller scan reads, relative with '/' separators. RED PROBE: still the directory walk.
+    // P1-40: the .cs files the 2i caller scan reads: the tracked ones (`git -C root ls-files -z -- *.cs`, present on
+    // disk), relative with '/' separators, sorted; null with the reason when git cannot list them (the pin then fails).
     static List<string>? ScannedSourceFiles(string root, out string reason)
     {
         reason = "";
-        return WalkedSourceFiles(root).ToList();
+        try
+        {
+            var start = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            foreach (var argument in new[] { "-C", root, "ls-files", "-z", "--", "*.cs" }) start.ArgumentList.Add(argument);
+            using var git = Process.Start(start);
+            if (git is null) { reason = "git did not start"; return null; }
+            var stderr = git.StandardError.ReadToEndAsync();
+            var output = git.StandardOutput.ReadToEnd();
+            git.WaitForExit();
+            if (git.ExitCode != 0) { reason = "git ls-files exit " + N(git.ExitCode) + ": " + stderr.Result.Trim(); return null; }
+            var files = output.Split('\0', StringSplitOptions.RemoveEmptyEntries).Select(file => file.Replace('\\', '/'))
+                .Where(file => File.Exists(Path.Combine(root, file))).ToList();
+            files.Sort(StringComparer.Ordinal);
+            if (files.Count == 0) reason = "git ls-files listed no .cs file";
+            return files.Count == 0 ? null : files;
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            reason = "git not started: " + error.Message;
+            return null;
+        }
     }
 
     // Every .cs file under root on disk (tracked or not), relative with '/' separators: the P1-38 walk, kept as the
@@ -1163,14 +1192,19 @@ internal static class RevitCommandDeadlineTests
 
     // P1-40: what is wrong with the CLI's deadline transport construction in stripped Program.cs code (empty: one
     // construction, exactly pipeName, policy, transport null, readTimeout revitOptions.ReadTimeout and deadline).
-    // RED PROBE: still the P1-38 positional match on the exact text "new RevitDeadlineTransport(".
     static string[] CliTransportProblems(string code)
     {
-        var built = System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+RevitDeadlineTransport\s*\(").Count;
-        var cliArguments = CallArguments(code, "new RevitDeadlineTransport(");
-        return built == 1 && cliArguments.Length == 5 && cliArguments[2] == "null" && cliArguments[3] == "revitOptions.ReadTimeout" && !cliArguments.Any(a => a.Contains("cutReads", StringComparison.Ordinal))
-            ? Array.Empty<string>()
-            : new[] { N(built) + " built; arguments: " + string.Join(" | ", cliArguments) };
+        var calls = DeadlineTransportCalls(code);
+        if (calls.Count != 1) return new[] { N(calls.Count) + " RevitDeadlineTransport constructions, not one" };
+        if (calls[0] is not { } arguments) return new[] { "the construction's arguments do not map onto the constructor parameters" };
+        var problems = new List<string>();
+        var names = arguments.Keys.OrderBy(name => name, StringComparer.Ordinal).ToArray();
+        if (!names.SequenceEqual(new[] { "deadline", "pipeName", "policy", "readTimeout", "transport" })) problems.Add("parameters " + string.Join(", ", names));
+        var transport = arguments.TryGetValue("transport", out var t) ? t : null;
+        if (transport != "null") problems.Add("transport " + (transport ?? "absent"));
+        var readTimeout = arguments.TryGetValue("readTimeout", out var r) ? r : null;
+        if (readTimeout != "revitOptions.ReadTimeout") problems.Add("readTimeout " + (readTimeout ?? "absent"));
+        return problems.ToArray();
     }
 
     static void ConfiguredTransportTidy(string root, string wallsText, long[] model, Action<bool, string, string> check)
