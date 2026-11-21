@@ -431,11 +431,12 @@ internal static class DeletedCwdPathTests
                 JsonSerializer.Serialize(new { status = "failed", code = "output_io_error", detail = "UnauthorizedAccessException" })),
         };
         const string Reason = "the late-write reason";
-        string Label(string what) => "deleted cwd path: P10-35 unsearchable cwd (Linux): " + what;
+        // Check adds the "deleted cwd path: " prefix; skip does not (P10-37: the prefix was doubled on every Check).
+        string Label(string what) => "P10-35 unsearchable cwd (Linux): " + what;
         if (!OperatingSystem.IsLinux())
         {
-            foreach (var c in cases) skip(Label(c.Verb + " output"), "Linux only: macOS GetFullPath refuses the relative output (P10-32), Windows has no Unix permission bits");
-            skip(Label(Reason), "Linux only");
+            foreach (var c in cases) skip(Prefix + Label(c.Verb + " output"), "Linux only: macOS GetFullPath refuses the relative output (P10-32), Windows has no Unix permission bits");
+            skip(Prefix + Label(Reason), "Linux only");
             return;
         }
         var parent = Path.Combine(scratch, "p10-35-parent");
@@ -449,8 +450,8 @@ internal static class DeletedCwdPathTests
         finally { Chmod(cwd, Owner); }
         if (!denied)
         {
-            foreach (var c in cases) skip(Label(c.Verb + " output"), "a mode-000 directory is still listable (privileged runner)");
-            skip(Label(Reason), "a mode-000 directory is still listable (privileged runner)");
+            foreach (var c in cases) skip(Prefix + Label(c.Verb + " output"), "a mode-000 directory is still listable (privileged runner)");
+            skip(Prefix + Label(Reason), "a mode-000 directory is still listable (privileged runner)");
             return;
         }
 

@@ -262,11 +262,14 @@ internal static class DeletedCwdPathToolTests
     // PathProblem passes it, and the lock-checked load meets the unreadable directory. The text is pinned as measured
     // (Pins37), isError, nothing on stderr, never McpServer's generic failure nor skills_lock_internal_error; the lock and
     // the pack are unchanged. Linux only, non-root; counted SKIP otherwise. Modes and the working directory restored.
-    const string Measure37 = "P10-37 probe: to be measured";
+    // As measured (run 44938432860, Linux, both modes alike; a ::warning:: probe): Core's skills-root check cannot see the directory through the
+    // mode-000 path, so the load reports the root missing (skills_invalid root_missing) and the pinned pack skill_lock_missing
+    // — a typed report, not an access refusal (the same report shape as a missing skills directory).
+    const string LockedSkills37 = """{"status":"failed","code":"skills_invalid","mode":"verify","verified":false,"lock_version":1,"content_hash":"bim-skill-pack-sha256-v1","packs":[{"id":"bim.test.gamma","version":"1.0.0","content_sha256":"9adb9e8f6b09883bb1579edc8fd96f171301b897581b906020a7a5d4aa6b0000","state":"skill_lock_missing","detail":"pack directory not found under the skills root"}],"issues":[{"code":"skills_invalid","subject":".","detail":"root_missing: skills root directory not found"},{"code":"skill_lock_missing","subject":"bim.test.gamma","detail":"pack directory not found under the skills root"}]}""";
     static readonly Dictionary<string, string> Pins37 = new(StringComparer.Ordinal)
     {
-        ["cwd"] = Measure37,
-        ["parent"] = Measure37,
+        ["cwd"] = LockedSkills37,
+        ["parent"] = LockedSkills37,
     };
 
     static void ValidLockRelativeSkills(string work, Func<string, JsonObject> call, Action<bool, string> check)
@@ -346,14 +349,10 @@ internal static class DeletedCwdPathToolTests
             try { code = JsonNode.Parse(run.Text)?["code"]?.GetValue<string>(); }
             catch (Exception failure) when (failure is System.Text.Json.JsonException or InvalidOperationException) { }
             var expected = Pins37[mode];
-            if (expected == Measure37) Console.WriteLine("::warning::P10-37 probe skills_lock_verify " + mode + ": " + measured.ReplaceLineEndings(" "));
-            else
-            {
-                Check(run.Probe == "GetFullPath accepted", mode + ": precondition: Path.GetFullPath of the relative skills_path is accepted (Linux) | " + measured);
-                Check(run.IsError == "true" && run.Text == expected && run.Stderr.Length == 0 && run.Thrown.Length == 0
-                    && code is { Length: > 0 } && code.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_') && !code.Contains("internal_error", StringComparison.Ordinal),
-                    mode + ": isError, exactly " + expected + ", a typed code (never McpServer's generic failure nor an internal error), nothing on stderr | " + measured);
-            }
+            Check(run.Probe == "GetFullPath accepted", mode + ": precondition: Path.GetFullPath of the relative skills_path is accepted (Linux) | " + measured);
+            Check(run.IsError == "true" && run.Text == expected && run.Stderr.Length == 0 && run.Thrown.Length == 0
+                && code is { Length: > 0 } && code.All(ch => ch is (>= 'a' and <= 'z') or (>= '0' and <= '9') or '_') && !code.Contains("internal_error", StringComparison.Ordinal),
+                mode + ": isError, exactly " + expected + ", a typed code (never McpServer's generic failure nor an internal error), nothing on stderr | " + measured);
             Check(Environment.CurrentDirectory == original, mode + ": the working directory is restored (finally)");
             Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes) && File.ReadAllBytes(Path.Combine(skills, Pack, "skill.json")).AsSpan().SequenceEqual(packBytes), mode + ": the lock and the pack are unchanged");
             Directory.Delete(parent, true);
