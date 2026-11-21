@@ -77,6 +77,15 @@ public sealed record DxfInsert(DxfProvenance Provenance, string BlockName, Point
     public double RowSpacing { get; init; }
     public bool IsArray => Columns > 1 || Rows > 1;
 
+    // P6-34: the insertion's world height in the coordinates the INSERT lives in (its OCS point (x, y, group 30) taken
+    // to world z), and where one unit of block z goes there: ZAxisXY is the horizontal part of the extrusion normal
+    // (zero for an exact +-Z normal), ZAxisZ its z (+-1). DxfExploder uses them so that, under an enclosing insert with
+    // a near +-Z normal, a nested insertion's block z shifts world XY by z times that normal's horizontal part. The
+    // Z scale (group 43) is read as 1.
+    public double Elevation { get; init; }
+    public Point2 ZAxisXY { get; init; }
+    public double ZAxisZ { get; init; } = 1;
+
     // The ATTRIBs that follow the INSERT (group 66 = 1) up to its SEQEND, in file order.
     public IReadOnlyList<DxfAttribute> Attributes { get; init; } = Array.Empty<DxfAttribute>();
 }

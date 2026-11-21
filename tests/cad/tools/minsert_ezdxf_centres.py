@@ -202,6 +202,100 @@ def bulge_main():
                       + ", ".join(r(p.x) + ", " + r(p.y) for p in m) + " }),")
 
 
+# P6-34: a near-Z nested chain three levels deep with non-zero elevations, and a MINSERT with rows and columns
+# inside a chain. Same ARCH block as P6-32. Blocks MID (base (10, 10)) holds INSERT MA of ARCH; TOP (base (-20, 40))
+# holds INSERT TM of MID; GRID (base (0, 0)) holds the MINSERT GA of ARCH (2 columns, 3 rows). Model space: E1 (TOP)
+# and F1 (GRID). Every insert of the chain has a non-zero elevation (OCS insertion z) and a near +-Z normal, so the
+# block-z of a nested insertion reaches world XY through the enclosing insert's normal (z * N.xy, about 1e-3 here).
+# Each outline is computed by composing ezdxf's own Insert.matrix44() of every level (innermost first) and
+# transforming a copy of ARCH's LWPOLYLINE with LWPolyline.transform; MINSERT cells come from Insert.multi_insert() on
+# the block-level MINSERT (row-major), each cell's matrix44() composed with its parents. This route is used instead
+# of virtual_entities() because ezdxf's Insert.transform keeps a MINSERT's row/column spacing unscaled when the
+# enclosing insert scales it (multi_insert "does not apply scaling to the grid"), whereas the spacing is a length in
+# the enclosing block and scales with it. For the chain without a MINSERT (E1) the virtual_entities() walk is also run
+# and must agree within 1e-9 (asserted).
+# name, block, OCS insertion (x, y, z), rotation, sx, sy, columns, rows, column spacing, row spacing, extrusion
+CHAIN_BLOCKS = [
+    ("MID", (10.0, 10.0), [("MA", "ARCH", (400.0, -300.0, 1500.0), 35.0, 1.2, 1.2, 1, 1, 0.0, 0.0, (1e-7, 2e-7, -1.0))]),
+    ("TOP", (-20.0, 40.0), [("TM", "MID", (2500.0, 1200.0, -2500.0), -50.0, 0.9, 0.9, 1, 1, 0.0, 0.0, (2e-7, 0.0, 1.0))]),
+    ("GRID", (0.0, 0.0), [("GA", "ARCH", (-600.0, 900.0, 0.0), 10.0, 0.7, 0.7, 2, 3, 1500.0, -1100.0, (0.0, 1e-7, -1.0))]),
+]
+CHAIN_CASES = [
+    ("E1", "TOP", (70000.0, -15000.0, 4000.0), 20.0, 1.1, 1.1, 1, 1, 0.0, 0.0, (-1e-7, 3e-7, -1.0)),
+    ("F1", "GRID", (-60000.0, -20000.0, 0.0), 25.0, 1.3, 1.3, 1, 1, 0.0, 0.0, (-2e-7, 1e-7, 1.0)),
+]
+
+
+def add_insert(layout, case):
+    name, block, ins, rot, sx, sy, cols, rows, csp, rsp, ext = case
+    e = layout.add_blockref(block, ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "extrusion": ext})
+    if cols > 1 or rows > 1:
+        e.dxf.column_count = cols
+        e.dxf.row_count = rows
+        e.dxf.column_spacing = csp
+        e.dxf.row_spacing = rsp
+    return e
+
+
+def build_chain():
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    arch = doc.blocks.new("ARCH", base_point=(BULGE_BASE[0], BULGE_BASE[1], 0))
+    arch.add_lwpolyline(BULGE_ARCH, format="xyb", close=True)
+    inner = {}
+    for block, base, cases in CHAIN_BLOCKS:
+        layout = doc.blocks.new(block, base_point=(base[0], base[1], 0))
+        inner[block] = [(case[0], case[1], add_insert(layout, case)) for case in cases]
+    msp = doc.modelspace()
+    return doc, inner, [(case[0], case[1], add_insert(msp, case)) for case in CHAIN_CASES]
+
+
+def cell_keys(name, e):
+    cols, rows = e.dxf.column_count, e.dxf.row_count
+    if cols > 1 or rows > 1:
+        return [(name + "[" + str(k // cols) + "," + str(k % cols) + "]", v) for k, v in enumerate(e.multi_insert())]
+    return [(name, e)]
+
+
+def chain_walk(doc, inner, insert_path, block, m):
+    # m maps the coordinates of `block` to WCS.
+    if block == "ARCH":
+        lw = doc.blocks.get("ARCH").query("LWPOLYLINE")[0].copy()
+        lw.transform(m)
+        yield insert_path, lw
+        return
+    for name, child, e in inner[block]:
+        for key, cell in cell_keys(name, e):
+            yield from chain_walk(doc, inner, insert_path + [key], child, cell.matrix44() * m)
+
+
+def leaves(insert):
+    for v in insert.virtual_entities():
+        if v.dxftype() == "INSERT":
+            yield from leaves(v)
+        else:
+            yield v
+
+
+def chain_main():
+    print("// P6-34 chain outlines: (path, corner xy * 4, segment midpoint xy * 4)")
+    doc, inner, top = build_chain()
+    for name, block, e in top:
+        for key, cell in cell_keys(name, e):
+            for path_, lw in chain_walk(doc, inner, [key], block, cell.matrix44()):
+                c = list(lw.vertices_in_wcs())
+                m = list(midpoints(lw))
+                assert len(c) == 4 and len(m) == 4, (c, m)
+                if name == "E1":  # cross-check against ezdxf's virtual_entities() walk
+                    others = [v for v in leaves(e) if v.dxftype() == "LWPOLYLINE"]
+                    assert len(others) == 1, list(leaves(e))
+                    for a, b in zip(c, others[0].vertices_in_wcs(), strict=True):
+                        assert abs(a.x - b.x) <= 1e-9 and abs(a.y - b.y) <= 1e-9, (a, b)
+                print('("' + ">".join(path_) + '", new[] { ' + ", ".join(r(p.x) + ", " + r(p.y) for p in c) + " }, new[] { "
+                      + ", ".join(r(p.x) + ", " + r(p.y) for p in m) + " }),")
+
+
 if __name__ == "__main__":
     main()
     bulge_main()
+    chain_main()
