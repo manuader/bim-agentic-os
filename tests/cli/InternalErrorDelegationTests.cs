@@ -642,7 +642,8 @@ internal static class InternalErrorDelegationTests
 
     // P3-27: ProbeUses plus Hygiene for a remaining CLI test seam, given its name, declared type (Action or
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
-    // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start);
+    // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
+    // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -656,10 +657,15 @@ internal static class InternalErrorDelegationTests
         {
             var before = code[..use.Index];
             var after = code[(use.Index + use.Length)..];
-            var read = type == "Action"
-                ? System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;")
-                : System.Text.RegularExpressions.Regex.IsMatch(before, @"\bAlternativeGenerator\s*\.\s*Generate\s*\([^;{}]*\bnew\s+AlternativeOptions\s*\([^;{}]*,\s*$")
-                    && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\)\s*\)\s*;");
+            var read = type switch
+            {
+                "Action" => System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;")
+                    && !InBlockLambda(code, use.Index),
+                "Action<string>" => System.Text.RegularExpressions.Regex.IsMatch(before, @"[;{}]\s*$") && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;")
+                    && !InBlockLambda(code, use.Index),
+                _ => System.Text.RegularExpressions.Regex.IsMatch(before, @"\bAlternativeGenerator\s*\.\s*Generate\s*\([^;{}]*\bnew\s+AlternativeOptions\s*\([^;{}]*,\s*$")
+                    && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\)\s*\)\s*;"),
+            };
             if (System.Text.RegularExpressions.Regex.IsMatch(before, @"\binternal\s+static\s+" + System.Text.RegularExpressions.Regex.Escape(type) + @"\s*\?\s+$")
                 && System.Text.RegularExpressions.Regex.IsMatch(after, @"^\s*\{\s*get\s*;\s*set\s*;\s*\}(?!\s*=)"))
                 declarations++;
@@ -674,6 +680,24 @@ internal static class InternalErrorDelegationTests
         var detail = name + ": declarations " + declarations.ToString(CultureInfo.InvariantCulture) + " reads " + reads.ToString(CultureInfo.InvariantCulture)
             + " mentions with literals kept " + kept.ToString(CultureInfo.InvariantCulture) + " others [" + string.Join(" | ", others) + "]";
         return LexerGuard((clean, Math.Max(kept, declarations + reads + others.Count), detail), text, name);
+    }
+
+    // P3-29: true when the use at index (in literal-blanked, comment-stripped code) sits, at any depth, inside a block
+    // lambda `=> { ... }` or an anonymous method `delegate [(...)] { ... }`: every unmatched '{' enclosing the use is
+    // tested. Such a read runs only when the stored or passed delegate is invoked, so it is not an Action seam's read.
+    static bool InBlockLambda(string code, int index)
+    {
+        var depth = 0;
+        for (var i = index - 1; i >= 0; i--)
+        {
+            if (code[i] == '}') depth++;
+            else if (code[i] == '{')
+            {
+                if (depth > 0) { depth--; continue; }
+                if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
+            }
+        }
+        return false;
     }
 
     // P3-27: CodeOf does not model raw """ strings or interpolated verbatim @$"/$@" strings; a '"' and '//' inside one
