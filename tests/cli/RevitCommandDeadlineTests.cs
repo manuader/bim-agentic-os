@@ -20,7 +20,9 @@ using Bim.Core;
 //      (static pin). 2i. P1-38: PipeTransportWithReadTimeout kept for its production callers (static scan), the CLI
 //      passes no never-called transport, the Legacy adapter fails a named Check on an unmodelled cut connect, and
 //      StripComments reads @$ verbatim and raw string literals (mutation self-test).
-//   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault.
+//   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault. P1-39: a pipe-dispose
+//      control (D2) proves the detector's StreamReader filter; a completed read records its result; E claims no collection.
+//   P1-39: one strip helper (StripCode: comments, literals, interpolation holes as code) and brace-matched member bodies.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -778,66 +780,157 @@ internal static class RevitCommandDeadlineTests
     // connectThenRead( call. McpServer's deadline comment says the read is measured after the connect on every
     // real-pipe page. Mutation self-test: the same checker flags a source with any legacy seam put back, and ignores a
     // seam named only in a comment.
-    static string StripComments(string source)
+    // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
+    // P1-37's StripCommentsAndLiterals). Comments are blanked and every literal is reduced to its quotes, newlines kept:
+    // regular, verbatim (@"..", @$, $@), raw ("""..""", any quote run and $ count) and char literals. The holes of an
+    // interpolated literal are code and are kept, with any nested literal, comment or brace read the same way, so a
+    // // or a quote inside a hole neither starts a comment nor ends the literal; a format text (':' at hole depth 0) is
+    // literal text.
+    static string StripCode(string source)
     {
         var text = new StringBuilder(source.Length);
         var i = 0;
-        while (i < source.Length)
+        StripCodeInto(source, ref i, text, 0);
+        return text.ToString();
+    }
+
+    // Copies code from s[i..] into text. holeBraces > 0: inside an interpolation hole, returns past the run of holeBraces
+    // '}' that closes it at depth 0 (the caller writes the hole's braces).
+    static void StripCodeInto(string s, ref int i, StringBuilder text, int holeBraces)
+    {
+        var depth = 0;
+        void Blank(int from, int to) { for (var k = from; k < to && k < s.Length; k++) if (s[k] == '\n') text.Append('\n'); }
+        void Hole(ref int pos, int braces)
         {
-            var c = source[i];
-            var next = i + 1 < source.Length ? source[i + 1] : '\0';
-            if (c == '/' && next == '/') { while (i < source.Length && source[i] != '\n') i++; continue; }
+            text.Append('{');
+            StripCodeInto(s, ref pos, text, braces);
+            text.Append('}');
+        }
+        while (i < s.Length)
+        {
+            var c = s[i];
+            var next = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < s.Length && s[i] != '\n') i++; continue; }
             if (c == '/' && next == '*')
             {
-                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                i = end < 0 ? source.Length : end + 2;
+                var end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                var stop = end < 0 ? s.Length : end + 2;
+                Blank(i, stop);
                 text.Append(' ');
+                i = stop;
                 continue;
             }
-            if (c == '"' || c == '\'')
+            if (c == '\'')
             {
-                // P1-38: @"...", $@"..." and @$"..." are verbatim; a run of three or more quotes opens a raw literal ($
-                // prefixes included), closed by the same run and kept whole, so a // inside it is no comment.
-                var previous = i > 0 ? source[i - 1] : '\0';
-                var verbatim = c == '"' && (previous == '@' || (previous == '$' && i > 1 && source[i - 2] == '@'));
+                var p = i + 1;
+                while (p < s.Length && s[p] != '\'' && s[p] != '\n') p += s[p] == '\\' ? 2 : 1;
+                text.Append("''");
+                i = Math.Min(s.Length, p + 1);
+                continue;
+            }
+            var at = i;
+            var dollars = 0;
+            var verbatim = false;
+            while (at < s.Length && (s[at] == '$' || s[at] == '@')) { if (s[at] == '$') dollars++; else verbatim = true; at++; }
+            if (at < s.Length && s[at] == '"')
+            {
                 var quotes = 0;
-                while (c == '"' && !verbatim && i + quotes < source.Length && source[i + quotes] == '"') quotes++;
-                if (quotes >= 3)
+                while (!verbatim && at + quotes < s.Length && s[at + quotes] == '"') quotes++;
+                text.Append('"');
+                var p = at + 1;
+                if (quotes == 2) p = at + 2;
+                else if (quotes >= 3)
                 {
-                    var close = source.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
-                    var stop = close < 0 ? source.Length : close + quotes;
-                    text.Append(source, i, stop - i);
-                    i = stop;
+                    p = at + quotes;
+                    while (p < s.Length)
+                    {
+                        if (s[p] == '"')
+                        {
+                            var run = 0;
+                            while (p + run < s.Length && s[p + run] == '"') run++;
+                            p += run;
+                            if (run >= quotes) break;
+                            continue;
+                        }
+                        if (dollars > 0 && s[p] == '{')
+                        {
+                            var run = 0;
+                            while (p + run < s.Length && s[p + run] == '{') run++;
+                            p += run;
+                            if (run >= dollars) Hole(ref p, dollars);
+                            continue;
+                        }
+                        if (s[p] == '\n') text.Append('\n');
+                        p++;
+                    }
+                }
+                else
+                {
+                    while (p < s.Length)
+                    {
+                        var d = s[p];
+                        var after = p + 1 < s.Length ? s[p + 1] : '\0';
+                        if (d == '"')
+                        {
+                            if (verbatim && after == '"') { p += 2; continue; }
+                            p++;
+                            break;
+                        }
+                        if (!verbatim && d == '\\') { p += 2; continue; }
+                        if (!verbatim && d == '\n') break;
+                        if (dollars > 0 && (d == '{' || d == '}') && after == d) { p += 2; continue; }
+                        if (dollars > 0 && d == '{') { p++; Hole(ref p, 1); continue; }
+                        if (d == '\n') text.Append('\n');
+                        p++;
+                    }
+                }
+                text.Append('"');
+                i = Math.Min(s.Length, p);
+                continue;
+            }
+            if (holeBraces > 0)
+            {
+                if (c is '(' or '[' or '{') depth++;
+                else if (c is ')' or ']') depth--;
+                else if (c == '}')
+                {
+                    if (depth == 0) { i = Math.Min(s.Length, i + holeBraces); return; }
+                    depth--;
+                }
+                else if (c == ':' && depth == 0 && next != ':')
+                {
+                    while (i < s.Length && s[i] != '}' && s[i] != '\n') i++;
                     continue;
                 }
-                text.Append(c);
-                i++;
-                while (i < source.Length)
-                {
-                    var d = source[i];
-                    text.Append(d);
-                    i++;
-                    if (verbatim && d == '"' && i < source.Length && source[i] == '"') { text.Append('"'); i++; continue; }
-                    if (!verbatim && d == '\\' && i < source.Length) { text.Append(source[i]); i++; continue; }
-                    if (d == c || (!verbatim && d == '\n')) break;
-                }
-                continue;
             }
             text.Append(c);
             i++;
         }
-        return text.ToString();
+    }
+
+    // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
+    // its matching closing brace (brace depth, not indentation); null if absent or unclosed.
+    static string? MemberBody(string code, string signature)
+    {
+        var start = code.IndexOf(signature, StringComparison.Ordinal);
+        var open = start < 0 ? -1 : code.IndexOf('{', start);
+        if (open < 0) return null;
+        var depth = 0;
+        for (var k = open; k < code.Length; k++)
+        {
+            if (code[k] == '{') depth++;
+            else if (code[k] == '}' && --depth == 0) return code[start..(k + 1)];
+        }
+        return null;
     }
 
     static string[] SeamProblems(string source)
     {
-        var code = StripComments(source.ReplaceLineEndings("\n"));
+        var code = StripCode(source.ReplaceLineEndings("\n"));
         var problems = new List<string>();
         foreach (var seam in new[] { "cutTransport", "connectTransport", "measured", "PipeTransportWithReadTimeout" })
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\b" + seam + @"\b")) problems.Add("legacy seam " + seam);
-        var sendStart = code.IndexOf("public string? Send(", StringComparison.Ordinal);
-        var sendEnd = sendStart < 0 ? -1 : code.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
-        var send = sendEnd < 0 ? "" : code[sendStart..sendEnd];
+        var send = MemberBody(code, "public string? Send(") ?? "";
         var calls = System.Text.RegularExpressions.Regex.Matches(send, @"\bconnectThenRead\(").Count;
         if (calls != 1) problems.Add("Send makes its page through connectThenRead( " + N(calls) + " times, not once");
         return problems.ToArray();
@@ -883,68 +976,10 @@ internal static class RevitCommandDeadlineTests
     // TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default): reading Exception marks a late fault observed.
     // Mutation self-test: the checker flags the continuation removed, hidden in a comment or a (regular, verbatim or raw)
     // string, on another task, not reading Exception, for cancels instead of faults, duplicated, or out of place.
-    static string StripCommentsAndLiterals(string source)
-    {
-        var text = new StringBuilder(source.Length);
-        void Skip(int from, int to) { for (var k = from; k < to; k++) if (source[k] == '\n') text.Append('\n'); }
-        var i = 0;
-        while (i < source.Length)
-        {
-            var c = source[i];
-            var next = i + 1 < source.Length ? source[i + 1] : '\0';
-            if (c == '/' && next == '/') { while (i < source.Length && source[i] != '\n') i++; continue; }
-            if (c == '/' && next == '*')
-            {
-                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                var stop = end < 0 ? source.Length : end + 2;
-                Skip(i, stop);
-                text.Append(' ');
-                i = stop;
-                continue;
-            }
-            if (c == '"' || c == '\'')
-            {
-                var previous = i > 0 ? source[i - 1] : '\0';
-                var verbatim = c == '"' && (previous == '@' || (previous == '$' && i > 1 && source[i - 2] == '@'));
-                var quotes = 0;
-                while (c == '"' && !verbatim && i + quotes < source.Length && source[i + quotes] == '"') quotes++;
-                if (quotes >= 3)
-                {
-                    // Raw string literal: closed by the same number of quotes.
-                    var close = source.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
-                    var stop = close < 0 ? source.Length : close + quotes;
-                    text.Append("\"\"");
-                    Skip(i, stop);
-                    i = stop;
-                    continue;
-                }
-                var start = i;
-                i++;
-                while (i < source.Length)
-                {
-                    var d = source[i];
-                    i++;
-                    if (verbatim && d == '"' && i < source.Length && source[i] == '"') { i++; continue; }
-                    if (!verbatim && d == '\\' && i < source.Length) { i++; continue; }
-                    if (d == c || (!verbatim && d == '\n')) break;
-                }
-                text.Append(c).Append(c);
-                Skip(start, i);
-                continue;
-            }
-            text.Append(c);
-            i++;
-        }
-        return text.ToString();
-    }
-
     static string[] ContinuationProblems(string source)
     {
-        var code = StripCommentsAndLiterals(source.ReplaceLineEndings("\n"));
-        var start = code.IndexOf("internal static string? ReadReplyLine(", StringComparison.Ordinal);
-        var end = start < 0 ? -1 : code.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        if (end < 0) return new[] { "no ReadReplyLine definition" };
-        var body = code[start..end];
+        var body = MemberBody(StripCode(source.ReplaceLineEndings("\n")), "internal static string? ReadReplyLine(");
+        if (body is null) return new[] { "no ReadReplyLine definition" };
         var problems = new List<string>();
         if (!System.Text.RegularExpressions.Regex.IsMatch(body, @"\bvar\s+read\s*=\s*readLine\s*\(\s*cancel\s*\.\s*Token\s*\)\s*;"))
             problems.Add("the read is not started as var read = readLine(cancel.Token)");
@@ -993,6 +1028,41 @@ internal static class RevitCommandDeadlineTests
         };
         foreach (var (label, mutant) in mutants)
             check(mutant != Clean && ContinuationProblems(mutant).Length > 0, "P1-37 mutation self-test: the continuation check flags a " + label, string.Join("; ", ContinuationProblems(mutant)));
+        StripHelperSelfTest(Clean, Attach, check);
+    }
+
+    // P1-39: the one strip helper (StripCode) reads interpolation holes as code, nested quotes included, and the method
+    // end is found by brace matching, not by indentation. Mutation self-test on ContinuationProblems and SeamProblems.
+    static void StripHelperSelfTest(string clean, string attach, Action<bool, string, string> check)
+    {
+        const string Hide = "_ = read.ContinueWith(t => t, TaskScheduler.Default);";
+        var cleans = new (string Label, string Source)[]
+        {
+            ("continuation code after a hole holding a \"//\" string on the same line", clean.Replace(attach, "var shown = $\"{(read.IsFaulted ? \"//\" : \"\")}\"; " + attach, StringComparison.Ordinal)),
+            ("continuation text after a hole holding an escaped quote", clean.Replace(attach, "var note = $\"{\"\\\"\"}" + Hide + "\";\n        " + attach, StringComparison.Ordinal)),
+            ("continuation text after a verbatim hole holding a char quote", clean.Replace(attach, "var note = $@\"{F('\"')}" + Hide + "\";\n        " + attach, StringComparison.Ordinal)),
+            ("continuation code after a raw hole holding a \"//\" string", clean.Replace(attach, "var shown = $$\"\"\"{{F(\"//\")}}\"\"\"; " + attach, StringComparison.Ordinal)),
+            ("tab indentation", clean.Replace("    ", "\t", StringComparison.Ordinal)),
+            ("two-space indentation", clean.Replace("    ", "  ", StringComparison.Ordinal)),
+            ("a namespace block (eight-space members)", "namespace N\n{\n" + string.Join("\n", clean.TrimEnd('\n').Split('\n').Select(line => line.Length == 0 ? line : "    " + line)) + "\n}\n"),
+        };
+        foreach (var (label, source) in cleans)
+            check(ContinuationProblems(source).Length == 0, "P1-39 strip self-test: the continuation check passes with " + label, string.Join("; ", ContinuationProblems(source)));
+        var mutants = new (string Label, string Source)[]
+        {
+            ("second continuation after a hole holding a \"//\" string", clean.Replace(attach, attach + "\n        var shown = $\"{(read.IsFaulted ? \"//\" : \"\")}\"; " + Hide, StringComparison.Ordinal)),
+            ("second continuation inside a hole", clean.Replace(attach, attach + "\n        var shown = $\"{(read.IsFaulted ? \"x\" : \"\")} {read.ContinueWith(t => t, TaskScheduler.Default)}\";", StringComparison.Ordinal)),
+            ("removed continuation, tab indentation", clean.Replace(attach, "", StringComparison.Ordinal).Replace("    ", "\t", StringComparison.Ordinal)),
+            ("continuation in a following method, tab indentation", clean.Replace("        " + attach + "\n", "", StringComparison.Ordinal).Replace("    }\n}\n", "    }\n    static void After(Task<string?> read)\n    {\n        " + attach + "\n    }\n}\n", StringComparison.Ordinal).Replace("    ", "\t", StringComparison.Ordinal)),
+        };
+        foreach (var (label, source) in mutants)
+            check(source != clean && ContinuationProblems(source).Length > 0, "P1-39 strip self-test: the continuation check flags a " + label, "no problem flagged");
+
+        const string Send = "class T\n{\n    public string? Send(string line)\n    {\n        var pipe = connectThenRead(wait, ReadAfter);\n        return pipe(line);\n    }\n}\n";
+        check(SeamProblems(Send.Replace("    ", "\t", StringComparison.Ordinal)).Length == 0, "P1-39 strip self-test: the seam check passes a tab-indented Send",
+            string.Join("; ", SeamProblems(Send.Replace("    ", "\t", StringComparison.Ordinal))));
+        var hidden = Send.Replace("        return pipe(line);", "        var s = $\"{(line is null ? \"//\" : \"\")}\"; var c = cutTransport;\n        return pipe(line);", StringComparison.Ordinal);
+        check(SeamProblems(hidden).Length > 0, "P1-39 strip self-test: the seam check flags a seam in code after a hole holding a \"//\" string", "no problem flagged");
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
@@ -1018,7 +1088,7 @@ internal static class RevitCommandDeadlineTests
         {
             var relative = Path.GetRelativePath(root, file).Replace('\\', '/');
             if (relative.Split('/').Any(part => part is "bin" or "obj" || part.StartsWith('.'))) continue;
-            var code = StripCommentsAndLiterals(File.ReadAllText(file).ReplaceLineEndings("\n"));
+            var code = StripCode(File.ReadAllText(file).ReplaceLineEndings("\n"));
             if (System.Text.RegularExpressions.Regex.IsMatch(code, @"\bPipeTransportWithReadTimeout\b")) found.Add(relative);
         }
         found.Sort(StringComparer.Ordinal);
@@ -1060,7 +1130,7 @@ internal static class RevitCommandDeadlineTests
             "P1-38 static: RevitDeadlineTransport.cs does not name PipeTransportWithReadTimeout; tests still do", listed);
 
         // (b) The CLI passes no never-called transport.
-        var program = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
+        var program = StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
         var built = System.Text.RegularExpressions.Regex.Matches(program, @"\bnew\s+RevitDeadlineTransport\s*\(").Count;
         var cliArguments = CallArguments(program, "new RevitDeadlineTransport(");
         check(built == 1 && cliArguments.Length == 5 && cliArguments[2] == "null" && cliArguments[3] == "revitOptions.ReadTimeout" && !cliArguments.Any(a => a.Contains("cutReads", StringComparison.Ordinal)),
@@ -1154,7 +1224,10 @@ internal static class RevitCommandDeadlineTests
     // filtered to faults raised inside StreamReader (or decoder faults) and attributed to the step that ran, reports none;
     // (D) a control read faulting the same way as C but never given to ReadReplyLine is reported, proving the detector.
     // (E) The production transport (RevitCommandService.Run over PipeTransportWithTimeouts(200 ms, 5 s)) on the stalled
-    // server is pipe_read_timeout naming 200 ms after the exact wire line, with no unobserved fault after a GC loop.
+    // server is pipe_read_timeout naming 200 ms after the exact wire line; no unobserved fault is seen after a GC loop,
+    // but that read is not reachable from the test, so its collection is not proven (P1-39: A proves the same read form,
+    // collected). (D2, P1-39) a control read like B but never given to ReadReplyLine proves the StreamReader-frame filter
+    // branch matches the pipe-dispose fault where that read faults; where it completes, it records its result.
     sealed class StallingAddIn : IDisposable
     {
         readonly ManualResetEventSlim served = new();
@@ -1205,7 +1278,9 @@ internal static class RevitCommandDeadlineTests
         }
     }
 
-    static string TaskState(Task? task) => task is null ? "not started" : task.IsCanceled ? "canceled" : task.IsFaulted ? "faulted" : task.IsCompletedSuccessfully ? "completed" : "pending";
+    // P1-39: a read that completed records its result (null: the pipe reached end of stream).
+    static string TaskState(Task<string?>? task) => task is null ? "not started" : task.IsCanceled ? "canceled" : task.IsFaulted ? "faulted"
+        : task.IsCompletedSuccessfully ? "completed " + (task.Result is null ? "null" : "line " + task.Result) : "pending";
 
     // Starts a real ReadLineAsync on a client pipe to a stalled server and abandons it: through ReadReplyLine (viaSeam) or
     // never observed (the control). badBytes: the read ignores the cancel and the server sends 0xFF '\n' to a throwing
@@ -1289,6 +1364,19 @@ internal static class RevitCommandDeadlineTests
             check(control.Collected && control.Outcome.Count == 3 && control.Outcome[1] == "served p1-37 D" && control.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal)
                 && control.Faults.Contains("D:" + nameof(DecoderFallbackException)),
                 "P1-37 real pipe detector: a real-pipe read faulting (decoder) and never observed is reported by TaskScheduler.UnobservedTaskException once collected", Describe(control));
+            // P1-39 D2: B's harness (a read ignoring the cancel, pipe disposed under it) never given to ReadReplyLine. Where
+            // it faults (Linux, macOS: IOException) the detector reports it through its StreamReader-frame branch (not a
+            // decoder fault), so the same filter would see B's fault; where it completes (Windows) it reads end of stream.
+            var disposeControl = Step("D2", false, false, false);
+            var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+            check(disposeControl.Collected && disposeControl.Outcome.Count == 3 && disposeControl.Outcome[0] == "unobserved" && disposeControl.Outcome[1] == "served p1-37 D2"
+                && (OperatingSystem.IsWindows()
+                    ? disposeControl.Outcome[2].StartsWith("completed null in ", StringComparison.Ordinal) && disposeControl.Faults.Length == 0
+                    : disposeControl.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal) && disposeControl.Faults.SequenceEqual(new[] { "D2:" + nameof(IOException) })),
+                "P1-39 real pipe dispose control: a never-observed read whose pipe is disposed under it " + (OperatingSystem.IsWindows()
+                    ? "completes with null (end of stream) on Windows, no fault to report"
+                    : "faults IOException and is reported through the detector's StreamReader-frame branch"),
+                Describe(disposeControl) + "; " + runtime);
             var faulting = Step("C", true, false, true);
             check(faulting.Collected && faulting.Outcome.Count == 3 && faulting.Outcome[0] == timeout && faulting.Outcome[1] == "served p1-37 C"
                 && faulting.Outcome[2].StartsWith("faulted in ", StringComparison.Ordinal) && faulting.Faults.Length == 0,
@@ -1301,14 +1389,16 @@ internal static class RevitCommandDeadlineTests
             check(honoured.Collected && honoured.Outcome.Count == 3 && honoured.Outcome[0] == timeout && honoured.Outcome[1] == "served p1-37 A"
                 && !honoured.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !honoured.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && honoured.Faults.Length == 0,
                 "P1-37 real pipe: the production read form (honouring the cancel, pipe disposed at once) times out and raises no UnobservedTaskException", Describe(honoured));
-            // Measured (CI probe run 44788387750): A ends canceled on Linux, macOS and Windows; B (pipe disposed under a read
-            // ignoring the cancel) ends faulted on Linux and macOS (the late fault the continuation observes) and completes
-            // successfully on Windows; C and D fault (decoder) everywhere.
-            var disposedState = OperatingSystem.IsWindows() ? "completed in " : "faulted in ";
+            // Measured (CI probe run 44788387750; P1-39 re-measured in run 44873211457 on .NET 8.0.34, Windows 10.0.26100,
+            // Ubuntu 26.04.1, macOS 25.6): A ends canceled on Linux, macOS and Windows; B (pipe disposed under a read
+            // ignoring the cancel) ends faulted on Linux and macOS (IOException, the late fault the continuation observes;
+            // D2 shows its type) and on Windows completes successfully with null, end of stream (no fault); C and D fault
+            // (decoder) everywhere. Runtime behaviour, not a documented guarantee: a newer runtime may move it.
+            var disposedState = OperatingSystem.IsWindows() ? "completed null in " : "faulted in ";
             check(honoured.Outcome[^1].StartsWith("canceled in ", StringComparison.Ordinal) && disposed.Outcome[^1].StartsWith(disposedState, StringComparison.Ordinal)
                 && faulting.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal) && control.Outcome[^1].StartsWith("faulted in ", StringComparison.Ordinal),
                 "P1-37 real pipe states pinned: the production read form ends canceled; a pipe disposed under a read ignoring the cancel ends " + disposedState[..^4] + " on this OS",
-                "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1]);
+                "A " + honoured.Outcome[^1] + " ; B " + disposed.Outcome[^1] + " ; C " + faulting.Outcome[^1] + " ; D " + control.Outcome[^1] + " ; " + runtime);
 
             Volatile.Write(ref step, "E");
             var expected = RevitCommandResponse.Failure(RevitCommandCodes.PipeReadTimeout, "pipe_name",
@@ -1322,7 +1412,7 @@ internal static class RevitCommandDeadlineTests
             GC.WaitForPendingFinalizers();
             var production = Seen("E");
             check(line == expected && served == RevitCommandProtocol.WireLine(RevitCommandProtocol.Parse(wallsText)) && ended >= 190 && production.Length == 0,
-                "P1-37 real pipe through RevitCommandService.Run (PipeTransportWithTimeouts 200 ms): a stalled add-in is pipe_read_timeout naming 200 ms after the exact wire line, no UnobservedTaskException after a GC loop",
+                "P1-37 real pipe through RevitCommandService.Run (PipeTransportWithTimeouts 200 ms): a stalled add-in is pipe_read_timeout naming 200 ms after the exact wire line; none seen after a GC loop (that read is not reachable here, so its collection is unproven: A proves the same read form)",
                 line + " in " + N(ended) + " ms; served " + (served ?? "<none>") + "; unobserved [" + string.Join(", ", production) + "]");
         }
         finally { TaskScheduler.UnobservedTaskException -= detector; }
