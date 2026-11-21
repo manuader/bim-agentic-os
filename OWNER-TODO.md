@@ -408,3 +408,7 @@ No current owner action required for the completed bounded IFC slice. Future exi
 ## Relay261 (2026-11-21, cloud)
 - P3-32, P10-35, P6-34 merged (main d537bd4, CI green). New optional decision (P6-34): the cad-brief does not list reader warnings for dropped tilted inserts. Proposed opt-in BriefExtractOptions.IncludeReaderWarnings + `--include-reader-warnings` (default off, existing bytes unchanged) is written up in docs/contracts/module-contracts.md (cad-brief section). Say "implement" or "leave" in OWNER.md.
 - Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
+
+## Relay262 (2026-11-21, cloud)
+- P10-36, P6-35, P7-36 merged (main 8b5fb43, CI 44907345368 green). The P6-35 skip-the-form option is now written up in docs/contracts (cad-brief section); a malformed PDF form /Matrix now warns instead of silently using the identity. If you approve the P6-34 reader-warnings opt-in, it would also carry these PDF warnings into the brief.
+- Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 "keep"/"skip" and P6-34 reader-warnings opt-in; ONE `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull`.
