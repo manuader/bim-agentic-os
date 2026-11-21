@@ -401,3 +401,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay258 (2026-11-21, cloud)
 - Nothing new for you: P1-39, P5-33, P7-35 merged (main a794700, CI green). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` on Windows.
+
+## Relay260 (2026-11-21, cloud)
+- Nothing new for you: P2-38, P3-29, P4-32 merged (main c38431d, CI green; relay259 stopped mid-run, relay260 took over its stale lock and finished its branches). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); optional P6-35 skip-the-form choice; ONE `scripts/owner-native-session.ps1 -Catalogue` run then catalogue-report; N21 run 3; delete branch relay244-P4-27-red; `git pull` on Windows.
