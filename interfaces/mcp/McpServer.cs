@@ -23,8 +23,14 @@ namespace Bim.Mcp;
 //   "invalid_request: repeated member <name>" before any other envelope check, with the request id only when id is given
 //   once and is a valid id (else null; notifications too); a member of tools/call params given more than once (name,
 //   arguments or any other) is -32602 "invalid_params: repeated params member <name>"; an argument name that is not valid
-//   text (a lone surrogate escape) is -32602 "invalid_params: argument name is not valid text". A member name that is not
-//   valid text outside the arguments object is not compared.
+//   text (a lone surrogate escape) is -32602 "invalid_params: argument name is not valid text".
+// - P10-34: a request member name that is not valid text is -32600 "invalid_request: member name is not valid text"
+//   (before the repeated member check; id only when given once with a valid value), a method value that is not valid
+//   text is -32600 "invalid_request: method is not valid text", a jsonrpc value that is not valid text is -32600
+//   "invalid_request", an id string that is not valid text is -32600 "invalid_request" with id null; a tools/call params
+//   member name that is not valid text is -32602 "invalid_params: params member name is not valid text" (before the
+//   repeated params member check) and a params.name value that is not valid text is -32602
+//   "invalid_params: name is not valid text".
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
@@ -478,35 +484,31 @@ public sealed class McpServer
     string? Dispatch(JsonElement root)
     {
         if (root.ValueKind != JsonValueKind.Object) return Error(null, InvalidRequest, "invalid_request");
+        // P10-34: a member name that is not valid text (a lone surrogate escape) cannot be compared, and a property lookup
+        // over it throws, so it is refused before every other check, with the id only when it is unambiguous.
+        if (!NamesAreText(root)) return Error(OnlyId(root), InvalidRequest, "invalid_request: member name is not valid text");
         // P10-33: JsonDocument keeps a member given twice and a lookup sees only one of its values, so a repeated request
         // member is refused before every other check; a repeated id is never echoed.
-        if (RepeatedMember(root) is { } repeatedMember)
-        {
-            JsonElement? onlyId = null;
-            if (root.EnumerateObject().Count(property => property.NameEquals("id")) == 1 && root.TryGetProperty("id", out var givenId)
-                && givenId.ValueKind is JsonValueKind.String or JsonValueKind.Number or JsonValueKind.Null)
-                onlyId = givenId;
-            return Error(onlyId, InvalidRequest, "invalid_request: repeated member " + repeatedMember);
-        }
+        if (RepeatedMember(root) is { } repeatedMember) return Error(OnlyId(root), InvalidRequest, "invalid_request: repeated member " + repeatedMember);
         JsonElement? id = null;
         var hasId = root.TryGetProperty("id", out var idElement);
         if (hasId)
         {
-            if (idElement.ValueKind != JsonValueKind.String && idElement.ValueKind != JsonValueKind.Number && idElement.ValueKind != JsonValueKind.Null)
-                return Error(null, InvalidRequest, "invalid_request");
+            if (!IsId(idElement)) return Error(null, InvalidRequest, "invalid_request");
             id = idElement;
         }
-        if (!root.TryGetProperty("jsonrpc", out var version) || version.ValueKind != JsonValueKind.String || version.GetString() != "2.0")
+        if (!root.TryGetProperty("jsonrpc", out var version) || version.ValueKind != JsonValueKind.String || TextValue(version) != "2.0")
             return Error(id, InvalidRequest, "invalid_request");
         if (!root.TryGetProperty("method", out var methodElement) || methodElement.ValueKind != JsonValueKind.String)
             return Error(id, InvalidRequest, "invalid_request");
+        if (TextValue(methodElement) is not { } method) return Error(id, InvalidRequest, "invalid_request: method is not valid text");
         // Notifications (including notifications/initialized) never receive a response.
         if (!hasId) return null;
         JsonElement? parameters = null;
         if (root.TryGetProperty("params", out var paramsElement)) parameters = paramsElement;
         try
         {
-            switch (methodElement.GetString())
+            switch (method)
             {
                 case "initialize": return Result(id, Initialize());
                 case "ping": return Result(id, new JsonObject());
@@ -594,15 +596,17 @@ public sealed class McpServer
     {
         if (parameters == null || parameters.Value.ValueKind != JsonValueKind.Object) return Error(id, InvalidParams, "invalid_params: params object required");
         var call = parameters.Value;
+        // P10-34: a params member name that is not valid text cannot be compared and a lookup over it throws.
+        if (!NamesAreText(call)) return Error(id, InvalidParams, "invalid_params: params member name is not valid text");
         if (RepeatedMember(call) is { } repeatedParameter) return Error(id, InvalidParams, "invalid_params: repeated params member " + repeatedParameter);
         if (!call.TryGetProperty("name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String) return Error(id, InvalidParams, "invalid_params: name required");
+        if (TextValue(nameElement) is not { } name) return Error(id, InvalidParams, "invalid_params: name is not valid text");
         var arguments = EmptyArguments;
         if (call.TryGetProperty("arguments", out var argumentsElement))
         {
             if (argumentsElement.ValueKind != JsonValueKind.Object) return Error(id, InvalidParams, "invalid_params: arguments must be an object");
             arguments = argumentsElement;
         }
-        var name = nameElement.GetString();
         var tool = tools.FirstOrDefault(candidate => candidate.Name == name);
         if (tool == null) return Result(id, ToolResult(Failed("unknown_tool"), true));
         // P10-31: JsonDocument keeps a name given twice in the arguments object and a lookup sees only one of its values,
@@ -659,12 +663,42 @@ public sealed class McpServer
         string name;
         try { name = property.Name; }
         catch (Exception error) when (error is InvalidOperationException or ArgumentException) { return null; }
-        for (var i = 0; i < name.Length; i++)
+        return IsText(name) ? name : null;
+    }
+
+    // P10-34: a string value decoded as valid UTF-16 text, or null when it holds an unpaired surrogate.
+    static string? TextValue(JsonElement value)
+    {
+        string? text;
+        try { text = value.GetString(); }
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException) { return null; }
+        return text is not null && IsText(text) ? text : null;
+    }
+
+    static bool IsText(string text)
+    {
+        for (var i = 0; i < text.Length; i++)
         {
-            if (char.IsHighSurrogate(name[i]) && i + 1 < name.Length && char.IsLowSurrogate(name[i + 1])) i++;
-            else if (char.IsSurrogate(name[i])) return null;
+            if (char.IsHighSurrogate(text[i]) && i + 1 < text.Length && char.IsLowSurrogate(text[i + 1])) i++;
+            else if (char.IsSurrogate(text[i])) return false;
         }
-        return name;
+        return true;
+    }
+
+    static bool NamesAreText(JsonElement value) => value.EnumerateObject().All(property => TextName(property) is not null);
+
+    // A valid JSON-RPC id: a number, null, or a string that is valid text (so it can be echoed).
+    static bool IsId(JsonElement value) =>
+        value.ValueKind is JsonValueKind.Number or JsonValueKind.Null || (value.ValueKind == JsonValueKind.String && TextValue(value) is not null);
+
+    // The request id when id is given exactly once (by decoded name) with a valid id value, else null.
+    static JsonElement? OnlyId(JsonElement root)
+    {
+        JsonElement? only = null;
+        var count = 0;
+        foreach (var property in root.EnumerateObject())
+            if (TextName(property) == "id") { count++; only = property.Value; }
+        return count == 1 && IsId(only!.Value) ? only : null;
     }
 
     // Each tool mirrors the matching CLI case, including the order in which inputs are read.
