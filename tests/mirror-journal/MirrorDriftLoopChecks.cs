@@ -2370,18 +2370,20 @@ static class MirrorDriftLoopChecks
                 + " lowered_seam_line=" + (loweredSeam?.Line is { } low ? (low.Length > 200 ? low[..200] + "..." : low) : "<none>");
             var leversOk = raisedLever.Calls == 1 && raisedLever.Error.Length == 0 && loweredLever.Calls == 1 && loweredLever.Error.Length == 0;
             var precondition = leversOk && sendBuffer > 0 && raisedLever.Default == sendBuffer && loweredLever.Default == sendBuffer
-                && raised > sendBuffer && raised % chunk == 0 && inBuffer > raised && lowered > 0 && lowered < sendBuffer && lowered % chunk == 0;
+                && raised > sendBuffer && raised % chunk == 0 && inBuffer > raised && lowered > 0 && lowered < sendBuffer && lowered % chunk == 0
+                && lowered != MidArgsBreakBytes;
             Check(precondition,
-                "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default and lowered (0 < lowered < default) are whole multiples of the " + chunk + "-byte piece, and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer", macDetail);
-            Check(precondition
-                && seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
+                "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default and lowered (0 < lowered < default) are whole multiples of the " + chunk + "-byte piece, lowered differs from the " + MidArgsBreakBytes + " bytes the fake reads (P2-38: handed == read + lowered is not 2 x read), and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer", macDetail);
+            // P2-38: the precondition guards every macOS relation once; a relation cannot pass without it.
+            void Relation(bool relation, string name) => Check(precondition && relation, name, macDetail);
+            Relation(seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
                 && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue", macDetail);
-            Check(precondition && loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
+                "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue");
+            Relation(loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
                 && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes)
                 && loweredQueued == lowered && loweredHanded == MidArgsBreakBytes + lowered && loweredHanded % chunk == 0
                 && loweredQueued < cliQueued && loweredHanded < handed,
-                "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways", macDetail);
+                "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways");
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
