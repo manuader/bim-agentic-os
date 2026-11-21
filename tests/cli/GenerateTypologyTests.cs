@@ -2623,10 +2623,21 @@ internal static class GenerateTypologyTests
     // OpenStandardError, SetError or using static Console is a problem.
     static List<string> StderrWriteProblems(string source)
     {
-        // P3-32 red probe: the P3-31 look-behind regex, kept until the layout-independent checker replaces it.
-        var code = ApplyIntentTests.CodeOf(source, blankStrings: false);
-        var unguarded = System.Text.RegularExpressions.Regex.Matches(code, @"(?<!try\s*\{\s*)Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(").Count;
-        return unguarded == 0 ? new List<string>() : new List<string> { unguarded.ToString(CultureInfo.InvariantCulture) + " unguarded Console.Error.WriteLine" };
+        var code = ApplyIntentTests.CodeOf(source);
+        const string Stderr = @"(?<![\w.:])(?:global\s*::\s*)?(?:System\s*\.\s*)?Console\s*\.\s*Error\b";
+        const string Arguments = @"\((?:[^()]|\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\))*\)"; // up to four levels of nesting
+        const string Guarded = @"\btry\s*\{\s*" + Stderr + @"\s*\.\s*WriteLine\s*" + Arguments
+            + @"\s*;\s*\}\s*catch\s*\(\s*(?:global\s*::\s*)?(?:System\s*\.\s*)?Exception(?:\s+@?[A-Za-z_]\w*)?\s*\)\s*\{\s*\}";
+        var problems = new List<string>();
+        var uses = System.Text.RegularExpressions.Regex.Matches(code, Stderr).Count;
+        var guarded = System.Text.RegularExpressions.Regex.Matches(code, Guarded).Count;
+        if (uses != guarded)
+            problems.Add(uses.ToString(CultureInfo.InvariantCulture) + " Console.Error uses but " + guarded.ToString(CultureInfo.InvariantCulture)
+                + " in the guarded shape try { Console.Error.WriteLine(...); } catch (Exception) { }");
+        foreach (var (label, pattern) in new[] { ("OpenStandardError", @"\bOpenStandardError\b"), ("SetError", @"\bSetError\b"),
+            ("using static Console", @"\busing\s+static\s+(?:global\s*::\s*)?(?:System\s*\.\s*)?Console\s*;") })
+            if (System.Text.RegularExpressions.Regex.IsMatch(code, pattern)) problems.Add(label);
+        return problems;
     }
 
     // P3-31: a stdout that accepts a budget of characters and then throws (as P7-32's in GeneratePrototypesTests). Each
@@ -2654,6 +2665,8 @@ internal static class GenerateTypologyTests
         }
         public override void Write(char value) { Attempts.Add(value.ToString()); Take(value.ToString()); }
         public override void Write(string? value) { Attempts.Add(value ?? ""); Take(value ?? ""); }
+        public override void Write(char[] buffer, int index, int count) { var value = new string(buffer, index, count); Attempts.Add(value); Take(value); }
+        public override void WriteLine() { Attempts.Add(""); Take(NewLine); }
         public override void WriteLine(string? value) { Attempts.Add(value ?? ""); Take((value ?? "") + NewLine); }
     }
 
@@ -2666,6 +2679,8 @@ internal static class GenerateTypologyTests
         public override Encoding Encoding => new UTF8Encoding(false);
         public override void Write(char value) { Attempts.Add(value.ToString()); inner.Write(value); }
         public override void Write(string? value) { Attempts.Add(value ?? ""); inner.Write(value); }
+        public override void Write(char[] buffer, int index, int count) { Attempts.Add(new string(buffer, index, count)); inner.Write(buffer, index, count); }
+        public override void WriteLine() { Attempts.Add(""); inner.WriteLine(); }
         public override void WriteLine(string? value) { Attempts.Add(value ?? ""); inner.WriteLine(value); }
     }
 
