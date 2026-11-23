@@ -821,8 +821,18 @@ internal static class MinsertEzdxfTests
         ("Q3", "ROOM", "insert", -21879.39020079522, -48622.722753071364),
     };
 
-    // A z member of a Bim.Cad entity by name (P6-38 adds StartZ/EndZ/Elevation); null when the type has no such member.
-    private static double? Member(object entity, string name) => entity.GetType().GetProperty(name)?.GetValue(entity) as double?;
+    // A z member of a Bim.Cad entity by name (StartZ/EndZ of a LINE, Elevation of the others); null when it has none.
+    private static double? Member(object entity, string name) => (entity, name) switch
+    {
+        (DxfLine line, "StartZ") => line.StartZ,
+        (DxfLine line, "EndZ") => line.EndZ,
+        (DxfCircle circle, "Elevation") => circle.Elevation,
+        (DxfArc arc, "Elevation") => arc.Elevation,
+        (DxfText text, "Elevation") => text.Elevation,
+        (DxfAttribute attribute, "Elevation") => attribute.Elevation,
+        (DxfPolyline polyline, "Elevation") => polyline.Elevation,
+        _ => null,
+    };
 
     private static Point2 At(Point2 center, double radius, double degrees) =>
         new(center.X + radius * Math.Cos(degrees * Math.PI / 180), center.Y + radius * Math.Sin(degrees * Math.PI / 180));

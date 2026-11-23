@@ -18,8 +18,10 @@ namespace Bim.Cad;
 // through the XY transform) plus the enclosing z direction times its ZAxisZ becomes its block's. Under near +-Z
 // normals this keeps nested elevations within 1e-6 of ezdxf. P6-36: the insert's Z scale (group 43) scales its block's
 // z direction, the BLOCK base point z is subtracted along it, and a leaf LWPOLYLINE's elevation (group 38) shifts it
-// like a nested insertion height; all are zero shifts when every level is exact +-Z. The z of LINE, CIRCLE/ARC and
-// TEXT and of ATTRIBs is still dropped.
+// like a nested insertion height; all are zero shifts when every level is exact +-Z. P6-38: so do the z of LINE end
+// points (StartZ/EndZ), of a CIRCLE/ARC centre and of a TEXT/MTEXT or ATTDEF insertion (Elevation) under the block's
+// z direction, and an INSERT's ATTRIBs (which live where the INSERT lives) under the enclosing z direction. The z
+// members are consumed here: every placed copy has them 0 (a model-space entity keeps what was read).
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -99,7 +101,7 @@ public static class DxfExploder
                         .Compose(Affine.Rotate(insert.RotationDegrees))
                         .Compose(Affine.Scale(insert.ScaleX, insert.ScaleY))
                         .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
-                    EmitBlock(insert, block, key, transform, placed.Compose(local), blockZ, path.Append(key).ToArray(), layer, paper, invisible, depth);
+                    EmitBlock(insert, block, key, transform, placed.Compose(local), zToXY, blockZ, path.Append(key).ToArray(), layer, paper, invisible, depth);
                     return;
                 }
                 // MINSERT: one placement per cell, row by row; every cell after the first also counts as visited work.
@@ -117,21 +119,36 @@ public static class DxfExploder
                             .Compose(Affine.Translate(new Point2(-block.BasePoint.X, -block.BasePoint.Y)));
                         // ATTRIBs are placed for cell (0,0); other cells shift them by the rotated cell offset.
                         var attributes = transform.Compose(Affine.Translate(rotation.ApplyVector(offset)));
-                        EmitBlock(insert, block, key, attributes, placed.Compose(local), blockZ, path.Append(DxfInsertPath.Cell(key, row, column)).ToArray(), layer, paper, invisible, depth);
+                        EmitBlock(insert, block, key, attributes, placed.Compose(local), zToXY, blockZ, path.Append(DxfInsertPath.Cell(key, row, column)).ToArray(), layer, paper, invisible, depth);
                     }
                 }
                 return;
             }
-            // P6-36: a leaf LWPOLYLINE's plane height reaches world XY through the enclosing near +-Z normals.
-            if (entity is DxfPolyline { Elevation: not 0.0 } plane && (zToXY.X != 0 || zToXY.Y != 0))
-                transform = Affine.Translate(zToXY * plane.Elevation).Compose(transform);
-            Add(transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance));
+            // P6-36/P6-38: a leaf's z (a LWPOLYLINE plane height, a centre or insertion z, a LINE start z) reaches world
+            // XY through the enclosing near +-Z normals; a LINE end moves by its own z below.
+            var lifted = zToXY.X != 0 || zToXY.Y != 0;
+            if (lifted && LeafZ(entity) is var z and not 0.0) transform = Affine.Translate(zToXY * z).Compose(transform);
+            var output = transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance);
+            if (lifted && entity is DxfLine sourceLine && sourceLine.EndZ != sourceLine.StartZ && output is DxfLine placedLine)
+                output = placedLine with { End = placedLine.End + zToXY * (sourceLine.EndZ - sourceLine.StartZ) };
+            Add(output);
         }
+
+        private static double LeafZ(DxfEntity entity) => entity switch
+        {
+            DxfPolyline polyline => polyline.Elevation,
+            DxfLine line => line.StartZ,
+            DxfCircle circle => circle.Elevation,
+            DxfArc arc => arc.Elevation,
+            DxfText text => text.Elevation,
+            DxfAttribute attribute => attribute.Elevation,
+            _ => 0,
+        };
 
         // Emits one placement of a block: its entities through world, then the INSERT's ATTRIBs (already in the
         // coordinates the INSERT lives in, moved by attributeTransform) and the block's constant ATTDEFs.
         // InsertHandle of the emitted attributes is the INSERT's bare key, also for MINSERT cells.
-        private void EmitBlock(DxfInsert insert, DxfBlock block, string key, Affine attributeTransform, Affine world, Point2 blockZ, string[] childPath, string layer, bool paper, bool invisible, int depth)
+        private void EmitBlock(DxfInsert insert, DxfBlock block, string key, Affine attributeTransform, Affine world, Point2 insertZ, Point2 blockZ, string[] childPath, string layer, bool paper, bool invisible, int depth)
         {
             stack.Add(block.Name);
             foreach (var child in block.Entities)
@@ -146,17 +163,18 @@ public static class DxfExploder
             foreach (var attribute in insert.Attributes)
             {
                 tags!.Add(attribute.Tag);
-                EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, attributeTransform, childPath, layer, paper, invisible);
+                EmitAttribute(attribute with { InsertHandle = key, BlockName = block.Name }, attributeTransform, insertZ, childPath, layer, paper, invisible);
             }
             foreach (var child in block.Entities)
             {
                 if (child is not DxfAttribute { IsDefinition: true, IsConstant: true } definition || (tags is not null && tags.Contains(definition.Tag))) continue;
-                EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, childPath, layer, paper, invisible);
+                EmitAttribute(definition with { InsertHandle = key, BlockName = block.Name }, world, blockZ, childPath, layer, paper, invisible);
             }
         }
 
-        private void EmitAttribute(DxfAttribute attribute, Affine transform, IReadOnlyList<string> path, string layer, bool paper, bool invisible)
+        private void EmitAttribute(DxfAttribute attribute, Affine transform, Point2 zToXY, IReadOnlyList<string> path, string layer, bool paper, bool invisible)
         {
+            if (attribute.Elevation != 0 && (zToXY.X != 0 || zToXY.Y != 0)) transform = Affine.Translate(zToXY * attribute.Elevation).Compose(transform);
             var source = attribute.Provenance;
             Spend(source.Line);
             var provenance = source with
@@ -205,12 +223,12 @@ public static class DxfExploder
                 case DxfText text:
                     {
                         var (insertion, height, rotation) = Place(m, text.Insertion, text.Height, text.RotationDegrees);
-                        return text with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation };
+                        return text with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation, Elevation = 0 };
                     }
                 case DxfAttribute attribute:
                     {
                         var (insertion, height, rotation) = Place(m, attribute.Insertion, attribute.Height, attribute.RotationDegrees);
-                        return attribute with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation };
+                        return attribute with { Provenance = p, Insertion = insertion, Height = height, RotationDegrees = rotation, Elevation = 0 };
                     }
                 default:
                     return entity with { Provenance = p };
