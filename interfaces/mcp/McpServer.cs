@@ -31,6 +31,8 @@ namespace Bim.Mcp;
 //   member name that is not valid text is -32602 "invalid_params: params member name is not valid text" (before the
 //   repeated params member check) and a params.name value that is not valid text is -32602
 //   "invalid_params: name is not valid text".
+// - P10-38: a params member of initialize, ping or tools/list given more than once is -32602
+//   "invalid_params: repeated params member <name>" with the id (after the P10-36 params member text check).
 // Side-effecting CLI commands (native, evaluate, init, commit-intent, ifc-export) are deliberately not exposed.
 // mirror_drift (P2-08) is read-only: its text is the file the CLI mirror-drift verb writes (MirrorDriftTool.cs).
 // mirror_drift_select (P2-10) is read-only: its text is the file the CLI mirror-drift-select verb writes (the canonical
@@ -511,9 +513,13 @@ public sealed class McpServer
         JsonElement? parameters = null;
         if (root.TryGetProperty("params", out var paramsElement)) parameters = paramsElement;
         // P10-36: the params member names of the other known methods are checked as text like tools/call's (P10-34);
-        // their params are otherwise unread, so _meta content is never compared or echoed.
-        if (method is "initialize" or "ping" or "tools/list" && parameters is { ValueKind: JsonValueKind.Object } other && !NamesAreText(other))
-            return Error(id, InvalidParams, "invalid_params: params member name is not valid text");
+        // P10-38: then a member given twice is refused like tools/call's (P10-33). Their params are otherwise unread, so
+        // _meta content is never compared or echoed.
+        if (method is "initialize" or "ping" or "tools/list" && parameters is { ValueKind: JsonValueKind.Object } other)
+        {
+            if (!NamesAreText(other)) return Error(id, InvalidParams, "invalid_params: params member name is not valid text");
+            if (RepeatedMember(other) is { } repeatedParameter) return Error(id, InvalidParams, "invalid_params: repeated params member " + repeatedParameter);
+        }
         try
         {
             switch (method)
