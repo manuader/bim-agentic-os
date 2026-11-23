@@ -28,6 +28,8 @@ using System.Text;
 // overflows only x keep the warning pending; one shared swallow guard (ordered member anchors) serves every static check.
 // P6-35: a present form /Matrix that is not six numbers gives operand-error at the Do (identity used); cm and Do message
 // shapes are pinned; the Do operand-errors are not in the cad-brief CLI document, which equals the in-process bytes.
+// P6-37: a /Matrix entry that would be NaN or Infinity is not a PDF number token, so the /Matrix is malformed (identity);
+// each Do of a bad form warns (no warn-once); the CLI check's mirrored CadCommand options are pinned against its source.
 internal static class PdfType3GlyphListTests
 {
     private static string I(long value) => value.ToString(CultureInfo.InvariantCulture);
@@ -663,6 +665,40 @@ internal static class PdfType3GlyphListTests
             // BT 8, Tf 9, Tm 10, Tj 11, ET 12 (overflow: /Matrix 1e60 under CTM 1e300; malformed: 5 entries).
             var root = Path.GetFullPath(Path.Combine(fixtures, "..", "..", ".."));
             var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+            // P6-37: the expected document below is built with the options CadCommand uses, and those are pinned against
+            // interfaces/cli/CadCommand.cs (the tests do not reference Bim.Cli, whose CadCommand is internal): each line
+            // the in-process copy mirrors must occur in the source exactly the given number of times, so a changed reader
+            // option, brief option, serializer setting or document member fails here by name instead of as a digest drift.
+            const int cliMaxInputBytes = 32 * 1024 * 1024;
+            var cadCommandPins = new (string Line, int Count)[]
+            {
+                ("public const int MaxInputBytes = 32 * 1024 * 1024;", 1),
+                ("new PdfReadOptions(", 1),
+                ("pdf = PdfReader.Parse(bytes, sourceFile, new PdfReadOptions(MaxBytes: MaxInputBytes));", 1),
+                ("var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };", 1),
+                ("BriefExtract.FromPdf(pdf!, page!.Value, calibration, briefOptions)", 1),
+                ("static readonly JsonSerializerOptions Json = new() { Converters = { new JsonStringEnumConverter() } };", 1),
+                ("written = JsonSerializer.SerializeToUtf8Bytes(document, Json);", 1),
+                ("kind = \"cad-brief\",", 1),
+                ("version = 1,", 2),
+                ("persisted = false,", 2),
+                ("source = new { file = sourceFile, format, bytes = bytes.LongLength, sha256 = Convert.ToHexString(sha), page, scale, metres_per_unit = result.MetresPerUnit },", 1),
+                ("brief = JsonNode.Parse(BriefSerializer.Serialize(result.Brief)),", 1),
+                ("rooms = result.Rooms,", 1),
+                ("uncertainties = result.Uncertainties,", 2),
+                ("issues = result.Issues,", 1),
+                (": \"none\";", 1),
+            };
+            static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins) =>
+                string.Join("; ", pins.Where(pin => Occurrences(source, pin.Line) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(source, pin.Line)) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+            var cadCommandPath = Path.Combine(root, "interfaces", "cli", "CadCommand.cs");
+            var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
+            C(cadCommand.Length > 0 && PinProblems(cadCommand, cadCommandPins) is null,
+                "p6-37 cli options: the expected cad-brief document mirrors CadCommand.cs (PdfReadOptions MaxBytes 32 MiB only, brief options, serializer, members)",
+                cadCommandPath + " " + (PinProblems(cadCommand, cadCommandPins) ?? "pins hold"));
+            var drifted = cadCommand.Replace("new PdfReadOptions(MaxBytes: MaxInputBytes)", "new PdfReadOptions(MaxBytes: MaxInputBytes, MaxWarnings: 5)", StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && PinProblems(drifted, cadCommandPins) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
+                "p6-37 cli options self-test: an extra PdfReadOptions argument in CadCommand.cs is caught by name", PinProblems(drifted, cadCommandPins) ?? "not caught");
             C(File.Exists(cliDll), "p6-35 cli precondition: the Release Bim.Cli.dll exists (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
             if (File.Exists(cliDll))
             {
@@ -683,8 +719,9 @@ internal static class PdfType3GlyphListTests
                     {
                         var file = label + ".pdf";
                         var bytes = PdfToUnicodeTests.PageBytes(cliPage, Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>", null, RawForm(" /Matrix [" + matrix + "]", "q Q"));
-                        // The document CadCommand writes for a PDF cad-brief without a scale option (interfaces/cli/CadCommand.cs).
-                        var pdf = PdfReader.Parse(bytes, file, new PdfReadOptions(MaxBytes: 32 * 1024 * 1024));
+                        // The document CadCommand writes for a PDF cad-brief without a scale option (interfaces/cli/CadCommand.cs,
+                        // the mirrored lines pinned above, P6-37).
+                        var pdf = PdfReader.Parse(bytes, file, new PdfReadOptions(MaxBytes: cliMaxInputBytes));
                         var result = BriefExtract.FromPdf(pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false });
                         var document = new
                         {
@@ -737,7 +774,8 @@ internal static class PdfType3GlyphListTests
             }
         }
         catch (Exception error) { C(false, "p6-35 unexpected", error.GetType().Name + ": " + error.Message); }
-        // ---------- P6-37: non-finite /Matrix entries, warnings per invocation, CLI option pins ----------
+
+        // ---------- P6-37: non-finite /Matrix entries, warnings per invocation ----------
         try
         {
             string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
@@ -748,27 +786,57 @@ internal static class PdfType3GlyphListTests
             var e60 = "1" + new string('0', 60);
             var e63 = "1" + new string('0', 63);
             var e64 = "1" + new string('0', 64);
+            var ctm1e300 = string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5));
             static (int Number, byte[] Body) RawForm(string matrixEntry, string content) =>
                 (8, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + matrixEntry, L(content)));
             const string formShow = "BT /F2 10 Tf 1 0 0 1 10 10 Tm (A) Tj ET";
             PdfDocument Form(string page, string matrixEntry, string xobjects = "/XObject << /X1 8 0 R >>", string extra = "100") =>
                 PdfToUnicodeTests.Page(page, Type1("[1 /g1]"), null, xobjects, RawForm(matrixEntry, formShow), (9, L(extra)));
-            string Probe(Func<PdfDocument> build)
-            {
-                try { return Measure(build()); }
-                catch (Exception error) { return error.GetType().Name + ": " + error.Message; }
-            }
+            const string malformed = "Do /X1 expects a /Matrix of 6 numbers; the identity matrix is used";
+            const string nonFinite = "Do /X1 gives a non-finite form matrix; the current matrix is kept";
 
-            var probes = new List<string>();
-            foreach (var entry in new[] { "1e400", "-1e400", "1E400", "1e10", "Infinity", "NaN", e64, e63 })
-                probes.Add("entry " + (entry.Length > 20 ? I(entry.Length) + "-char" : entry) + " => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 " + entry + " 0]")));
-            probes.Add("indirect 1e400 => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 9 0 R 0]", extra: "1e400")));
-            probes.Add("e63 under 1e300 => " + Probe(() => Form(string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do", " /Matrix [" + e63 + " 0 0 " + e63 + " 0 0]")));
-            probes.Add("twice => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do /X1 Do", " /Matrix [1 0 0 1 100]")));
-            probes.Add("two names => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do /X2 Do", " /Matrix [1 0 0 1 100]", "/XObject << /X1 8 0 R /X2 8 0 R >>")));
-            probes.Add("twice in q => " + Probe(() => Form("2 0 0 2 0 0 cm q /X1 Do Q q /X1 Do Q", " /Matrix [1 0 0 1 100]")));
-            probes.Add("overflow twice => " + Probe(() => Form(string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do /X1 Do", " /Matrix [" + e60 + " 0 0 " + e60 + " 0 0]")));
-            foreach (var probe in probes) C(false, "p6-37 probe", probe);
+            // (1) A /Matrix of six entries one of which would be NaN or Infinity as a double. Measured (P6-37): no PDF number
+            // token is non-finite — the lexer reads only sign, digits and '.', at most 64 characters (PdfSyntax.ParseNumber;
+            // PDF numbers have no exponent), so 1e400, 1E400, -1e400, 1e10, Infinity, NaN and a 65-character digit run are
+            // not numbers but keywords, directly or through an indirect object. Documented one way: such an entry makes the
+            // /Matrix malformed (the P6-35 message, identity used, form under the page CTM 2: (20, 20) h20), never the
+            // non-finite message. The non-finite message stays for six finite numbers whose composition overflows
+            // (1e63 under CTM 1e300); the largest number token (64 digits, 1e63) composes silently. Page: cm 0, Do 1.
+            foreach (var (entry, what) in new[]
+            {
+                ("1e400", "1e400"), ("-1e400", "-1e400"), ("1E400", "1E400"), ("1e10", "1e10 (exponent form)"), ("Infinity", "Infinity"), ("NaN", "NaN"),
+                (e64, "a 65-character digit run"),
+            })
+            {
+                var document = Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 " + entry + " 0]");
+                C(Measure(document) == "[A] operand-error@1:4:1 {" + malformed + "} 20,20 h20",
+                    "a form /Matrix entry " + what + " is not a number: malformed /Matrix message, identity used (P6-37)", Measure(document));
+            }
+            var indirect = Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 9 0 R 0]", extra: "1e400");
+            C(Measure(indirect) == "[A] operand-error@1:4:1 {" + malformed + "} 20,20 h20",
+                "a form /Matrix entry referencing an object 1e400 is not a number: malformed /Matrix message (P6-37)", Measure(indirect));
+            var largest = Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 " + e63 + " 0]");
+            C(Measure(largest) == "[A]  {} 2E+63,20 h20",
+                "control: a 64-character number entry (1e63) is a number and composes silently (P6-37)", Measure(largest));
+            var overflow = Form(ctm1e300 + "/X1 Do", " /Matrix [" + e63 + " 0 0 " + e63 + " 0 0]");
+            C(Texts(overflow) == "A" && Warnings(overflow) == "operand-error@1:4:5" && Messages(overflow) == nonFinite,
+                "six finite numbers (1e63) composing to non-finite under CTM 1e300 give the non-finite message, not the malformed one (P6-37)", Measure(overflow));
+
+            // (2) Warnings per invocation. Measured (P6-37): a malformed (or overflowing) /Matrix is reported at every Do that
+            // invokes the form, not once per form: there is no warn-once memory, as each bad cm warns. Documented and pinned
+            // that way (each Do position is a separate finding a caller may need). Text bytes unchanged.
+            var twice = Form("2 0 0 2 0 0 cm /X1 Do /X1 Do", " /Matrix [1 0 0 1 100]");
+            C(Measure(twice) == "[A|A] operand-error@1:4:1;operand-error@1:4:2 {" + malformed + " / " + malformed + "} 20,20 h20|20,20 h20",
+                "a form with a malformed /Matrix invoked twice gives 2 warnings, one per Do (P6-37)", Measure(twice));
+            var names = Form("2 0 0 2 0 0 cm /X1 Do /X2 Do", " /Matrix [1 0 0 1 100]", "/XObject << /X1 8 0 R /X2 8 0 R >>");
+            C(Measure(names) == "[A|A] operand-error@1:4:1;operand-error@1:4:2 {" + malformed + " / " + malformed.Replace("/X1", "/X2", StringComparison.Ordinal) + "} 20,20 h20|20,20 h20",
+                "one form under two resource names gives 2 warnings, each naming its resource (P6-37)", Measure(names));
+            var saved = Form("2 0 0 2 0 0 cm q /X1 Do Q q /X1 Do Q", " /Matrix [1 0 0 1 100]");
+            C(Measure(saved) == "[A|A] operand-error@1:4:2;operand-error@1:4:5 {" + malformed + " / " + malformed + "} 20,20 h20|20,20 h20",
+                "a form with a malformed /Matrix invoked twice inside q ... Q gives 2 warnings (P6-37)", Measure(saved));
+            var overflowTwice = Form(ctm1e300 + "/X1 Do /X1 Do", " /Matrix [" + e60 + " 0 0 " + e60 + " 0 0]");
+            C(Texts(overflowTwice) == "A|A" && Warnings(overflowTwice) == "operand-error@1:4:5;operand-error@1:4:6" && Messages(overflowTwice) == nonFinite + " / " + nonFinite,
+                "a form whose /Matrix overflows invoked twice gives 2 non-finite warnings (P6-37)", Measure(overflowTwice));
         }
         catch (Exception error) { C(false, "p6-37 unexpected", error.GetType().Name + ": " + error.Message); }
     }
