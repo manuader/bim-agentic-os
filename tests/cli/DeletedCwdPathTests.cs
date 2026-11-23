@@ -834,7 +834,7 @@ internal static class DeletedCwdPathTests
             Check(locked1.Exit == 1 && locked1.Line == expected && locked1.Error.Length == 0, label + ": exactly " + expected + " (exit 1, empty stderr)", measured);
             Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
             Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes) && File.ReadAllBytes(packFile).AsSpan().SequenceEqual(manifest)
-                && Directory.GetFileSystemEntries(cwd).Length == entriesBefore, label + ": the lock and the pack are unchanged and nothing is written");
+                && Directory.GetFileSystemEntries(cwd).Length == entriesBefore, label + ": the lock and the pack are unchanged and nothing is written", lockFile.Replace(scratch, "<scratch>", StringComparison.Ordinal));
             Directory.Delete(parent, true);
             Directory.Delete(outside, true);
         }
