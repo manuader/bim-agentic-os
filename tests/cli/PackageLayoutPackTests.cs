@@ -711,6 +711,13 @@ internal static class PackageLayoutPackTests
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
         }
+        // P4-34: removes a self-test layout copy (`delete` stands in for Directory.Delete(path, true) in the self-test); null
+        // when it is removed or absent.
+        static string? RemoveCopy(string path, Action<string>? delete = null)
+        {
+            try { if (Directory.Exists(path)) (delete ?? (folder => Directory.Delete(folder, true)))(path); return null; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+        }
         static List<string> Fingerprint(string layout)
         {
             try
@@ -898,6 +905,27 @@ internal static class PackageLayoutPackTests
                             "P4-33: self-test: a planted runtime asset " + asset + " in mcp/Bim.Mcp.deps.json reads escaping '" + escapingExpected + "' and Bim.Gltf '" + gltfExpected + "'",
                             "escaping " + Missing(escapingFound, "deps") + " Bim.Gltf " + Missing(gltfFound, "deps"));
                     }
+                    // P4-34: native and resources assets are read like runtime assets: an escaping one is a named escaping
+                    // path and a Bim.Gltf one a Bim.Gltf match, each named by its kind; other names inside mcp/ are neither.
+                    foreach (var (kind, asset, escapingExpected, gltfExpected) in new[]
+                    {
+                        ("native", "../libother.so", "native " + mcpTarget + " escaping path ../libother.so", ""),
+                        ("native", "runtimes/any/native/Bim.Gltf.dll", "", "native " + mcpTarget + " runtimes/any/native/Bim.Gltf.dll"),
+                        ("native", "lib/../../BIM.GLTF", "native " + mcpTarget + " escaping path lib/../../BIM.GLTF", "native " + mcpTarget + " lib/../../BIM.GLTF"),
+                        ("resources", "../de/Bim.Gltf.resources.dll", "resources " + mcpTarget + " escaping path ../de/Bim.Gltf.resources.dll", "resources " + mcpTarget + " ../de/Bim.Gltf.resources.dll"),
+                        ("resources", "de/Bim.Gltf.resources.dll", "", "resources " + mcpTarget + " de/Bim.Gltf.resources.dll"),
+                        ("resources", "de/Other.resources.dll", "", ""),
+                    })
+                    {
+                        var edited = (JsonObject)depsNode!.DeepClone();
+                        Entry(edited)[kind] = new JsonObject { [asset] = new JsonObject() };
+                        File.WriteAllText(depsCopy, edited.ToJsonString(), new UTF8Encoding(false));
+                        var escapingFound = EscapingInDeps(depsCopy);
+                        var gltfFound = GltfInDeps(depsCopy);
+                        check(escapingFound is not null && string.Join("|", escapingFound) == escapingExpected && gltfFound is not null && string.Join("|", gltfFound) == gltfExpected,
+                            "P4-34: self-test: a planted " + kind + " asset " + asset + " in mcp/Bim.Mcp.deps.json reads escaping '" + escapingExpected + "' and Bim.Gltf '" + gltfExpected + "'",
+                            "escaping " + Missing(escapingFound, "deps") + " Bim.Gltf " + Missing(gltfFound, "deps"));
+                    }
                     File.WriteAllText(depsCopy, "{");
                     check(EscapingInDeps(depsCopy) is null, "P4-33: self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable for the escaping check too (fail-closed)", "");
                     Check31(GltfInDeps(depsCopy) is null, "self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)", "");
@@ -928,6 +956,22 @@ internal static class PackageLayoutPackTests
 
                 if (depth == 0)
                 {
+                    // P4-34: an IOException or UnauthorizedAccessException while removing the layout copy is a named cleanup
+                    // failure (stand-in remover that throws and leaves the folder); an absent folder or a real removal adds none.
+                    foreach (var planted in new Exception[] { new IOException("planted: the folder is in use"), new UnauthorizedAccessException("planted: access denied") })
+                    {
+                        var failure = RemoveCopy(copy, _ => throw planted);
+                        check(failure == "P4-34: cleanup failed: " + copy + ": " + planted.GetType().Name + ": " + planted.Message && Directory.Exists(copy),
+                            "P4-34: self-test: a planted " + planted.GetType().Name + " while removing the layout copy is a named cleanup failure (not swallowed)", failure ?? "<swallowed>");
+                    }
+                    var absent = RemoveCopy(Path.Combine(caseRoot, "p4-34-absent-copy"), _ => throw new IOException("planted: never called"));
+                    check(absent is null, "P4-34: self-test: an absent layout copy records no cleanup failure", absent ?? "");
+                    var removable = Path.Combine(caseRoot, "p4-34-removable-copy");
+                    Directory.CreateDirectory(Path.Combine(removable, "mcp"));
+                    File.WriteAllText(Path.Combine(removable, "mcp", "x.txt"), "x");
+                    var removed = RemoveCopy(removable);
+                    check(removed is null && !Directory.Exists(removable), "P4-34: self-test: a removable layout copy is removed with no cleanup failure", removed ?? "");
+
                     // The whole check (its own self-tests included) on a broken copy: no cli/Bim.Gltf.dll, malformed sbom.json,
                     // manifest.json and mcp/Bim.Mcp.deps.json. Every problem is a named failed check; nothing is thrown.
                     File.WriteAllText(Path.Combine(copy, "sbom.json"), "{");
@@ -957,7 +1001,11 @@ internal static class PackageLayoutPackTests
                 }
             }
             catch (Exception error) { Check31(false, "self-tests run without an unhandled exception (depth " + depth.ToString(CultureInfo.InvariantCulture) + ")", error.GetType().Name + ": " + error.Message); }
-            finally { try { if (Directory.Exists(copy)) Directory.Delete(copy, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            finally
+            {
+                var cleanup = RemoveCopy(copy);
+                check(cleanup is null, "P4-34: the self-test layout copy (depth " + depth.ToString(CultureInfo.InvariantCulture) + ") is removed (an IO or access error is a named failure, not swallowed)", cleanup ?? "");
+            }
         }
 
         var after = Fingerprint(package);

@@ -1935,6 +1935,11 @@ try {
             $warning = & $Remove $Label $Path
             if ($warning) { $Into.Add("P4-33: cleanup failed: $warning") }
         }
+        # P4-34: removes the P4-31 layout copy; $Remove stands in for the remover in the self-test.
+        function Remove-P434LayoutCopy($Into, [string]$Path, [scriptblock]$Remove) {
+            if ($null -eq $Remove) { $Remove = { param($l, $p) Remove-PackageCaseDirectory $l $p } }
+            [void](& $Remove 'P4-31' $Path)
+        }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
             $cliGltf = Join-Path $Layout 'cli/Bim.Gltf.dll'
@@ -2064,6 +2069,20 @@ try {
             Add-P433CleanupFailure $p433Into 'P4-32' (Join-Path $work 'p4-33 absent folder')
             Assert ($p433Into.Count -eq 0) "P4-33 self-test: a removed or absent case folder records no failure: $(Format-P431List $p433Into)"
         } catch { $failures.Add("P4-33 cleanup self-test threw: $($_.Exception.Message)") }
+        # P4-34 self-test: the P4-31 layout copy cleanup records a left-behind folder as the named P4-33 cleanup failure
+        # (stand-in remover); a removed one adds nothing; this script's P4-31 finally calls it (and no bare P4-31 remover).
+        try {
+            $p434Into = [Collections.Generic.List[string]]::new()
+            Remove-P434LayoutCopy $p434Into '/p4-34/left' { param($l, $p) "$($l): a case folder could not be removed and is left behind: $p" }
+            Assert (($p434Into -join '|') -ceq 'P4-33: cleanup failed: P4-31: a case folder could not be removed and is left behind: /p4-34/left') "P4-34 self-test: a left-behind P4-31 layout copy is recorded as a named cleanup failure: $(Format-P431List $p434Into)"
+            $p434Into.Clear()
+            Remove-P434LayoutCopy $p434Into '/p4-34/gone' { param($l, $p) $null }
+            Assert ($p434Into.Count -eq 0) "P4-34 self-test: a removed P4-31 layout copy records no failure: $(Format-P431List $p434Into)"
+            $p434Source = @([IO.File]::ReadAllLines($PSCommandPath))
+            $p434Finally = @($p434Source | Where-Object { $_ -cmatch '^\s*\} finally \{ Remove-P434LayoutCopy \$failures \$p431Copy \}\s*$' }).Count
+            $p434Bare = @($p434Source | Where-Object { $_ -cmatch "Remove-PackageCaseDirectory\s+'P4-31'" }).Count
+            Assert ($p434Finally -eq 1 -and $p434Bare -eq 0) "P4-34 self-test: the P4-31 layout copy finally goes through Remove-P434LayoutCopy (found $p434Finally) and no bare P4-31 Remove-PackageCaseDirectory call remains (found $p434Bare)"
+        } catch { $failures.Add("P4-34 cleanup self-test threw: $($_.Exception.Message)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
@@ -2161,6 +2180,24 @@ try {
                     $escapingFound = Get-P433DepsEscaping $depsCopy; $gltfFound = Get-P431DepsGltf $depsCopy
                     Assert ($null -ne $escapingFound -and ($escapingFound -join '|') -ceq $p433Plant.Escaping -and $null -ne $gltfFound -and ($gltfFound -join '|') -ceq $p433Plant.Gltf) "P4-33 self-test: a planted runtime asset $($p433Plant.Asset) in mcp/Bim.Mcp.deps.json reads escaping '$($p433Plant.Escaping)' and Bim.Gltf '$($p433Plant.Gltf)': escaping $(if ($null -eq $escapingFound) { '<unreadable>' } else { Format-P431List $escapingFound }) Bim.Gltf $(if ($null -eq $gltfFound) { '<unreadable>' } else { Format-P431List $gltfFound })"
                 }
+                # P4-34: native and resources assets are read like runtime assets: an escaping one is a named escaping path and a
+                # Bim.Gltf one a Bim.Gltf match, each named by its kind; other names inside mcp/ are neither.
+                $p434Plants = @(
+                    @{ Kind = 'native'; Asset = '../libother.so'; Escaping = "native $mcpTarget escaping path ../libother.so"; Gltf = '' },
+                    @{ Kind = 'native'; Asset = 'runtimes/any/native/Bim.Gltf.dll'; Escaping = ''; Gltf = "native $mcpTarget runtimes/any/native/Bim.Gltf.dll" },
+                    @{ Kind = 'native'; Asset = 'lib/../../BIM.GLTF'; Escaping = "native $mcpTarget escaping path lib/../../BIM.GLTF"; Gltf = "native $mcpTarget lib/../../BIM.GLTF" },
+                    @{ Kind = 'resources'; Asset = '../de/Bim.Gltf.resources.dll'; Escaping = "resources $mcpTarget escaping path ../de/Bim.Gltf.resources.dll"; Gltf = "resources $mcpTarget ../de/Bim.Gltf.resources.dll" },
+                    @{ Kind = 'resources'; Asset = 'de/Bim.Gltf.resources.dll'; Escaping = ''; Gltf = "resources $mcpTarget de/Bim.Gltf.resources.dll" },
+                    @{ Kind = 'resources'; Asset = 'de/Other.resources.dll'; Escaping = ''; Gltf = '' }
+                )
+                foreach ($p434Plant in $p434Plants) {
+                    $edited = $depsText | ConvertFrom-Json -NoEnumerate
+                    $editedTarget = @($edited.targets.PSObject.Properties | Where-Object { Test-P431Object $_.Value }) | Select-Object -First 1
+                    $editedTarget.Value.$mcpTarget | Add-Member -NotePropertyName $p434Plant.Kind -NotePropertyValue ([pscustomobject]@{ $p434Plant.Asset = [pscustomobject]@{} }) -Force
+                    Write-P431Json $depsCopy $edited
+                    $escapingFound = Get-P433DepsEscaping $depsCopy; $gltfFound = Get-P431DepsGltf $depsCopy
+                    Assert ($null -ne $escapingFound -and ($escapingFound -join '|') -ceq $p434Plant.Escaping -and $null -ne $gltfFound -and ($gltfFound -join '|') -ceq $p434Plant.Gltf) "P4-34 self-test: a planted $($p434Plant.Kind) asset $($p434Plant.Asset) in mcp/Bim.Mcp.deps.json reads escaping '$($p434Plant.Escaping)' and Bim.Gltf '$($p434Plant.Gltf)': escaping $(if ($null -eq $escapingFound) { '<unreadable>' } else { Format-P431List $escapingFound }) Bim.Gltf $(if ($null -eq $gltfFound) { '<unreadable>' } else { Format-P431List $gltfFound })"
+                }
                 [IO.File]::WriteAllText($depsCopy, '{')
                 Assert ($null -eq (Get-P431DepsGltf $depsCopy)) 'P4-31 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)'
                 Assert ($null -eq (Get-P433DepsEscaping $depsCopy)) 'P4-33 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable for the escaping check too (fail-closed)'
@@ -2198,7 +2235,7 @@ try {
             $missingLeaks = Get-P431Leaks $missingLayout; $missingControl = Get-P431ControlMissing $missingLayout
             Assert (($missingLeaks -join '|') -ceq '<no mcp/ folder>|<sbom.json assemblies unreadable>|<manifest.json files unreadable>' -and $missingControl.Count -eq 3) "P4-31 self-test: a missing layout is named failures (no mcp/, unreadable sbom/manifest, control): $(Format-P431List $missingLeaks) control $(Format-P431List $missingControl)"
             Assert (@(Get-P431Fingerprint $missingLayout)[0].StartsWith('<layout unlistable: ')) 'P4-31 self-test: a missing layout fingerprints as one named unlistable line'
-        } finally { [void](Remove-PackageCaseDirectory 'P4-31' $p431Copy) }
+        } finally { Remove-P434LayoutCopy $failures $p431Copy }
         $p431Difference = Get-P431FirstDifference $p431Before (Get-P431Fingerprint $outA)
         Assert ($null -eq $p431Difference) "P4-31: the checks never modify release A (every file's path and sha256 unchanged): $p431Difference"
     } catch { $failures.Add("P4-31 package Bim.Gltf pin checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
