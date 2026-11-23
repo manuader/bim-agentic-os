@@ -586,21 +586,97 @@ internal static class RevitCommandDeadlineTests
         // Static: the real pipe read (SendMeasured) goes through ReadReplyLine with no hook, its only timed wait.
         var source = File.ReadAllText(Path.Combine(root, "core", "Bim.Core", "RevitCommandsService.cs")).ReplaceLineEndings("\n");
         var sendStart = source.IndexOf("static string? SendMeasured(", StringComparison.Ordinal);
-        var sendEnd = sendStart < 0 ? -1 : source.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
-        var sendBody = sendEnd < 0 ? "" : source[sendStart..sendEnd];
-        check(sendBody.Contains("return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);", StringComparison.Ordinal)
-            && !sendBody.Contains(".Wait(", StringComparison.Ordinal) && !sendBody.Contains("Cancel()", StringComparison.Ordinal),
-            "P1-33 static: RevitCommandService.SendMeasured reads the reply line only through ReadReplyLine, without the test hook", sendBody.Length > 400 ? sendBody[^400..] : sendBody);
+        var span = SendMeasuredSpan(source);
+        var sendBody = span?.Body ?? "";
+        var sendProblems = SendMeasuredProblems(source);
+        check(sendProblems.Length == 0,
+            "P1-33 static: RevitCommandService.SendMeasured reads the reply line only through ReadReplyLine, without the test hook",
+            string.Join("; ", sendProblems) + " | " + (sendBody.Length > 400 ? sendBody[^400..] : sendBody));
         var coreUses = Directory.GetFiles(Path.Combine(root, "core"), "*.cs", SearchOption.AllDirectories)
             .SelectMany(file => System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(file).ReplaceLineEndings("\n"), @"ReadReplyLine\(")
                 .Select(hit => Path.GetRelativePath(root, file).Replace('\\', '/') + "@" + N(hit.Index))).ToArray();
         var definition = source.IndexOf("internal static string? ReadReplyLine(", StringComparison.Ordinal);
         var inSend = sendStart < 0 ? -1 : source.IndexOf("ReadReplyLine(", sendStart, StringComparison.Ordinal);
-        check(coreUses.Length == 2 && definition >= 0 && inSend > sendStart && inSend < sendEnd
+        check(coreUses.Length == 2 && definition >= 0 && inSend > sendStart && span is { } sendSpan && LineOf(source, inSend) <= sendSpan.LastLine
             && coreUses.All(use => use.StartsWith("core/Bim.Core/RevitCommandsService.cs@", StringComparison.Ordinal))
             && coreUses.Contains("core/Bim.Core/RevitCommandsService.cs@" + N(definition + "internal static string? ".Length))
             && coreUses.Contains("core/Bim.Core/RevitCommandsService.cs@" + N(inSend)),
             "P1-33 static: under core/ ReadReplyLine( appears only at its internal definition and in SendMeasured", string.Join(", ", coreUses));
+        SendMeasuredSelfTest(check);
+    }
+
+    static int LineOf(string text, int index)
+    {
+        var lines = 0;
+        for (var k = 0; k < index && k < text.Length; k++) if (text[k] == '\n') lines++;
+        return lines;
+    }
+
+    // P1-41: SendMeasured's member body and its line span (0-based, first and last line), found by MemberBody on the
+    // StripCode output (newlines kept, so its lines are the source's lines); null if absent, unclosed or expression-bodied.
+    static (string Body, int FirstLine, int LastLine)? SendMeasuredSpan(string source)
+    {
+        var sendStart = source.IndexOf("static string? SendMeasured(", StringComparison.Ordinal);
+        var sendEnd = sendStart < 0 ? -1 : source.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
+        if (sendEnd < 0) return null;
+        var body = source[sendStart..sendEnd];
+        var first = LineOf(source, sendStart);
+        return (body, first, first + LineOf(body, body.Length));
+    }
+
+    // P1-33/P1-41: SendMeasured returns ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout) (no
+    // hook), has no own .Wait( or Cancel(), and the one ReadReplyLine( outside its definition lies in SendMeasured's lines.
+    static string[] SendMeasuredProblems(string source)
+    {
+        var span = SendMeasuredSpan(source);
+        if (span is not { } send) return new[] { "no SendMeasured block body (absent, unclosed or expression-bodied)" };
+        var problems = new List<string>();
+        if (!send.Body.Contains("return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);", StringComparison.Ordinal))
+            problems.Add("SendMeasured does not return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout)");
+        if (send.Body.Contains(".Wait(", StringComparison.Ordinal)) problems.Add("SendMeasured has its own .Wait(");
+        if (send.Body.Contains("Cancel()", StringComparison.Ordinal)) problems.Add("SendMeasured has its own Cancel()");
+        var definition = source.IndexOf("internal static string? ReadReplyLine(", StringComparison.Ordinal);
+        if (definition < 0) problems.Add("no internal static string? ReadReplyLine( definition");
+        var defined = definition < 0 ? -1 : definition + "internal static string? ".Length;
+        var uses = System.Text.RegularExpressions.Regex.Matches(source, @"ReadReplyLine\(").Select(hit => hit.Index).Where(at => at != defined).ToArray();
+        if (uses.Length != 1) problems.Add("ReadReplyLine( appears " + N(uses.Length) + " times outside its definition, not once");
+        else if (LineOf(source, uses[0]) < send.FirstLine || LineOf(source, uses[0]) > send.LastLine)
+            problems.Add("the ReadReplyLine( call (line " + N(LineOf(source, uses[0]) + 1) + ") is outside SendMeasured (lines " + N(send.FirstLine + 1) + "-" + N(send.LastLine + 1) + ")");
+        return problems.ToArray();
+    }
+
+    // P1-41: section 2d's method end does not depend on indentation (tab and two-space controls) and an expression-bodied
+    // SendMeasured has no body. Mutation self-test on SendMeasuredProblems.
+    static void SendMeasuredSelfTest(Action<bool, string, string> check)
+    {
+        const string Read = "return ReadReplyLine(token => reader.ReadLineAsync(token).AsTask(), readTimeout);";
+        const string Clean = "static class S\n{\n    internal static string? ReadReplyLine(Func<CancellationToken, Task<string?>> readLine, TimeSpan readTimeout, Action? afterWaitGivesUp = null)\n    {\n"
+            + "        if (readTimeout > TimeSpan.Zero)\n        {\n            return null;\n        }\n        return null;\n    }\n\n"
+            + "    static string? SendMeasured(string pipeName, string line, Func<TimeSpan> readTimeoutAfterConnect, int connectMs)\n    {\n"
+            + "        using var pipe = new NamedPipeClientStream(\".\", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);\n        if (connectMs > 0)\n        {\n            pipe.Connect(connectMs);\n        }\n"
+            + "        var readTimeout = readTimeoutAfterConnect();\n        using var reader = new StreamReader(pipe);\n        " + Read + "\n    }\n}\n";
+        string Tabs(string source) => source.Replace("    ", "\t", StringComparison.Ordinal);
+        string TwoSpaces(string source) => source.Replace("    ", "  ", StringComparison.Ordinal);
+        var cleans = new (string Label, string Source)[]
+        {
+            ("four-space indentation", Clean),
+            ("tab indentation", Tabs(Clean)),
+            ("two-space indentation (a nested block closing at four spaces)", TwoSpaces(Clean)),
+        };
+        foreach (var (label, source) in cleans)
+            check(SendMeasuredProblems(source).Length == 0, "P1-41 2d self-test: the SendMeasured check passes with " + label, string.Join("; ", SendMeasuredProblems(source)));
+        var moved = Clean.Replace("        " + Read + "\n    }\n}\n", "        return null;\n    }\n\n    static string? After(StreamReader reader, TimeSpan readTimeout)\n    {\n        " + Read + "\n    }\n}\n", StringComparison.Ordinal);
+        var arrow = Clean.Replace("int connectMs)\n    {\n", "int connectMs) => After(pipeName);\n\n    static string? After(string pipeName)\n    {\n", StringComparison.Ordinal);
+        var mutants = new (string Label, string Source)[]
+        {
+            ("read moved to a following method, tab indentation", Tabs(moved)),
+            ("read moved to a following method, two-space indentation", TwoSpaces(moved)),
+            ("expression-bodied SendMeasured whose read is in the next method", arrow),
+            ("read only in a comment, two-space indentation", TwoSpaces(Clean.Replace(Read, "// " + Read + "\n        return null;", StringComparison.Ordinal))),
+            ("own .Wait( after a nested block, tab indentation", Tabs(Clean.Replace("        using var reader", "        pipe.FlushAsync().Wait(1);\n        using var reader", StringComparison.Ordinal))),
+        };
+        foreach (var (label, source) in mutants)
+            check(source != Clean && SendMeasuredProblems(source).Length > 0, "P1-41 2d self-test: the SendMeasured check flags a " + label, "no problem flagged");
     }
 
     // ---- 2f. P1-35: ReadReplyLine's late outcomes at and after the cancel ----
@@ -1065,6 +1141,41 @@ internal static class RevitCommandDeadlineTests
             string.Join("; ", SeamProblems(Send.Replace("    ", "\t", StringComparison.Ordinal))));
         var hidden = Send.Replace("        return pipe(line);", "        var s = $\"{(line is null ? \"//\" : \"\")}\"; var c = cutTransport;\n        return pipe(line);", StringComparison.Ordinal);
         check(SeamProblems(hidden).Length > 0, "P1-39 strip self-test: the seam check flags a seam in code after a hole holding a \"//\" string", "no problem flagged");
+
+        // P1-41: inside a hole `global::` is the alias qualifier, not a format; a format ':' is the first single ':' at
+        // hole depth 0 (literal text, blanked).
+        var holes = new (string Source, string Expected)[]
+        {
+            ("var s = $\"{global::X.Y()}\";", "var s = \"{global::X.Y()}\";"),
+            ("var s = $\"{global::X.Y():N2}\";", "var s = \"{global::X.Y()}\";"),
+            ("var s = $\"{x:N2} {global::X.Y(a, b)}\";", "var s = \"{x}{global::X.Y(a, b)}\";"),
+            ("var s = $@\"{global::X.Y()}\";", "var s = \"{global::X.Y()}\";"),
+            ("var s = $$\"\"\"{{global::X.Y()}}\"\"\";", "var s = \"{global::X.Y()}\";"),
+            ("var s = $\"{(a ? global::X.Y() : b):D}\";", "var s = \"{(a ? global::X.Y() : b)}\";"),
+        };
+        foreach (var (source, expected) in holes)
+            check(StripCode(source) == expected, "P1-41 strip self-test: " + source + " strips to " + expected, StripCode(source));
+        check(ContinuationProblems(clean.Replace(attach, "var shown = $\"{global::System.String.Concat(\"}\", \"//\")}\"; " + attach, StringComparison.Ordinal)).Length == 0,
+            "P1-41 strip self-test: the continuation check passes with continuation code after a global:: hole holding \"}\" and \"//\" strings",
+            string.Join("; ", ContinuationProblems(clean.Replace(attach, "var shown = $\"{global::System.String.Concat(\"}\", \"//\")}\"; " + attach, StringComparison.Ordinal))));
+        var globalHole = clean.Replace(attach, attach + "\n        var shown = $\"{global::System.Threading.Tasks.Task.FromResult(read.ContinueWith(t => t, TaskScheduler.Default))}\";", StringComparison.Ordinal);
+        check(globalHole != clean && ContinuationProblems(globalHole).Length > 0, "P1-41 strip self-test: the continuation check flags a second continuation inside a global:: hole", "no problem flagged");
+
+        // P1-41: MemberBody has no body for a member whose ';' or '=>' comes before its first '{' (abstract,
+        // expression-bodied), so a later member's block is never taken for it.
+        const string Members = "abstract class T\n{\n    public abstract string? Send(string line);\n    public string? Peek(string line) => connectThenRead(wait, ReadAfter)(line);\n"
+            + "    public string? Body(string line)\n    {\n        return line;\n    }\n}\n";
+        check(MemberBody(Members, "public abstract string? Send(") is null, "P1-41 MemberBody self-test: an abstract member (';' before the first '{') has no body",
+            MemberBody(Members, "public abstract string? Send(") ?? "null");
+        check(MemberBody(Members, "public string? Peek(") is null, "P1-41 MemberBody self-test: an expression-bodied member ('=>' before the first '{') has no body",
+            MemberBody(Members, "public string? Peek(") ?? "null");
+        check(MemberBody(Members, "public string? Body(") == "public string? Body(string line)\n    {\n        return line;\n    }",
+            "P1-41 MemberBody self-test: a block member's body is its signature through its closing brace", MemberBody(Members, "public string? Body(") ?? "null");
+        const string ArrowSend = "class T\n{\n    public string? Send(string line) => pipe(line);\n    string? Other(string line)\n    {\n        var pipe = connectThenRead(wait, ReadAfter);\n        return pipe(line);\n    }\n}\n";
+        check(SeamProblems(ArrowSend).Length > 0, "P1-41 MemberBody self-test: the seam check flags an expression-bodied Send whose page seam is in the next method", "no problem flagged");
+        var arrowContinuation = clean.Replace("TimeSpan readTimeout)\n    {\n", "TimeSpan readTimeout) => Body(readLine, readTimeout);\n    static string? Body(Func<CancellationToken, Task<string?>> readLine, TimeSpan readTimeout)\n    {\n", StringComparison.Ordinal);
+        check(arrowContinuation != clean && ContinuationProblems(arrowContinuation).Length > 0,
+            "P1-41 MemberBody self-test: the continuation check flags an expression-bodied ReadReplyLine whose body is the next method", "no problem flagged");
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
