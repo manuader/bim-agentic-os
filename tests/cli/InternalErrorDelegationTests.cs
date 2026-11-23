@@ -475,6 +475,22 @@ internal static class InternalErrorDelegationTests
                     ("the read moved into a block lambda with an explicit return type", declaration + "\nstatic void W() { Func<int> later = int () => { " + read + " return 0; }; later(); }\n", false),
                     ("the read moved into an attributed lambda with an explicit return type passed as an argument", declaration + "\nstatic void W() { Task.Run([Obsolete] void () => { " + read + " }); }\n", false),
                     ("an unrelated attributed lambda with an explicit return type closed before the pinned read", declaration + "\nstatic void W() { Func<int> unrelated = [Obsolete] int () => { return 0; }; try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    // P3-35: local functions inside accessors and operators, and local functions or methods whose header
+                    // carries a `where T : class`/`new()` constraint or a generic tuple return type.
+                    ("the read moved into a local function inside a property get accessor (planted)", declaration + "\nstatic int P { get { void Later() { " + read + " } Later(); return 0; } }\n", false),
+                    ("the read moved into a local function inside an indexer get accessor", declaration + "\nsealed class C { int this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
+                    ("the read moved into a local function inside a private set accessor", declaration + "\nsealed class C { int P { get => 0; private set { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an operator + body (planted)", declaration + "\nsealed class C { public static C operator +(C a, C b) { void Later() { " + read + " } Later(); return a; } }\n", false),
+                    ("the read moved into a local function inside an operator == body", declaration + "\nsealed class C { public static bool operator ==(C a, C b) { void Later() { " + read + " } Later(); return true; } public static bool operator !=(C a, C b) => false; }\n", false),
+                    ("the read moved into a local function constrained where T : class (planted)", declaration + "\nstatic void W() { void Later<T>() where T : class { " + read + " } Later<string>(); }\n", false),
+                    ("the read moved into a local function constrained where T : new()", declaration + "\nstatic void W() { void Later<T>() where T : new() { " + read + " } Later<object>(); }\n", false),
+                    ("the read moved into a local function inside a method constrained where T : class, new()", declaration + "\nstatic void W<T>() where T : class, new() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function returning List<(int, int)>", declaration + "\nstatic void W() { List<(int, int)> Later() { " + read + " return new(); } Later(); }\n", false),
+                    ("the read moved into a local function returning a tuple", declaration + "\nstatic void W() { (int A, int B) Later() { " + read + " return (0, 0); } Later(); }\n", false),
+                    ("the pinned read in a method constrained where T : class, new()", declaration + "\nstatic void W<T>() where T : class, new() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in a property get accessor", declaration + "\nstatic int P { get { try { " + read + " } catch (Exception) { throw; } return 0; } }\n", true),
+                    ("an unrelated local function inside an accessor closed before the pinned read", declaration + "\nstatic int P { get { int Unrelated() { return 0; } return Unrelated(); } }\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in a method of a generic class constrained where T : class", declaration + "\nsealed class C<T> where T : class { static void W() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                 };
                 if (full)
                 {
@@ -515,9 +531,10 @@ internal static class InternalErrorDelegationTests
                     selfTests++;
                 }
             }
-            // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) for each of the 9 seams;
-            // 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 214.
-            Check(selfTests == 9 * (8 + 8) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 214, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
+            // accessor/operator/constrained-generic/tuple-return cases (P3-35) for each of the 9 seams; 16 more plus 1
+            // (Action) or 2 (Action<string>) form cases for each of the four new seams: 340.
+            Check(selfTests == 9 * (8 + 8 + 14) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 340, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
@@ -653,7 +670,8 @@ internal static class InternalErrorDelegationTests
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
     // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
-    // block-bodied local function);
+    // block-bodied local function (an expression-bodied one already fails the statement-start test); P3-35: also one
+    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -719,9 +737,17 @@ internal static class InternalErrorDelegationTests
     // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
     // '}') opens a method, constructor or local function body: `[attributes/modifiers/type] Name[<...>](...) [where ...]`
     // with Name not a statement keyword, and no type-declaration or object-creation keyword in the header.
+    // P3-35: the keyword test stops at a constraint clause `where T :` (so `where T : class`/`new()`/`struct` do not hide a
+    // generic method or local function); a property/indexer/event accessor (`[attributes] [modifiers] get|set|init|add|remove`)
+    // and an operator (`... operator <token>(...)`, before any constraint) open method-like bodies too. A generic tuple
+    // return type (`List<(int, int)> F()`, `(int A, int B) F()`) already matched (parenthesised header token).
     static bool MethodBody(string header)
     {
-        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
+        var head = constraint.Success ? header[..constraint.Index] : header;
+        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
             @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
         return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
