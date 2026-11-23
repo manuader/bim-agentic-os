@@ -616,11 +616,11 @@ internal static class RevitCommandDeadlineTests
     // StripCode output (newlines kept, so its lines are the source's lines); null if absent, unclosed or expression-bodied.
     static (string Body, int FirstLine, int LastLine)? SendMeasuredSpan(string source)
     {
-        var sendStart = source.IndexOf("static string? SendMeasured(", StringComparison.Ordinal);
-        var sendEnd = sendStart < 0 ? -1 : source.IndexOf("\n    }\n", sendStart, StringComparison.Ordinal);
-        if (sendEnd < 0) return null;
-        var body = source[sendStart..sendEnd];
-        var first = LineOf(source, sendStart);
+        const string Signature = "static string? SendMeasured(";
+        var code = StripCode(source.ReplaceLineEndings("\n"));
+        var body = MemberBody(code, Signature);
+        if (body is null) return null;
+        var first = LineOf(code, code.IndexOf(Signature, StringComparison.Ordinal));
         return (body, first, first + LineOf(body, body.Length));
     }
 
@@ -863,7 +863,7 @@ internal static class RevitCommandDeadlineTests
     // regular, verbatim (@"..", @$, $@), raw ("""..""", any quote run and $ count) and char literals. The holes of an
     // interpolated literal are code and are kept, with any nested literal, comment or brace read the same way, so a
     // // or a quote inside a hole neither starts a comment nor ends the literal; a format text (':' at hole depth 0) is
-    // literal text.
+    // literal text. P1-41: '::' (the global:: alias qualifier) is code, never a format colon.
     static string StripCode(string source)
     {
         var text = new StringBuilder(source.Length);
@@ -975,7 +975,7 @@ internal static class RevitCommandDeadlineTests
                     if (depth == 0) { i = Math.Min(s.Length, i + holeBraces); return; }
                     depth--;
                 }
-                else if (c == ':' && depth == 0 && next != ':')
+                else if (c == ':' && depth == 0 && next != ':' && (i == 0 || s[i - 1] != ':'))
                 {
                     while (i < s.Length && s[i] != '}' && s[i] != '\n') i++;
                     continue;
@@ -987,12 +987,15 @@ internal static class RevitCommandDeadlineTests
     }
 
     // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
-    // its matching closing brace (brace depth, not indentation); null if absent or unclosed.
+    // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
+    // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
     static string? MemberBody(string code, string signature)
     {
         var start = code.IndexOf(signature, StringComparison.Ordinal);
         var open = start < 0 ? -1 : code.IndexOf('{', start);
         if (open < 0) return null;
+        var head = code[start..open];
+        if (head.Contains(';') || head.Contains("=>", StringComparison.Ordinal)) return null;
         var depth = 0;
         for (var k = open; k < code.Length; k++)
         {
@@ -1646,7 +1649,9 @@ internal static class RevitCommandDeadlineTests
             // it faults (Linux, macOS: IOException) the detector reports it through its StreamReader-frame branch (not a
             // decoder fault), so the same filter would see B's fault; where it completes (Windows) it reads end of stream.
             var disposeControl = Step("D2", false, false, false);
-            var runtime = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+            // P1-41: the failure text names the runtime the Windows D2/B pins were measured on and the one of this run.
+            var runtime = "Windows pins measured on .NET 8.0.34, Windows 10.0.26100 (CI run 44873211457); this run "
+                + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription + ", " + System.Runtime.InteropServices.RuntimeInformation.OSDescription;
             check(disposeControl.Collected && disposeControl.Outcome.Count == 3 && disposeControl.Outcome[0] == "unobserved" && disposeControl.Outcome[1] == "served p1-37 D2"
                 && (OperatingSystem.IsWindows()
                     ? disposeControl.Outcome[2].StartsWith("completed null in ", StringComparison.Ordinal) && disposeControl.Faults.Length == 0
