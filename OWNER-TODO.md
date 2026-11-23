@@ -428,3 +428,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay268 (2026-11-23, cloud)
 - No new required action. `git pull` (main 34dc072). P5-35 changed only stream-failure handling of jurisdiction-resolve and the MCP jurisdiction_resolve tool (success/refusal bytes unchanged). Still open: ADR0010/ADR0011, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
+
+## Relay269 (2026-11-23, cloud)
+- No new required action. `git pull` (main 1a6a041). P6-38 changed DXF explode geometry only for LINE/CIRCLE/ARC/TEXT/ATTRIB with a z value inside near-±Z (tilted-normal) inserts, and an INSERT with group 43 = 0 is now refused entity-invalid like 41/42; exact ±Z drawings are byte-unchanged. Still open: ADR0010/ADR0011, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
