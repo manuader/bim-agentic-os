@@ -737,6 +737,40 @@ internal static class PdfType3GlyphListTests
             }
         }
         catch (Exception error) { C(false, "p6-35 unexpected", error.GetType().Name + ": " + error.Message); }
+        // ---------- P6-37: non-finite /Matrix entries, warnings per invocation, CLI option pins ----------
+        try
+        {
+            string Messages(PdfDocument document) => string.Join(" / ", document.Warnings.Select(w => w.Message));
+            static string R(double value) => value.ToString("R", CultureInfo.InvariantCulture);
+            string Origins(PdfDocument document) => string.Join("|", document.Pages.SelectMany(p => p.Elements).OfType<PdfText>()
+                .Select(t => R(t.Origin.X) + "," + R(t.Origin.Y) + " h" + R(t.Height)));
+            string Measure(PdfDocument document) => "[" + Texts(document) + "] " + Warnings(document) + " {" + Messages(document) + "} " + Origins(document);
+            var e60 = "1" + new string('0', 60);
+            var e63 = "1" + new string('0', 63);
+            var e64 = "1" + new string('0', 64);
+            static (int Number, byte[] Body) RawForm(string matrixEntry, string content) =>
+                (8, PdfTests.StreamBody("/Type /XObject /Subtype /Form /BBox [0 0 600 400]" + matrixEntry, L(content)));
+            const string formShow = "BT /F2 10 Tf 1 0 0 1 10 10 Tm (A) Tj ET";
+            PdfDocument Form(string page, string matrixEntry, string xobjects = "/XObject << /X1 8 0 R >>", string extra = "100") =>
+                PdfToUnicodeTests.Page(page, Type1("[1 /g1]"), null, xobjects, RawForm(matrixEntry, formShow), (9, L(extra)));
+            string Probe(Func<PdfDocument> build)
+            {
+                try { return Measure(build()); }
+                catch (Exception error) { return error.GetType().Name + ": " + error.Message; }
+            }
+
+            var probes = new List<string>();
+            foreach (var entry in new[] { "1e400", "-1e400", "1E400", "1e10", "Infinity", "NaN", e64, e63 })
+                probes.Add("entry " + (entry.Length > 20 ? I(entry.Length) + "-char" : entry) + " => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 " + entry + " 0]")));
+            probes.Add("indirect 1e400 => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do", " /Matrix [1 0 0 1 9 0 R 0]", extra: "1e400")));
+            probes.Add("e63 under 1e300 => " + Probe(() => Form(string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do", " /Matrix [" + e63 + " 0 0 " + e63 + " 0 0]")));
+            probes.Add("twice => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do /X1 Do", " /Matrix [1 0 0 1 100]")));
+            probes.Add("two names => " + Probe(() => Form("2 0 0 2 0 0 cm /X1 Do /X2 Do", " /Matrix [1 0 0 1 100]", "/XObject << /X1 8 0 R /X2 8 0 R >>")));
+            probes.Add("twice in q => " + Probe(() => Form("2 0 0 2 0 0 cm q /X1 Do Q q /X1 Do Q", " /Matrix [1 0 0 1 100]")));
+            probes.Add("overflow twice => " + Probe(() => Form(string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do /X1 Do", " /Matrix [" + e60 + " 0 0 " + e60 + " 0 0]")));
+            foreach (var probe in probes) C(false, "p6-37 probe", probe);
+        }
+        catch (Exception error) { C(false, "p6-37 unexpected", error.GetType().Name + ": " + error.Message); }
     }
 
     // P6-33: member anchors of the stripped sources, in source order, for the shared swallow guard. They are spread over
