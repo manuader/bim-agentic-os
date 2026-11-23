@@ -670,7 +670,8 @@ internal static class InternalErrorDelegationTests
     // ScoringWeights) and so its pinned read form. A declaration is `internal static <type>? <name> { get; set; }` with
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
     // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
-    // block-bodied local function);
+    // block-bodied local function (an expression-bodied one already fails the statement-start test); P3-35: also one
+    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header);
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -736,9 +737,17 @@ internal static class InternalErrorDelegationTests
     // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
     // '}') opens a method, constructor or local function body: `[attributes/modifiers/type] Name[<...>](...) [where ...]`
     // with Name not a statement keyword, and no type-declaration or object-creation keyword in the header.
+    // P3-35: the keyword test stops at a constraint clause `where T :` (so `where T : class`/`new()`/`struct` do not hide a
+    // generic method or local function); a property/indexer/event accessor (`[attributes] [modifiers] get|set|init|add|remove`)
+    // and an operator (`... operator <token>(...)`, before any constraint) open method-like bodies too. A generic tuple
+    // return type (`List<(int, int)> F()`, `(int A, int B) F()`) already matched (parenthesised header token).
     static bool MethodBody(string header)
     {
-        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
+        var head = constraint.Success ? header[..constraint.Index] : header;
+        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
+        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
             @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
         return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
