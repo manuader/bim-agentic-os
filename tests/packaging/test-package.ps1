@@ -1086,9 +1086,9 @@ try {
         if (!$Silent) { $packageCleanupWarnings.Add($warning) }
         return $warning
     }
-    function Write-PackageCleanupWarnings {
+    function Write-PackageCleanupWarnings($Warnings = $packageCleanupWarnings) {
         Write-Host "packaging cleanup: $($packageCleanupWarnings.Count) case folder(s) left behind"
-        foreach ($warning in $packageCleanupWarnings) {
+        foreach ($warning in $Warnings) {
             if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
             else { Write-Host "WARNING $warning" }
         }
@@ -1717,6 +1717,40 @@ try {
                 }
                 $released = Remove-P733Directory $locked -Silent
                 Assert ($null -eq $released -and !(Test-Path -LiteralPath $locked)) "P7-33: a removable case folder is removed with no warning: $released"
+
+                # P7-39 self-test: the cleanup report is silent with no warning and prints one line per leftover; a warning
+                # collected before an early throw is still reported by the finally that calls it (the outer finally does the
+                # same for the whole run); the tool loop's messages name the case label; P7-33 has one cleanup path; the
+                # pack_rules status regex is gone (the exact stdout members cover it).
+                try {
+                    $p739None = @(Write-PackageCleanupWarnings -Warnings ([string[]]@()) 6>&1 | ForEach-Object { "$_" })
+                    Assert ($p739None.Count -eq 0) "P7-39 self-test: the cleanup report prints nothing with no warning; got $($p739None.Count) line(s): $($p739None -join ' | ')"
+                    $p739Two = [string[]]@('P7-39: a case folder could not be removed and is left behind: /p7-39/one', 'P7-39: a case folder could not be removed and is left behind: /p7-39/two')
+                    $p739Lines = @(Write-PackageCleanupWarnings -Warnings $p739Two 6>&1 | ForEach-Object { "$_" })
+                    Assert ($p739Lines.Count -eq 2 -and $p739Lines[0].Contains($p739Two[0]) -and $p739Lines[1].Contains($p739Two[1])) "P7-39 self-test: the cleanup report prints one line per leftover (2); got $($p739Lines.Count): $($p739Lines -join ' | ')"
+                    $p739Probe = [Collections.Generic.List[string]]::new()
+                    $p739Early = @(& {
+                            try {
+                                try { $p739Probe.Add('P7-39: a case folder could not be removed and is left behind: /p7-39/early'); throw 'P7-39 forced early throw' }
+                                finally { Write-PackageCleanupWarnings -Warnings $p739Probe }
+                            } catch { $p739Probe.Add("thrown: $($_.Exception.Message)") }
+                        } 6>&1 | ForEach-Object { "$_" })
+                    Assert ($p739Early.Count -eq 1 -and $p739Early[0].Contains('/p7-39/early') -and $p739Probe.Count -eq 2 -and $p739Probe[1] -ceq 'thrown: P7-39 forced early throw') "P7-39 self-test: a warning collected before an early throw is reported by the finally (probe: $($p739Probe -join ' | ')); got $($p739Early.Count) line(s): $($p739Early -join ' | ')"
+                    $p739Source = @([IO.File]::ReadAllLines($PSCommandPath))
+                    $p739Start = -1; $p739End = -1
+                    for ($i = 0; $i -lt $p739Source.Count; $i++) {
+                        if ($p739Start -lt 0 -and $p739Source[$i] -cmatch '^\s*foreach \(\$tool in @\(\$p733Sibling\) \+ @\(\$p737Ranked\)\) \{\s*$') { $p739Start = $i }
+                        elseif ($p739Start -ge 0 -and $p739Source[$i] -cmatch '^\s*foreach \(\$marker in ') { $p739End = $i; break }
+                    }
+                    $p739Asserts = if ($p739Start -ge 0 -and $p739End -gt $p739Start) { @($p739Source[$p739Start..$p739End] | Where-Object { $_ -cmatch '^\s*Assert ' }) } else { @() }
+                    $p739Unlabelled = @($p739Asserts | Where-Object { !$_.Contains('$caseLabel') -and !$_.Contains('$($caseLabel)') -or $_.Contains('$(' + '$tool.Tool)') })
+                    Assert ($p739Asserts.Count -ge 6 -and $p739Unlabelled.Count -eq 0) "P7-39 self-test: every assertion message in the package-first tool loop names `$caseLabel ($($p739Asserts.Count) assertions, $($p739Unlabelled.Count) without it, first at: $(if ($p739Unlabelled.Count) { $p739Unlabelled[0].Trim().Substring(0, [Math]::Min(80, $p739Unlabelled[0].Trim().Length)) }))"
+                    $p739Wrapper = @($p739Source | Where-Object { $_.Contains('Remove-' + 'P733Directory') }).Count
+                    $p739Finally = @($p739Source | Where-Object { $_ -cmatch "^\s*\} finally \{ \[void\]\(Remove-PackageCaseDirectory 'P7-33' \`$p733Case\) \}\s*$" }).Count
+                    Assert ($p739Wrapper -eq 0 -and $p739Finally -eq 1) "P7-39 self-test: P7-33 case folders are removed only through Remove-PackageCaseDirectory 'P7-33' (wrapper references $p739Wrapper, case finally $p739Finally)"
+                    $p739Regex = @(@($p733Sibling) + @($p737Ranked) | Where-Object { "$($_.Status)".Contains('pack_rules') }).Count
+                    Assert ($p739Regex -eq 0) "P7-39 self-test: no tool Status carries the old pack_rules regex (found $p739Regex); the exact stdout members check pack_rules"
+                } catch { $failures.Add("P7-39 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
 
                 # (1) Infeasible document: packaged CLI sha256 pinned; batch and waiting MCP handshakes agree and return it.
                 $plain = New-P733Package (Join-Path $p733Case 'plain/pkg')
