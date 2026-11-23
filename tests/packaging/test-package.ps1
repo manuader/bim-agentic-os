@@ -1076,7 +1076,9 @@ try {
     # Removes a case folder; one still present afterwards is a warning naming it and its section $Label, returned as text;
     # $null when it is gone (P7-33, used by P7-24, P7-31 and P7-33 since P7-35, and P7-12 since P7-37). P7-37: unless Silent
     # (the cleanup self-test) the warning is collected in $packageCleanupWarnings and reported once, after every section,
-    # by Write-PackageCleanupWarnings (a GitHub annotation each on CI).
+    # by Write-PackageCleanupWarnings (a GitHub annotation each on CI). P7-39: the report prints nothing when no warning was
+    # collected and one line per leftover otherwise. It runs from the outer finally, so warnings collected before an early
+    # throw (anywhere after this list exists) are still reported; the P7-39 self-test forces such a throw.
     $packageCleanupWarnings = [Collections.Generic.List[string]]::new()
     function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent) {
         if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
@@ -1087,7 +1089,6 @@ try {
         return $warning
     }
     function Write-PackageCleanupWarnings($Warnings = $packageCleanupWarnings) {
-        Write-Host "packaging cleanup: $($packageCleanupWarnings.Count) case folder(s) left behind"
         foreach ($warning in $Warnings) {
             if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::warning title=packaging::' + ($warning -replace '%', '%25')) }
             else { Write-Host "WARNING $warning" }
@@ -1465,7 +1466,6 @@ try {
             for ($dir = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($Directory)); $dir; $dir = $dir.Parent) { if (Test-Path -LiteralPath (Join-Path $dir.FullName 'global.json') -PathType Leaf) { return $true } }
             return $false
         }
-        function Remove-P733Directory([string]$Path, [switch]$Silent) { return Remove-PackageCaseDirectory 'P7-33' $Path -Silent:$Silent }
         # P7-35: why the cleanup self-test cannot hold a folder here, or $null when it can. Root (or a privileged process)
         # removes a folder whose mode forbids writes, and SetUnixFileMode needs .NET 7+; Windows holds a file open instead.
         function Get-P733CleanupSkip([bool]$Windows, [bool]$Privileged, [bool]$HasUnixFileMode) {
@@ -1548,7 +1548,7 @@ try {
                 # (strings by value, numbers by their JSON literal); observed on Linux and Windows in CI runs 44911352555/44913586192.
                 $p733Sibling = @(
                     @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p733TypologyPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p733TypologyPath }; Status = '"pipeline_status":"infeasible"'; Sha256 = $p733TypologySha256; Length = 47622; Exact = [ordered]@{ pipeline_status = 'infeasible' } },
-                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"pack":"' + $p733Caba + '","pack_rules":[1-9]'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'ranked'; pack = $p733Caba; pack_rules = '2' } }
+                    @{ Tool = 'plan_layouts'; Verb = 'plan-layouts'; Input = $p733BriefPath; Options = [string[]]@('--alternatives', '2', '--seed', '0', '--pack', $p733Caba); Arguments = [ordered]@{ brief = $p733BriefPath; alternatives = 2; seed = 0; pack = $p733Caba }; Status = '"set_status":"ranked"'; Sha256 = $p733LayoutsSha256; Length = 3520; Exact = [ordered]@{ set_status = 'ranked'; pack = $p733Caba; pack_rules = '2' } }
                 )
                 # P7-37: the ranked typology request, pinned like the siblings (package-first only; not part of the fallback cases).
                 $p737Ranked = @{ Tool = 'generate_typology'; Verb = 'generate-typology'; Input = $p737RankedPath; Options = [string[]]@(); Arguments = [ordered]@{ request_path = $p737RankedPath }; Status = '"pipeline_status":"ranked"'; Sha256 = $p737RankedSha256; Length = $p737RankedLength; Exact = [ordered]@{ pipeline_status = 'ranked'; alternatives = '4'; accepted = '1' }; Ranked = $true }
@@ -1707,7 +1707,7 @@ try {
                     try {
                         if ($IsWindows) { $holder = [IO.File]::Open((Join-Path $lockedInner 'held.txt'), 'Open', 'Read', 'None') }
                         else { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserExecute') }
-                        $warning = Remove-P733Directory $locked -Silent
+                        $warning = Remove-PackageCaseDirectory 'P7-33' $locked -Silent
                         if ($null -eq $warning -and $env:GITHUB_ACTIONS -ne 'true') { Write-Host 'SKIP P7-33 cleanup warning: the folder could not be held (running with rights that remove it anyway)' }
                         else { Assert ($null -ne $warning -and $warning.StartsWith('P7-33: ') -and $warning.Contains($locked) -and (Test-Path -LiteralPath $locked)) "P7-33: a case folder that cannot be removed ($($p733Os)) is reported as a warning naming it: $warning" }
                     } finally {
@@ -1715,7 +1715,7 @@ try {
                         if (!$IsWindows -and (Test-Path -LiteralPath $lockedInner)) { [IO.File]::SetUnixFileMode($lockedInner, [IO.UnixFileMode]'UserRead, UserWrite, UserExecute') }
                     }
                 }
-                $released = Remove-P733Directory $locked -Silent
+                $released = Remove-PackageCaseDirectory 'P7-33' $locked -Silent
                 Assert ($null -eq $released -and !(Test-Path -LiteralPath $locked)) "P7-33: a removable case folder is removed with no warning: $released"
 
                 # P7-39 self-test: the cleanup report is silent with no warning and prints one line per leftover; a warning
@@ -1815,18 +1815,18 @@ try {
                 foreach ($tool in @($p733Sibling) + @($p737Ranked)) {
                     $caseLabel = if ($tool.Ranked) { "$($tool.Tool)-ranked" } else { $tool.Tool }
                     $cli = Invoke-P733Cli $plainCli $tool.Verb $tool.Input $tool.Options "$caseLabel-baseline"
-                    Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $null -ne $cli.Bytes -and $cli.Line -cmatch '^\{"status":"succeeded",' -and $cli.Line -cmatch $tool.Status -and $cli.Line.Contains('"sha256":"' + (Get-P733Sha256 $cli.Bytes) + '"')) "P7-33 $($tool.Tool): the packaged CLI $($tool.Verb) outside any repository succeeds package-first ($($tool.Status)): $($cli.Raw)"
+                    Assert ($cli.Code -eq 0 -and $cli.Err.Length -eq 0 -and $null -ne $cli.Bytes -and $cli.Line -cmatch '^\{"status":"succeeded",' -and $cli.Line -cmatch $tool.Status -and $cli.Line.Contains('"sha256":"' + (Get-P733Sha256 $cli.Bytes) + '"')) "P7-33 $($caseLabel): the packaged CLI $($tool.Verb) outside any repository succeeds package-first ($($tool.Status)): $($cli.Raw)"
                     [byte[]]$bytes = @()
                     if ($null -ne $cli.Bytes) { $bytes = $cli.Bytes }
                     if (!$tool.Ranked) { $baselines[$tool.Tool] = [pscustomobject]@{ Bytes = $bytes; Line = $cli.Line } }
                     $mcp = Invoke-P733Call $plainMcp $tool.Tool $tool.Arguments
                     $mcpBytes = $p733Utf8.GetBytes($mcp.Text)
-                    Assert ($mcp.Ok -and !$mcp.IsError -and $bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($bytes)) "P7-33 $($tool.Tool): the packaged mcp/Bim.Mcp.dll returns the packaged CLI file bytes package-first (cli $($bytes.Length), mcp $($mcpBytes.Length) bytes): $($mcp.Raw)"
+                    Assert ($mcp.Ok -and !$mcp.IsError -and $bytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($bytes)) "P7-33 $($caseLabel): the packaged mcp/Bim.Mcp.dll returns the packaged CLI file bytes package-first (cli $($bytes.Length), mcp $($mcpBytes.Length) bytes): $($mcp.Raw)"
                     # P7-35: the package-first document is pinned by sha256 from the CLI file and the MCP text alike.
                     $cliSha = Get-P733Sha256 $bytes; $mcpSha = Get-P733Sha256 $mcpBytes
                     $observedStatus = if ($cli.Line -cmatch '"pipeline_status":"([a-z_]+)"') { $Matches[1] } else { '-' }
-                    Assert ($bytes.Length -gt 0 -and $cliSha -ceq $tool.Sha256) "P7-35 $($tool.Tool): observed cli sha256 $cliSha ($($bytes.Length) bytes, pipeline_status $observedStatus, $p733Os); pinned $($tool.Sha256)"
-                    Assert ($mcp.Ok -and !$mcp.IsError -and $mcpBytes.Length -gt 0 -and $mcpSha -ceq $tool.Sha256 -and $mcpSha -ceq $cliSha) "P7-35 $($tool.Tool): observed mcp sha256 $mcpSha ($($mcpBytes.Length) bytes, $p733Os); cli $cliSha; pinned $($tool.Sha256)"
+                    Assert ($bytes.Length -gt 0 -and $cliSha -ceq $tool.Sha256) "P7-35 $($caseLabel): observed cli sha256 $cliSha ($($bytes.Length) bytes, pipeline_status $observedStatus, $p733Os); pinned $($tool.Sha256)"
+                    Assert ($mcp.Ok -and !$mcp.IsError -and $mcpBytes.Length -gt 0 -and $mcpSha -ceq $tool.Sha256 -and $mcpSha -ceq $cliSha) "P7-35 $($caseLabel): observed mcp sha256 $mcpSha ($($mcpBytes.Length) bytes, $p733Os); cli $cliSha; pinned $($tool.Sha256)"
                     # P7-37: the documented byte length and the exact stdout status members.
                     Assert ($bytes.Length -eq $tool.Length -and $mcpBytes.Length -eq $tool.Length) "P7-37 $($caseLabel): observed cli $($bytes.Length) / mcp $($mcpBytes.Length) bytes (sha256 $cliSha, $p733Os); pinned $($tool.Length)"
                     $members = Get-P737Members $cli.Line $tool.Exact
@@ -1878,7 +1878,7 @@ try {
                         Assert ($mcp.Ok -and !$mcp.IsError -and $infeasibleBytes.Length -gt 0 -and [Convert]::ToBase64String($mcpBytes) -ceq [Convert]::ToBase64String($infeasibleBytes) -and (Get-P733Sha256 $mcpBytes) -ceq $p733InfeasibleSha256) "P7-33 stray skills/ below a generated repository: the renamed packaged MCP ignores the malformed stray pack and returns the infeasible document, sha256 pinned (mcp sha256 $(Get-P733Sha256 $mcpBytes)): $($mcp.Raw)"
                     }
                 }
-            } finally { [void](Remove-P733Directory $p733Case) }
+            } finally { [void](Remove-PackageCaseDirectory 'P7-33' $p733Case) }
         }
     } catch { $failures.Add("P7-33 packaged MCP infeasible sha/sibling fallback/catalogue checks threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
     # --- P4-31 release A ships no Bim.Gltf in mcp/ (parity with tests/cli/PackageLayoutPackTests.cs McpWithoutGltf): no
