@@ -18,7 +18,6 @@ internal static class DeletedCwdPathTests
     const string RelativeInput = "relative-input.json";
     const string RelativeOutput = "relative-output.json";
     const string Prefix = "deleted cwd path: ";
-    static readonly bool Planted39 = Environment.GetEnvironmentVariable("P10_39_NO_PLANT") is null; // P10-39 planted probe mutation (red run only)
 
     public static void Run(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check, Action<string, string> skip)
     {
@@ -696,7 +695,7 @@ internal static class DeletedCwdPathTests
         var why = !OperatingSystem.IsLinux() ? "Linux only: macOS GetFullPath refuses the relative output up front (P10-32), Windows has no Unix permission bits" : PrivilegeSkip(scratch, "p10-39-late-probe");
         if (why is not null)
         {
-            foreach (var c in cases) skip((Planted39 ? Prefix : "") + Prefix + Label(c.Verb + " valid input, relative output"), why);
+            foreach (var c in cases) skip(Prefix + Label(c.Verb + " valid input, relative output"), why);
             return;
         }
         Assembly? cli = null;

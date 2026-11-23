@@ -113,7 +113,6 @@ internal static class DeletedCwdPathToolTests
     // Linux only (macOS does not run tests/mcp; Windows has no Unix permission bits): counted SKIP lines elsewhere, and
     // when a mode-000 directory stays listable (root). Modes and the working directory are restored in a finally.
     const string Relative35 = "p10-35.json";
-    static readonly bool Planted39 = Environment.GetEnvironmentVariable("P10_39_NO_PLANT") is null; // P10-39 planted probe mutation (red run only)
 
     // The text per tool and relative parameter, as measured (run 44892086261, Linux, both modes alike): PathProblem passes the
     // path and the tool's bounded read refuses it, input_access_denied (detail = the parameter for doc_realized/doc_update).
@@ -194,7 +193,7 @@ internal static class DeletedCwdPathToolTests
             try { Directory.GetFileSystemEntries(locked); denied = false; }
             catch (UnauthorizedAccessException) { denied = true; }
             finally { Chmod(locked, Owner); }
-            if (!denied || (Planted39 && mode == "parent"))
+            if (!denied)
             {
                 foreach (var (tool, parameter, _) in cases)
                     Console.WriteLine("SKIP P10-35 unsearchable working directory: " + mode + " " + tool + " " + parameter + ": a mode-000 directory is still listable (privileged runner)");
@@ -312,7 +311,7 @@ internal static class DeletedCwdPathToolTests
             try { Directory.GetFileSystemEntries(locked); denied = false; }
             catch (UnauthorizedAccessException) { denied = true; }
             finally { Chmod(locked, Owner); }
-            if (!denied || (Planted39 && mode == "parent"))
+            if (!denied)
             {
                 Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + mode + ": a mode-000 directory is still listable (privileged runner)");
                 skipped++;
