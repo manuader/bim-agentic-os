@@ -34,6 +34,11 @@ using Bim.Core;
 //      interfaces/**/*.cs (comments and literals stripped) WorkProbe is only its initializer-free declaration and one
 //      WorkProbe?.Invoke(); in Execute before Parse(, never assigned; McpInvalidParamsException is constructed only in
 //      interfaces/mcp/JurisdictionResolveTool.cs (and, since P5-22, interfaces/mcp/SkillListTool.cs).
+//   9. P5-35 a throwing stderr: with WorkProbe throwing and a Console.Error whose every write throws (IOException,
+//      ObjectDisposedException, InvalidOperationException; the shared tests/cli/RejectingWriter.cs), tools/call and
+//      JurisdictionResolveTool.Execute give isError with exactly the typed internal-error line (never McpServer's generic
+//      failure), nothing escapes, one stderr attempt; the CABA success and jurisdiction_unknown keep the CLI bytes and
+//      never write stderr. Static: the tool writes the diagnostic only through SkillListCommand.WriteDiagnostic(envelope).
 internal static class JurisdictionResolveToolTests
 {
     const string ToolName = "jurisdiction_resolve";
@@ -340,6 +345,76 @@ internal static class JurisdictionResolveToolTests
                 && ExceptionProblems([(ToolFile, Throws), (SkillFile, Throws), ("interfaces/mcp/DocUpdateTool.cs", "class D { void X() { throw new Bim.Mcp.McpInvalidParamsException ( M ); } }")]).Count > 0
                 && ExceptionProblems([(ToolFile, Throws), (SkillFile, Throws), ("interfaces/mcp/DocUpdateTool.cs", "class D { void X() { McpInvalidParamsException e = new(M); } }")]).Count > 0,
                 "self-test: the constructor checker accepts both allowed tools' throws and a catch, and flags another file's new (qualified or target-typed) and an allowed tool without one or missing");
+        }
+
+        // ---- 9. P5-35 a throwing stderr on the internal-error path ----
+        {
+            // With the command's WorkProbe throwing and a Console.Error whose every write throws, tools/call and
+            // JurisdictionResolveTool.Execute give the typed isError line (never McpServer's generic failure carrying the
+            // rejection's message), nothing escapes, one stderr write attempt; success and refusal never write stderr.
+            var refused = Cli("--code", "zz.nowhere");
+            Check(refused.Exit == 1 && refused.Out.Contains("\"code\":\"jurisdiction_unknown\"", StringComparison.Ordinal), "P5-35 fixture: the CLI refuses zz.nowhere as jurisdiction_unknown | " + Short(refused.Out));
+            foreach (var rejection in new Exception[] { new IOException("stderr closed P5-35"), new ObjectDisposedException("stderr P5-35"), new InvalidOperationException("stderr rejected P5-35") })
+            {
+                var name = rejection.GetType().Name;
+                foreach (var direct in new[] { false, true })
+                {
+                    var writer = new RejectingWriter(rejection);
+                    var savedError = Console.Error;
+                    string text = "";
+                    bool isError = false, result = false;
+                    var escaped = "";
+                    Bim.Cli.JurisdictionResolveCommand.WorkProbe = () => throw new InvalidOperationException("boom jurisdiction_resolve P5-35");
+                    Console.SetError(writer);
+                    try
+                    {
+                        if (direct)
+                        {
+                            using var document = JsonDocument.Parse(A(("code", "ar.caba")).ToJsonString());
+                            (text, isError) = Bim.Mcp.JurisdictionResolveTool.Execute(document.RootElement);
+                            result = true;
+                        }
+                        else
+                        {
+                            var response = call(Line(A(("code", "ar.caba"))));
+                            result = IsResult(response);
+                            if (result) { text = Text(response); isError = IsError(response); }
+                        }
+                    }
+                    catch (Exception error) { escaped = error.GetType().FullName + ": " + error.Message; }
+                    finally
+                    {
+                        Console.SetError(savedError);
+                        Bim.Cli.JurisdictionResolveCommand.WorkProbe = null;
+                    }
+                    Check(escaped.Length == 0 && result && isError && text == InternalLine && writer.Attempts == 1 && !text.Contains("P5-35", StringComparison.Ordinal),
+                        "P5-35 stderr throws " + name + " (internal error, " + (direct ? "JurisdictionResolveTool.Execute" : "tools/call") + "): isError with the typed line, not McpServer's generic failure, nothing escapes, one write attempt | "
+                        + Short(text) + " escaped " + escaped + " attempts " + writer.Attempts.ToString(CultureInfo.InvariantCulture));
+                }
+                foreach (var (label, arguments, expected, expectError) in new (string, JsonObject, string, bool)[] { ("success", A(("code", "ar.caba")), cabaLine, false), ("jurisdiction_unknown", A(("code", "zz.nowhere")), refused.Out, true) })
+                {
+                    var writer = new RejectingWriter(rejection);
+                    var savedError = Console.Error;
+                    JsonObject response;
+                    Console.SetError(writer);
+                    try { response = call(Line(arguments)); }
+                    finally { Console.SetError(savedError); }
+                    Check(IsResult(response) && IsError(response) == expectError && Text(response) == expected && writer.Attempts == 0,
+                        "P5-35 stderr throws " + name + " (" + label + "): the CLI bytes, stderr never written | " + Short(response.ToJsonString()));
+                }
+            }
+            Check(Bim.Cli.JurisdictionResolveCommand.WorkProbe is null, "P5-35: the WorkProbe seam is null again after the forced runs");
+            var again = call(Line(A(("code", "ar.caba"))));
+            Check(IsResult(again) && !IsError(again) && Text(again) == cabaLine, "P5-35: with working streams the next call answers the CABA bytes");
+
+            // Static: the tool writes the diagnostic only through the shared guarded SkillListCommand.WriteDiagnostic(envelope)
+            // (once), with no Console and no Diagnostic access of its own (comments stripped, literals kept).
+            var toolPath = Path.Combine(root, "interfaces", "mcp", "JurisdictionResolveTool.cs");
+            var toolCode = File.Exists(toolPath) ? DocUpdateLinkTests.CodeOf(File.ReadAllText(toolPath)) : "";
+            static int Matches(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
+            Check(Matches(toolCode, @"\bSkillListCommand\s*\.\s*WriteDiagnostic\s*\(\s*envelope\s*\)\s*;") == 1 && Matches(toolCode, @"\bWriteDiagnostic\b") == 1
+                && Matches(toolCode, @"\bConsole\b") == 0 && Matches(toolCode, @"\bDiagnostic\b") == 0,
+                "P5-35: the tool writes the diagnostic only through SkillListCommand.WriteDiagnostic(envelope), once, with no Console or Diagnostic access of its own");
         }
     }
 
