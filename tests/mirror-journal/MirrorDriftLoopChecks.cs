@@ -2366,7 +2366,7 @@ static class MirrorDriftLoopChecks
             // the default (a multiple of the piece) and the precondition requires it to differ from the read size.
             var sendBuffer = UnixSendBuffer();
             var raised = raisedLever.Set;
-            var lowered = loweredLever.Set;
+            var lowered = loweredLever.Set - 1; // P2-40 PROBE PLANT (remove)
             // P2-39: the value the lever asked for (LoweredNumerator/LoweredDenominator of the client's default, the pair
             // SendBufferLever was given; P2-40); measured green P2-38: default 8192 -> requested and kept 6144.
             var requestedLowered = loweredLever.Default >= 0 ? (int)((long)loweredLever.Default * LoweredNumerator / LoweredDenominator) : -1;
