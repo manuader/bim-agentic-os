@@ -2625,6 +2625,7 @@ internal static class GeneratePrototypesTests
             }
             return null;
         }
+        const string Reflected = @"\.\s*Invoke\s*\(\s*null\b";
         var problems = new List<string>();
         var twelve = Body(tests, @"\bstatic\s+void\s+PartialWriteStage\s*\(");
         var thirteen = Body(tests, @"\bstatic\s+void\s+PartialWriteContractStage\s*\(");
@@ -2637,15 +2638,38 @@ internal static class GeneratePrototypesTests
             if (setOut != 0) problems.Add(label + " calls Console.SetOut " + setOut.ToString(CultureInfo.InvariantCulture) + " times itself");
             var forced = Count(section, @"\bForcedRun\s*\(");
             if (forced != 1) problems.Add(label + " calls ForcedRun " + forced.ToString(CultureInfo.InvariantCulture) + " times, not once");
+            var invoke = Count(section, Reflected);
+            if (invoke != 0) problems.Add(label + " invokes a method by reflection " + invoke.ToString(CultureInfo.InvariantCulture) + " times itself");
+        }
+        // P7-38: ForcedRun itself sets stdout once and restores it once around its one reflected Run, and no other helper
+        // that section 12 or 13 reaches (transitively) sets stdout or invokes by reflection (a second copy).
+        var forcedRun = Declarations(tests, "ForcedRun").Where(d => Depth(tests, d.Start) == 1).ToList();
+        if (forcedRun.Count != 1) { problems.Add("ForcedRun declared " + forcedRun.Count.ToString(CultureInfo.InvariantCulture) + " times as a class member, not once"); return problems; }
+        var helper = tests[forcedRun[0].Start..forcedRun[0].End];
+        if (Count(helper, @"\bConsole\s*\.\s*SetOut\b") != 2 || Count(helper, @"\bConsole\s*\.\s*SetOut\s*\(\s*stdout\s*\)") != 1 || Count(helper, @"\bConsole\s*\.\s*SetOut\s*\(\s*previousOut\s*\)") != 1)
+            problems.Add("ForcedRun does not call Console.SetOut exactly twice (SetOut(stdout) once, SetOut(previousOut) once): " + Count(helper, @"\bConsole\s*\.\s*SetOut\b").ToString(CultureInfo.InvariantCulture));
+        if (Count(helper, Reflected) != 1) problems.Add("ForcedRun invokes by reflection other than once");
+        var roots = new[] { "PartialWriteStage", "PartialWriteContractStage" }.SelectMany(name => Declarations(tests, name).Where(d => Depth(tests, d.Start) == 1)).ToList();
+        var (reached, _) = Reach(tests, roots);
+        if (!reached.Any(r => r.Start == forcedRun[0].Start)) problems.Add("sections 12 and 13 do not reach ForcedRun");
+        foreach (var (name, start, end) in reached)
+        {
+            if (start == forcedRun[0].Start) continue;
+            var body = tests[start..end];
+            if (Count(body, @"\bConsole\s*\.\s*SetOut\b") != 0 || Count(body, Reflected) != 0)
+                problems.Add("section 12 or 13 reaches " + name + ", which sets stdout or invokes by reflection (a copy of ForcedRun)");
         }
         return problems;
     }
 
     // P7-36: over the comment-stripped, string-blanked GenerateWrite.cs: the problems that would let Execute retry, complete
     // or write a second time the success line or the pipeline refusal line (empty = pinned).
+    // P7-38: every helper of GenerateCommand (GenerateWrite.cs + GenerateCommand.cs) that Execute reaches through
+    // unqualified calls is followed too: none names a stdout Console member or Print(, and every callee resolves to a
+    // declared method or local function (a delegate field is not followed, so it is a problem). The success object's
+    // trailing comma is optional (a reformat without it is accepted).
     static List<string> ExecuteWriteProblems(string write, string command)
     {
-        _ = command;
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
         var problems = new List<string>();
         var header = System.Text.RegularExpressions.Regex.Matches(write, @"\bstatic\s+void\s+Execute\s*\(\s*string\s*\[\s*\]\s*args\s*\)\s*\{");
@@ -2682,10 +2706,142 @@ internal static class GeneratePrototypesTests
         // reports a failed delete on stderr and rethrows, and closes Execute.
         if (Count(body, @"try\s*\{\s*PostWriteStageProbe\s*\?\s*\.\s*Invoke\s*\(\s*\)\s*;\s*var\s+sha256\s*=") != 1)
             problems.Add("the success try does not start with PostWriteStageProbe?.Invoke(); var sha256 =");
-        if (Count(body, @"sha256\s*,\s*\}\s*\)\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*PostWriteDeleteProbe\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;\s*File\s*\.\s*Delete\s*\(\s*output\s*\)\s*;\s*\}\s*"
+        if (Count(body, @"sha256\s*,?\s*\}\s*\)\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*PostWriteDeleteProbe\s*\?\s*\.\s*Invoke\s*\(\s*output\s*\)\s*;\s*File\s*\.\s*Delete\s*\(\s*output\s*\)\s*;\s*\}\s*"
             + @"catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*throw\s*;\s*\}\s*\}$") != 1)
             problems.Add("the success line is not the last statement of its try with the delete / report / rethrow catch (Exception) closing Execute");
+        if (Count(body, @"\bPrint\s*\(") != 0) problems.Add("Execute calls Print(");
+        var code = write + "\n" + command;
+        var executes = Declarations(code, "Execute").Where(d => Depth(code, d.Start) == 1).ToList();
+        if (executes.Count != 1) { problems.Add("Execute declared " + executes.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GenerateCommand, not once"); return problems; }
+        var (reached, unresolved) = Reach(code, executes);
+        foreach (var name in unresolved)
+            problems.Add("Execute reaches " + name + "(, declared as no method or local function in GenerateWrite.cs or GenerateCommand.cs (a delegate or a helper the pin cannot follow)");
+        foreach (var (name, start, end) in reached)
+        {
+            var helper = code[start..end];
+            if (Count(helper, @"\bConsole\s*\.(?!\s*Error\b)") != 0) problems.Add("Execute reaches a stdout Console member through the helper " + name);
+            if (Count(helper, @"\bPrint\s*\(") != 0) problems.Add("Execute reaches Print( through the helper " + name);
+        }
         return problems;
+    }
+
+    // P7-38: static reachability over comment-stripped, string-blanked C# (sections 14 and 15). Not a parser: a
+    // declaration is name( preceded by whitespace and a type-ending token (not return / throw / new / ...), whose
+    // parameter list is followed by a block or =>; a call is an unqualified name( (not after . or new); generic calls,
+    // method groups and delegates are not followed (a callee declared nowhere is reported as unresolved).
+    static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
+    {
+        "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
+        "default", "checked", "unchecked", "fixed", "new", "base", "this", "await", "is", "as", "in", "out", "ref", "var", "stackalloc",
+        "else", "yield", "case", "not", "and", "or", "with", "goto", "get", "set",
+    };
+    static readonly HashSet<string> DeclarationBlockers = new(StringComparer.Ordinal) { "return", "throw", "new", "await", "else", "in", "is", "as", "case", "yield", "not", "and", "or", "when", "goto" };
+
+    // The index of the bracket closing the one at open, or -1.
+    static int Closing(string code, int open, char opening, char closing)
+    {
+        var depth = 0;
+        for (var i = open; i < code.Length; i++)
+        {
+            if (code[i] == opening) depth++;
+            else if (code[i] == closing && --depth == 0) return i;
+        }
+        return -1;
+    }
+
+    // Brace depth at index (class members of a file-scoped namespace are at 1).
+    static int Depth(string code, int index)
+    {
+        var depth = 0;
+        for (var i = 0; i < index; i++)
+        {
+            if (code[i] == '{') depth++;
+            else if (code[i] == '}') depth--;
+        }
+        return depth;
+    }
+
+    // The last word before index (skipping whitespace) and the character it ends at ('\0' at the start).
+    static (char Last, string Word, bool Spaced) Before(string code, int index)
+    {
+        var j = index - 1;
+        while (j >= 0 && char.IsWhiteSpace(code[j])) j--;
+        if (j < 0) return ('\0', "", index > 0);
+        var end = j + 1;
+        while (j >= 0 && (char.IsLetterOrDigit(code[j]) || code[j] == '_')) j--;
+        return (code[end - 1], code[(j + 1)..end], end < index);
+    }
+
+    // The declarations of name as [start, end) spans from the name to the body's closing brace or semicolon.
+    static List<(int Start, int End)> Declarations(string code, string name)
+    {
+        var spans = new List<(int Start, int End)>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code, @"\b" + name + @"\s*\("))
+        {
+            var (last, word, spaced) = Before(code, m.Index);
+            if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) continue;
+            var paren = Closing(code, m.Index + m.Length - 1, '(', ')');
+            if (paren < 0) continue;
+            var at = paren + 1;
+            while (at < code.Length && char.IsWhiteSpace(code[at])) at++;
+            var end = -1;
+            if (at < code.Length && code[at] == '{') end = Closing(code, at, '{', '}');
+            else if (at + 1 < code.Length && code[at] == '=' && code[at + 1] == '>')
+            {
+                var depth = 0;
+                for (var i = at; i < code.Length && end < 0; i++)
+                {
+                    if (code[i] is '(' or '{') depth++;
+                    else if (code[i] is ')' or '}') depth--;
+                    else if (code[i] == ';' && depth == 0) end = i;
+                }
+            }
+            if (end >= 0) spans.Add((m.Index, end + 1));
+        }
+        return spans;
+    }
+
+    // The unqualified callees of body, in order (duplicates kept).
+    static List<string> Callees(string body)
+    {
+        var names = new List<string>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(body, @"\b([A-Za-z_]\w*)\s*\("))
+        {
+            var name = m.Groups[1].Value;
+            if (CallKeywords.Contains(name)) continue;
+            var (last, word, _) = Before(body, m.Index);
+            if (last == '.' || word == "new") continue;
+            names.Add(name);
+        }
+        return names;
+    }
+
+    // The declarations reached from the roots through unqualified calls, transitively (a name resolves to class members,
+    // depth 1, and to local functions inside a root or a reached declaration; all overloads are followed), and the callee
+    // names declared nowhere in that scope. Declarations inside a root are not listed (the root's own text covers them).
+    static (List<(string Name, int Start, int End)> Reached, List<string> Unresolved) Reach(string code, List<(int Start, int End)> roots)
+    {
+        var scopes = new List<(int Start, int End)>(roots);
+        var reached = new List<(string Name, int Start, int End)>();
+        var unresolved = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var queue = new Queue<string>();
+        foreach (var (start, end) in roots) foreach (var name in Callees(code[start..end])) queue.Enqueue(name);
+        while (queue.Count > 0)
+        {
+            var name = queue.Dequeue();
+            if (!seen.Add(name)) continue;
+            var found = Declarations(code, name).Where(d => Depth(code, d.Start) == 1 || scopes.Any(s => s.Start <= d.Start && d.Start < s.End)).ToList();
+            if (found.Count == 0) { unresolved.Add(name); continue; }
+            foreach (var d in found)
+            {
+                if (roots.Any(r => r.Start <= d.Start && d.End <= r.End)) continue;
+                reached.Add((name, d.Start, d.End));
+                scopes.Add(d);
+                foreach (var callee in Callees(code[d.Start..d.End])) queue.Enqueue(callee);
+            }
+        }
+        return (reached, unresolved);
     }
 
     // ---- 15. P7-38: the section 14 write pins under mutation: one ForcedRun copy, helper-reachable writes, reformat ----
