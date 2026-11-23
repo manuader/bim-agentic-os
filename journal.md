@@ -2085,3 +2085,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay270
 - 2026-11-23T22:53:29Z lock taken (session_014pxpsQxwyhPmz5nxFKKVyK relay270; was FREE, relay269 released 2026-11-23T22:39:50Z)
+- 2026-11-23T22:54:05Z picked P3-36 (phase 3), P10-39 (phase 10), P7-39 (phase 7) — oldest-touched (relay263/265); disjoint files (tests/mcp/GenerateTypologyToolTests.cs s9 + tests/cli/GenerateTypologyTests.cs s14 + contracts P3-34 paragraph; tests/cli/DeletedCwdPathTests.cs new section + tests/mcp/DeletedCwdPathToolTests.cs counts + contracts P10-37 section; tests/packaging/test-package.ps1 P7-33/35/37 blocks). Workers spawned; heartbeat via shared script at task borders and CI polls.
