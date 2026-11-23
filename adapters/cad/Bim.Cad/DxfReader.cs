@@ -347,7 +347,12 @@ public static class DxfReader
                 case "LINE":
                     {
                         if (r.First(10) is not { } x1 || r.First(20) is not { } y1 || r.First(11) is not { } x2 || r.First(21) is not { } y2) return Invalid(r, state, "LINE without both end points");
-                        return new DxfLine(p, new Point2(DxfValues.Number(x1), DxfValues.Number(y1)), new Point2(DxfValues.Number(x2), DxfValues.Number(y2)));
+                        // P6-38: LINE end points are world coordinates (no OCS); their z is kept for near +-Z inserts.
+                        return new DxfLine(p, new Point2(DxfValues.Number(x1), DxfValues.Number(y1)), new Point2(DxfValues.Number(x2), DxfValues.Number(y2)))
+                        {
+                            StartZ = DxfValues.OptionalZ(r, 30),
+                            EndZ = DxfValues.OptionalZ(r, 31),
+                        };
                     }
                 case "CIRCLE":
                 case "ARC":
@@ -359,12 +364,13 @@ public static class DxfReader
                         var frame = OcsFrame.Read(r);
                         if (!frame.IsHorizontal) return NotPlanar(p, state, frame);
                         var mirror = frame.Kind == OcsKind.Mirrored;
+                        var centerZ = frame.ToWorld(center.X, center.Y, DxfValues.OptionalZ(r, 30)).Z;
                         center = frame.Place(center, r, 30);
-                        if (r.Type == "CIRCLE") return new DxfCircle(p, center, radius);
+                        if (r.Type == "CIRCLE") return new DxfCircle(p, center, radius) { Elevation = centerZ };
                         if (r.First(50) is not { } sa || r.First(51) is not { } ea) return Invalid(r, state, "ARC without start or end angle");
                         double start = DxfValues.Number(sa), end = DxfValues.Number(ea);
                         if (mirror) (start, end) = (180 - end, 180 - start);
-                        return new DxfArc(p, center, radius, DxfValues.NormaliseDegrees(start), DxfValues.NormaliseDegrees(end));
+                        return new DxfArc(p, center, radius, DxfValues.NormaliseDegrees(start), DxfValues.NormaliseDegrees(end)) { Elevation = centerZ };
                     }
                 case "LWPOLYLINE":
                     {
@@ -435,6 +441,8 @@ public static class DxfReader
                         }
                         else value = r.First(1)?.Value ?? "";
                         // MTEXT 10/20 is in world coordinates; TEXT is in the entity's OCS.
+                        var textZ = DxfValues.OptionalZ(r, 30);
+                        if (!mtext) textZ = frame.ToWorld(insertion.X, insertion.Y, textZ).Z;
                         if (!mtext)
                         {
                             insertion = frame.Place(insertion, r, 30);
@@ -446,7 +454,7 @@ public static class DxfReader
                             plain = DxfTextFormat.PlainMText(value, out var invalid);
                             if (invalid) state.Warn("invalid-text", r.Line, "MTEXT \\U+ escape of a lone surrogate replaced with U+FFFD");
                         }
-                        return new DxfText(p, insertion, height, DxfValues.NormaliseDegrees(rotation), value, plain, mtext);
+                        return new DxfText(p, insertion, height, DxfValues.NormaliseDegrees(rotation), value, plain, mtext) { Elevation = textZ };
                     }
                 case "ATTRIB":
                 case "ATTDEF":
@@ -466,6 +474,7 @@ public static class DxfReader
                         var rotation = r.First(50) is { } ar ? DxfValues.Number(ar) : 0;
                         var flags = r.First(70) is { } af ? DxfValues.Int(af) : 0;
                         var value = r.First(1)?.Value ?? "";
+                        var attributeZ = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, 30)).Z;
                         insertion = frame.Place(insertion, r, 30);
                         if (frame.Kind == OcsKind.Mirrored) rotation = 180 - rotation;
                         string plain;
@@ -481,6 +490,7 @@ public static class DxfReader
                         {
                             Prompt = definition ? r.First(3)?.Value ?? "" : null,
                             Flags = flags,
+                            Elevation = attributeZ,
                         };
                     }
                 case "INSERT":
@@ -491,7 +501,10 @@ public static class DxfReader
                         var sx = r.First(41) is { } gx ? DxfValues.Number(gx) : 1;
                         var sy = r.First(42) is { } gy ? DxfValues.Number(gy) : 1;
                         var rotation = r.First(50) is { } gr ? DxfValues.Number(gr) : 0;
-                        if (sx == 0 || sy == 0) return Invalid(r, state, "INSERT with a zero scale factor");
+                        // P6-38: a zero Z scale (group 43) is refused like a zero X or Y scale; a negative one is kept
+                        // (a mirror in z, like a negative 41/42).
+                        var sz = r.First(43) is { } gz ? DxfValues.Number(gz) : 1;
+                        if (sx == 0 || sy == 0 || sz == 0) return Invalid(r, state, "INSERT with a zero scale factor");
                         // MINSERT: column/row counts 70/71 (absent or 0 mean 1; negative is read as 1 with a warning) and
                         // spacings 44/45.
                         var columns = r.First(70) is { } gc ? DxfValues.Int(gc) : 1;
@@ -517,7 +530,7 @@ public static class DxfReader
                             Elevation = height,
                             ZAxisXY = frame.Exact ? default : new Point2(frame.Normal.X, frame.Normal.Y),
                             ZAxisZ = frame.Normal.Z,
-                            ScaleZ = r.First(43) is { } gz ? DxfValues.Number(gz) : 1,
+                            ScaleZ = sz,
                         };
                     }
                 default:
@@ -637,6 +650,12 @@ internal static class DxfValues
             throw new DxfFormatException("bad-number", pair.Line + 1, "group " + pair.Code.ToString(CultureInfo.InvariantCulture) + " value is not a finite number");
         return value;
     }
+
+    // P6-38: a z group read only for DxfExploder's near +-Z shift (LINE 30/31, CIRCLE/ARC/TEXT/MTEXT/ATTRIB/ATTDEF 30).
+    // These were never read before P6-38, so a value that is not a finite number still does not fail the file: it
+    // reads as 0, like an absent group.
+    public static double OptionalZ(DxfRecord r, int code) =>
+        r.First(code) is { } pair && double.TryParse(pair.Value.AsSpan().Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value) ? value : 0;
 
     public static int Int(DxfPair pair)
     {

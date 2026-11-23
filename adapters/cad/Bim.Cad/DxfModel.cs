@@ -36,12 +36,28 @@ public sealed record DxfProvenance(string SourceFile, string? Handle, string Lay
 
 public abstract record DxfEntity(DxfProvenance Provenance);
 
-public sealed record DxfLine(DxfProvenance Provenance, Point2 Start, Point2 End) : DxfEntity(Provenance);
+public sealed record DxfLine(DxfProvenance Provenance, Point2 Start, Point2 End) : DxfEntity(Provenance)
+{
+    // P6-38: the z of the end points (groups 30 and 31, world z in the coordinates the LINE lives in). DxfExploder uses
+    // them only under an enclosing near +-Z insert (z times that normal's horizontal part moves world XY) and writes 0
+    // on every placed copy. Not serialized.
+    public double StartZ { get; init; }
+    public double EndZ { get; init; }
+}
 
 // Arc counter-clockwise from StartAngleDegrees to EndAngleDegrees, both normalised to [0, 360).
-public sealed record DxfArc(DxfProvenance Provenance, Point2 Center, double Radius, double StartAngleDegrees, double EndAngleDegrees) : DxfEntity(Provenance);
+// P6-38: Elevation of an ARC, CIRCLE, TEXT/MTEXT or ATTRIB/ATTDEF is the world z of its centre or insertion point in
+// the coordinates it lives in (its OCS point taken to world z; MTEXT group 30 as is). Like DxfPolyline.Elevation it is
+// used only under an enclosing near +-Z insert, is 0 on every placed copy and is not serialized.
+public sealed record DxfArc(DxfProvenance Provenance, Point2 Center, double Radius, double StartAngleDegrees, double EndAngleDegrees) : DxfEntity(Provenance)
+{
+    public double Elevation { get; init; }
+}
 
-public sealed record DxfCircle(DxfProvenance Provenance, Point2 Center, double Radius) : DxfEntity(Provenance);
+public sealed record DxfCircle(DxfProvenance Provenance, Point2 Center, double Radius) : DxfEntity(Provenance)
+{
+    public double Elevation { get; init; }
+}
 
 // LWPOLYLINE vertex; Bulge is the tangent of a quarter of the included angle of the segment that starts at this
 // vertex (0 straight, positive counter-clockwise, 1 a semicircle).
@@ -51,7 +67,9 @@ public sealed record DxfPolyline(DxfProvenance Provenance, IReadOnlyList<DxfVert
 {
     // P6-36: the world height of an LWPOLYLINE's plane in the coordinates it lives in (its OCS elevation, group 38,
     // taken to world z: -38 under an exact -Z OCS). DxfExploder uses it only under an enclosing near +-Z insert, where
-    // it shifts world XY by z times that normal's horizontal part. Not serialized; 0 for other polylines.
+    // it shifts world XY by z times that normal's horizontal part. Not serialized; 0 for other polylines. P6-38: a
+    // tilted (P6-30) polyline kept as horizontal has the world z of its first vertex; every copy DxfExploder places
+    // (and the candidate copies CadToBimIr scales) has 0: the explode consumes it and does not compute world heights.
     public double Elevation { get; init; }
 
     public IReadOnlyList<DxfPolylineSegment> Segments() => DxfGeometry.Segments(this);
@@ -66,7 +84,10 @@ public sealed record DxfPolylineSegment(int Index, Point2 Start, Point2 End, dou
 
 // TEXT or MTEXT. Value is the raw text (MTEXT chunks from groups 3 then 1 concatenated); PlainText removes MTEXT
 // inline formatting (\P becomes a newline). Insertion is group 10/20.
-public sealed record DxfText(DxfProvenance Provenance, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsMText) : DxfEntity(Provenance);
+public sealed record DxfText(DxfProvenance Provenance, Point2 Insertion, double Height, double RotationDegrees, string Value, string PlainText, bool IsMText) : DxfEntity(Provenance)
+{
+    public double Elevation { get; init; }
+}
 
 // A MINSERT is an INSERT with more than one column (group 70) or row (group 71): cell (row, column) is the block
 // placed with an extra offset (column * ColumnSpacing, row * RowSpacing) (groups 44, 45) applied after the scale and
@@ -106,6 +127,7 @@ public sealed record DxfAttribute(DxfProvenance Provenance, string Tag, Point2 I
 {
     public string? Prompt { get; init; }
     public int Flags { get; init; }
+    public double Elevation { get; init; }
     public string? InsertHandle { get; init; }
     // Name of the block the owning INSERT places (null like InsertHandle).
     public string? BlockName { get; init; }

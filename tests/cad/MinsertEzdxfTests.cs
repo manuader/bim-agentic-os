@@ -72,6 +72,17 @@ using Point2 = Bim.Cad.Point2;
 // MINSERT) within 1e-6. Removing each case's z feature moves its outline by 2.5e-4 (H1) to 9e-4 (X1 > XE) in ezdxf, so
 // every case exercises it. H1 and X1 already held after P6-34 (pinned); Z1, K1, L1, L2 and W1 were off by 6e-4, 2.7e-4,
 // 3.6e-4, 2.4e-4 and 5.7e-4 before P6-36 made DxfReader keep groups 43, BLOCK 30 and 38 and DxfExploder use them.
+//
+// P6-38 (section RunLeaf at the end): leaf z under near +-Z inserts. LeafDrawing() places block LZ (a LINE with z
+// 1500/-700, CIRCLEs and ARCs in +Z, exact -Z and near -Z OCSs, TEXT in +Z and exact -Z, MTEXT, a constant ATTDEF, the
+// P6-30 tilted LWPOLYLINE whose plane is at world z 460, and a heavy POLYLINE) under Q1 (near +Z) and Q2 (near -Z, Z
+// scale -1.5), and an ATTRIB at z 1900 of a nested INSERT under Q3 (near -Z). Every point (line ends, centres, arc ends
+// and midpoints, insertion points, polyline vertices) equals ezdxf 1.4.2 (generator section P6-38 leaf_main: composed
+// Insert.matrix44() applied to the leaf point; the entity's own transform() and, for the ATTRIB, virtual_entities()
+// agree within 1e-9) within 1e-6. Documented limits pinned: the heavy POLYLINE is not modelled (typed unsupported,
+// nothing placed); the explode consumes the z members (every placed copy has StartZ/EndZ/Elevation 0, model-space
+// entities keep theirs); CadToBimIr's candidate copies drop them (same draft bytes at any z). INSERT group 43 = 0 is
+// refused entity-invalid like 41/42 = 0; a negative 43 is kept. A z group that is not a finite number reads as 0.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -268,6 +279,7 @@ internal static class MinsertEzdxfTests
         RunBulgeParity(C);
         RunChain(C);
         RunZ(C);
+        RunLeaf(C);
         if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
@@ -721,6 +733,274 @@ internal static class MinsertEzdxfTests
         catch (Exception error)
         {
             c(false, "z unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-38: leaf z under near +-Z inserts, heavy POLYLINE, Z scale validation, z members after explode ----------
+
+    // Same parameters as LEAF_Z, TAG_INSERT, TAG_ATTRIB and LEAF_CASES in tests/cad/tools/minsert_ezdxf_centres.py, plus
+    // the model-space tilted LWPOLYLINE MP (a copy of LP) and LINE ML, read but never placed.
+    private static string LeafDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 Z0|8 0|2 LZ|70 0|10 40|20 -30|30 0")
+        + G("0 LINE|5 LA|8 0|10 100|20 200|30 1500|11 900|21 250|31 -700")
+        + G("0 CIRCLE|5 LC|8 0|10 300|20 400|30 1100|40 150")
+        + G("0 CIRCLE|5 LD|8 0|10 300|20 400|30 600|40 120|210 0|220 0|230 -1")
+        + G("0 ARC|5 LE|8 0|10 500|20 -300|30 900|40 200|50 10|51 130")
+        + G("0 ARC|5 LF|8 0|10 -200|20 100|30 700|40 250|50 20|51 200|210 0|220 0|230 -1")
+        + G("0 ARC|5 LG|8 0|10 250|20 -150|30 500|40 90|50 0|51 90|210 1e-7|220 -1e-7|230 -1")
+        + G("0 TEXT|5 LT|8 0|10 50|20 60|30 1300|40 100|50 15|1 Sala")
+        + G("0 TEXT|5 LU|8 0|10 120|20 -80|30 400|40 100|50 30|1 Cocina|210 0|220 0|230 -1")
+        + G("0 MTEXT|5 LM|8 0|10 700|20 800|30 -1600|40 120|1 Bano")
+        + G("0 ATTDEF|5 LK|8 0|10 400|20 100|30 2100|40 80|1 X|3 K?|2 K|70 2")
+        + G("0 LWPOLYLINE|5 LP|8 0|90 2|70 0|38 200|10 100|20 500|10 1300|20 500|210 0.6|220 0|230 0.8")
+        + G("0 POLYLINE|5 LH|8 0|66 1|10 0|20 0|30 800|70 1")
+        + G("0 VERTEX|5 V1|8 0|10 0|20 0|30 0|0 VERTEX|5 V2|8 0|10 1000|20 0|30 0|0 VERTEX|5 V3|8 0|10 1000|20 600|30 0|0 SEQEND|5 V4|8 0")
+        + G("0 ENDBLK|5 Z1|8 0")
+        + G("0 BLOCK|5 T0|8 0|2 TAG|70 0|10 0|20 0|30 0|0 LINE|5 T1|8 0|10 0|20 0|11 500|21 0|0 ENDBLK|5 T2|8 0")
+        + G("0 BLOCK|5 H0|8 0|2 LHOLD|70 0|10 10|20 20|30 0")
+        + G("0 INSERT|5 TI|8 0|2 TAG|66 1|10 2000|20 1000|30 1200|50 20")
+        + G("0 ATTRIB|5 TA|8 0|10 2100|20 1050|30 1900|40 150|1 Living|2 ROOM|70 0|0 SEQEND|5 TS|8 0")
+        + G("0 ENDBLK|5 H2|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 Q1|8 ROOMS|2 LZ|10 50000|20 20000|30 700|41 1.2|42 1.2|50 25|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 Q2|8 ROOMS|2 LZ|10 -40000|20 30000|30 -300|41 0.9|42 0.9|43 -1.5|50 -40|210 -2e-7|220 1e-7|230 -1")
+        + G("0 INSERT|5 Q3|8 ROOMS|2 LHOLD|10 20000|20 -50000|30 0|50 10|210 2e-7|220 3e-7|230 -1")
+        + G("0 LWPOLYLINE|5 MP|8 0|90 2|70 0|38 200|10 100|20 500|10 1300|20 500|210 0.6|220 0|230 0.8")
+        + G("0 LINE|5 ML|8 0|10 0|20 0|30 75|11 10|21 0|31 -25")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 WCS points (generator section P6-38 leaf_main): (top insert, leaf handle, point, x, y). ROOM is the
+    // ATTRIB TA of INSERT TI inside LHOLD. Each point moves by 7e-5 to 6.3e-4 in ezdxf when its z is dropped.
+    private static readonly (string Top, string Handle, string Label, double X, double Y)[] LeafPoints =
+    {
+        ("Q1", "LA", "start", 49948.61218042518, 20280.569024067045),
+        ("Q1", "LA", "end", 50793.30990027591, 20740.661462560303),
+        ("Q1", "LC", "center", 50064.69754649622, 20599.5113557736),
+        ("Q1", "LD", "center", 49412.15542982984, 20295.226547320304),
+        ("Q1", "LE", "center", 50637.21069524714, 19939.641237480595),
+        ("Q1", "LE", "start", 50833.807185876496, 20077.299582204843),
+        ("Q1", "LE", "mid", 50616.293316987714, 20178.727965022612),
+        ("Q1", "LE", "end", 50419.69682635836, 20041.069620298364),
+        ("Q1", "LF", "center", 50108.08264627845, 20222.526721031532),
+        ("Q1", "LF", "start", 49809.22423685094, 20196.379998207234),
+        ("Q1", "LF", "mid", 50081.93592345417, 20521.38513045905),
+        ("Q1", "LF", "end", 50406.94105570596, 20248.673443855827),
+        ("Q1", "LG", "center", 49745.46205953642, 19722.4204545592),
+        ("Q1", "LG", "start", 49647.58081853646, 19676.777682291206),
+        ("Q1", "LG", "mid", 49643.97525649154, 19759.358630038372),
+        ("Q1", "LG", "end", 49699.81928726842, 19820.301695559156),
+        ("Q1", "LT", "insert", 49965.23352117541, 20102.95226014045),
+        ("Q1", "LU", "insert", 49851.34609059236, 19864.478766523192),
+        ("Q1", "LM", "insert", 50296.8677086383, 21237.396399186717),
+        ("Q1", "LK", "insert", 50325.59735516724, 20323.954543849297),
+        ("Q1", "LP", "v0", 49586.04970894535, 19979.098370268894),
+        ("Q1", "LP", "v1", 48977.47941203885, 21284.181583601643),
+        ("Q2", "LA", "start", 39825.57707486626, 30123.86041380241),
+        ("Q2", "LA", "end", 39245.09897338471, 29695.52566476846),
+        ("Q2", "LC", "center", 39571.98718536127, 30146.046703820248),
+        ("Q2", "LD", "center", 39985.65067464552, 30493.152268050977),
+        ("Q2", "LE", "center", 39839.05531970236, 29547.736964911717),
+        ("Q2", "LE", "start", 39683.17074702116, 29457.736964911717),
+        ("Q2", "LE", "mid", 39683.17074702117, 29637.736964911717),
+        ("Q2", "LE", "end", 39839.05531970236, 29727.736964911717),
+        ("Q2", "LF", "center", 39814.48329985734, 29997.065859049915),
+        ("Q2", "LF", "start", 39926.98329985734, 30191.92157490141),
+        ("Q2", "LF", "mid", 39619.627584005844, 30109.56585904991),
+        ("Q2", "LF", "end", 39701.98329985734, 29802.210143198416),
+        ("Q2", "LG", "center", 40269.35856595343, 30085.034747873753),
+        ("Q2", "LG", "start", 40331.408165846064, 30137.100544258363),
+        ("Q2", "LG", "mid", 40276.41818111599, 30165.726518419182),
+        ("Q2", "LG", "end", 40217.29276956882, 30147.084347766388),
+        ("Q2", "LT", "insert", 39941.040253627114, 30056.264286405312),
+        ("Q2", "LU", "insert", 40139.23578224482, 30058.089445854363),
+        ("Q2", "LM", "insert", 39064.8068363513, 30190.419568855927),
+        ("Q2", "LK", "insert", 39676.59614009593, 29881.363669306338),
+        ("Q2", "LP", "v0", 40145.41484728474, 30274.749932434497),
+        ("Q2", "LP", "v1", 39451.204228823306, 31102.07793100299),
+        ("Q3", "ROOM", "insert", -21879.39020079522, -48622.722753071364),
+    };
+
+    // A z member of a Bim.Cad entity by name (StartZ/EndZ of a LINE, Elevation of the others); null when it has none.
+    private static double? Member(object entity, string name) => (entity, name) switch
+    {
+        (DxfLine line, "StartZ") => line.StartZ,
+        (DxfLine line, "EndZ") => line.EndZ,
+        (DxfCircle circle, "Elevation") => circle.Elevation,
+        (DxfArc arc, "Elevation") => arc.Elevation,
+        (DxfText text, "Elevation") => text.Elevation,
+        (DxfAttribute attribute, "Elevation") => attribute.Elevation,
+        (DxfPolyline polyline, "Elevation") => polyline.Elevation,
+        _ => null,
+    };
+
+    private static Point2 At(Point2 center, double radius, double degrees) =>
+        new(center.X + radius * Math.Cos(degrees * Math.PI / 180), center.Y + radius * Math.Sin(degrees * Math.PI / 180));
+
+    private static Dictionary<string, Point2> LeafPointsOf(DxfEntity entity)
+    {
+        var points = new Dictionary<string, Point2>(StringComparer.Ordinal);
+        switch (entity)
+        {
+            case DxfLine line: points["start"] = line.Start; points["end"] = line.End; break;
+            case DxfCircle circle: points["center"] = circle.Center; break;
+            case DxfArc arc:
+                var span = arc.EndAngleDegrees - arc.StartAngleDegrees;
+                if (span <= 0) span += 360;
+                points["center"] = arc.Center;
+                points["start"] = At(arc.Center, arc.Radius, arc.StartAngleDegrees);
+                points["mid"] = At(arc.Center, arc.Radius, arc.StartAngleDegrees + span / 2);
+                points["end"] = At(arc.Center, arc.Radius, arc.EndAngleDegrees);
+                break;
+            case DxfText text: points["insert"] = text.Insertion; break;
+            case DxfAttribute attribute: points["insert"] = attribute.Insertion; break;
+            case DxfPolyline polyline:
+                for (var k = 0; k < polyline.Vertices.Count; k++) points["v" + k.ToString(CultureInfo.InvariantCulture)] = polyline.Vertices[k].Point;
+                break;
+        }
+        return points;
+    }
+
+    private static double Distance(Point2 a, double x, double y) => Math.Max(Math.Abs(a.X - x), Math.Abs(a.Y - y));
+
+    private static void RunLeaf(Action<bool, string, string> c)
+    {
+        try
+        {
+            var text = LeafDrawing();
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "leaf-ezdxf.dxf");
+            var x = drawing.Explode();
+            var unsupported = string.Join(",", drawing.Unsupported.Select(u => u.Handle + ":" + u.EntityType + ":" + (u.Reason ?? "null")));
+            c(drawing.Warnings.Count == 0 && x.Warnings.Count == 0 && unsupported == "LH:POLYLINE:null",
+                "leaf: no reader or explode warning; the heavy POLYLINE LH is the one unsupported entity (not modelled, Reason null)",
+                "reader " + string.Join(",", drawing.Warnings.Select(w => w.Code)) + " explode " + string.Join(",", x.Warnings.Select(w => w.Code)) + " unsupported " + unsupported);
+
+            // Every ezdxf point within 1e-6; an arc's end points as an unordered pair (a mirror swaps the end angles).
+            foreach (var group in LeafPoints.GroupBy(p => (p.Top, p.Handle)))
+            {
+                var (top, handle) = group.Key;
+                var leafHandle = handle == "ROOM" ? "TA" : handle;
+                var found = x.Entities.Where(e => e.Provenance.Handle == leafHandle && e.Provenance.InsertPath.Count > 0 && e.Provenance.InsertPath[0] == top).ToList();
+                var name = "leaf: " + top + " " + handle + " (" + (found.Count == 1 ? found[0].Provenance.EntityType : "?") + ")";
+                if (found.Count != 1)
+                {
+                    c(false, name + " equals ezdxf 1.4.2 within 1e-6", "found " + found.Count.ToString(CultureInfo.InvariantCulture) + " entities");
+                    continue;
+                }
+                var got = LeafPointsOf(found[0]);
+                var expected = group.ToDictionary(p => p.Label, p => (p.X, p.Y));
+                var worst = 0.0;
+                foreach (var (label, (ex, ey)) in expected)
+                {
+                    if (!got.TryGetValue(label, out var point)) { worst = double.PositiveInfinity; continue; }
+                    if (label is "start" or "end" && found[0] is DxfArc)
+                    {
+                        var other = got[label == "start" ? "end" : "start"];
+                        var (ox, oy) = expected[label == "start" ? "end" : "start"];
+                        worst = Math.Max(worst, Math.Min(Math.Max(Distance(point, ex, ey), Distance(other, ox, oy)), Math.Max(Distance(other, ex, ey), Distance(point, ox, oy))));
+                    }
+                    else worst = Math.Max(worst, Distance(point, ex, ey));
+                }
+                c(worst <= Eps && got.Count == expected.Count, name + " equals ezdxf 1.4.2 within 1e-6",
+                    string.Join(" ", got.Select(kv => kv.Key + "=" + P(kv.Value))) + " max error " + F(worst));
+            }
+            c(!x.Entities.Any(e => e.Provenance.Handle is "LH" or "V1" or "V2" or "V3"),
+                "leaf: limit pinned: the heavy POLYLINE LH (elevation 800) is not modelled, so nothing of it is placed (ezdxf would place it; generator prints it)",
+                string.Join(",", x.Entities.Select(e => e.Provenance.Handle)));
+
+            // What the reader keeps: z members in the coordinates each entity lives in.
+            var lz = drawing.Blocks.Single(b => b.Name == "LZ").Entities.ToDictionary(e => e.Provenance.Handle!, StringComparer.Ordinal);
+            var room = drawing.Blocks.Single(b => b.Name == "LHOLD").Entities.OfType<DxfInsert>().Single().Attributes.Single();
+            var read = new (string Name, object Entity, string Member, double Expected, double Tolerance)[]
+            {
+                ("LA", lz["LA"], "StartZ", 1500, 0), ("LA", lz["LA"], "EndZ", -700, 0), ("LC", lz["LC"], "Elevation", 1100, 0),
+                ("LD", lz["LD"], "Elevation", -600, 0), ("LE", lz["LE"], "Elevation", 900, 0), ("LF", lz["LF"], "Elevation", -700, 0),
+                ("LG", lz["LG"], "Elevation", -500, 1e-4), ("LT", lz["LT"], "Elevation", 1300, 0), ("LU", lz["LU"], "Elevation", -400, 0),
+                ("LM", lz["LM"], "Elevation", -1600, 0), ("LK", lz["LK"], "Elevation", 2100, 0), ("TA", room, "Elevation", 1900, 0),
+                ("LP", lz["LP"], "Elevation", 460, 1e-9),
+            };
+            foreach (var (name, entity, member, expected, tolerance) in read)
+            {
+                var value = Member(entity, member);
+                c(value is { } v && Math.Abs(v - expected) <= tolerance, "leaf: reader keeps " + name + " " + member + " = " + F(expected) + (tolerance > 0 ? " within " + F(tolerance) : ""),
+                    value is null ? "no member" : F(value.Value));
+            }
+            // P6-30 tilted LWPOLYLINE: its Elevation is the world z of its plane (0.6 * 500 + 0.8 * 200), not group 38.
+            var mp = drawing.Entities.OfType<DxfPolyline>().Single(e => e.Provenance.Handle == "MP");
+            c(Math.Abs(mp.Elevation - 460) <= 1e-9 && Distance(mp.Vertices[0].Point, -280, 100) <= 1e-9 && Distance(mp.Vertices[1].Point, -280, 1300) <= 1e-9,
+                "leaf: the model-space tilted LWPOLYLINE MP keeps Elevation 460 (world z of its plane; group 38 is 200) and its world XY",
+                F(mp.Elevation) + " " + string.Join(";", mp.Vertices.Select(v => P(v.Point))));
+
+            // Pinned: the explode consumes the z members; a placed copy reports 0, a model-space entity keeps them.
+            var placedZ = x.Entities.Where(e => e.Provenance.InsertPath.Count > 0)
+                .SelectMany(e => new[] { "StartZ", "EndZ", "Elevation" }.Select(m => (e, m, Member(e, m))).Where(t => t.Item3 is not null))
+                .Where(t => t.Item3 != 0).Select(t => t.e.Provenance.Handle + "." + t.m + "=" + F(t.Item3!.Value)).ToList();
+            var placedTypes = x.Entities.Where(e => e.Provenance.InsertPath.Count > 0).Select(e => e.GetType().Name).Distinct().OrderBy(n => n, StringComparer.Ordinal);
+            var everyMember = x.Entities.Where(e => e.Provenance.InsertPath.Count > 0 && e is not DxfInsert).All(e => Member(e, e is DxfLine ? "StartZ" : "Elevation") is not null);
+            c(placedZ.Count == 0 && everyMember, "leaf: limit pinned: every placed copy (" + string.Join(",", placedTypes) + ") has its z members 0",
+                string.Join(",", placedZ) + " every type has a z member " + everyMember);
+            var ml = x.Entities.Single(e => e.Provenance.Handle == "ML");
+            var mpx = x.Entities.Single(e => e.Provenance.Handle == "MP");
+            c(Member(ml, "StartZ") == 75 && Member(ml, "EndZ") == -25 && Member(mpx, "Elevation") is { } mpz && Math.Abs(mpz - 460) <= 1e-9,
+                "leaf: model-space LINE ML (z 75/-25) and LWPOLYLINE MP (460) keep their z members through the explode",
+                F(Member(ml, "StartZ") ?? double.NaN) + "/" + F(Member(ml, "EndZ") ?? double.NaN) + " " + F(Member(mpx, "Elevation") ?? double.NaN));
+        }
+        catch (Exception error)
+        {
+            c(false, "leaf unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // INSERT group 43: zero refused like a zero 41/42; negative kept (a mirror in z, like a negative 41/42).
+        try
+        {
+            var text = G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+                + G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0|0 LINE|5 B1|8 0|10 0|20 0|11 100|21 0|0 ENDBLK|5 B2|8 0|0 ENDSEC")
+                + G("0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|10 0|20 0|43 0|0 INSERT|5 SN|8 0|2 BOX|10 500|20 0|43 -2|0 INSERT|5 SX|8 0|2 BOX|10 900|20 0|41 0|0 ENDSEC|0 EOF");
+            var lines = text.Split('\n');
+            int LineOfHandle(string handle) => Array.IndexOf(lines, handle) - 2;
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "zscale.dxf");
+            var warnings = string.Join(",", drawing.Warnings.Select(w => w.Code + "@" + w.Line.ToString(CultureInfo.InvariantCulture) + ":" + w.Message));
+            var expected = "entity-invalid@" + LineOfHandle("S0").ToString(CultureInfo.InvariantCulture) + ":INSERT with a zero scale factor; entity skipped,"
+                + "entity-invalid@" + LineOfHandle("SX").ToString(CultureInfo.InvariantCulture) + ":INSERT with a zero scale factor; entity skipped";
+            c(warnings == expected && drawing.Entities.Count == 1 && drawing.Entities[0] is DxfInsert { ScaleZ: -2.0 } sn && sn.Provenance.Handle == "SN",
+                "zscale: INSERT group 43 = 0 is refused entity-invalid like 41 = 0; 43 = -2 is kept",
+                warnings + " entities " + string.Join(",", drawing.Entities.Select(e => e.Provenance.Handle + (e is DxfInsert i ? ":" + F(i.ScaleZ) : ""))));
+            var placed = drawing.Explode().Entities.OfType<DxfLine>().ToList();
+            c(placed.Count == 1 && P(placed[0].Start) == "(500,0)" && P(placed[0].End) == "(600,0)", "zscale: the negative-Z-scale insert places its block unchanged in plan",
+                string.Join(";", placed.Select(l => P(l.Start) + "-" + P(l.End))));
+
+            // A z group that is not a number never failed a file (it was not read); it still does not, and reads as 0.
+            var bad = DxfReader.Parse(new UTF8Encoding(false).GetBytes(G("0 SECTION|2 ENTITIES|0 LINE|5 BZ|8 0|10 0|20 0|30 abc|11 10|21 0|31 1e999|0 TEXT|5 BT|8 0|10 1|20 2|30 x|40 100|1 T|0 ENDSEC|0 EOF")), "badz.dxf");
+            c(bad.Warnings.Count == 0 && bad.Entities.Count == 2 && Member(bad.Entities[0], "StartZ") == 0 && Member(bad.Entities[0], "EndZ") == 0 && Member(bad.Entities[1], "Elevation") == 0,
+                "zscale: a non-numeric or non-finite z group (LINE 30/31, TEXT 30) still reads, as z 0, without a warning",
+                string.Join(",", bad.Warnings.Select(w => w.Code)) + " entities " + bad.Entities.Count.ToString(CultureInfo.InvariantCulture));
+        }
+        catch (Exception error)
+        {
+            c(false, "zscale unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // CadToBimIr: its scaled candidate copies drop the z members (pinned); a wall drawing gives the same draft
+        // bytes whatever the z of its LINEs and LWPOLYLINEs (heights come from the options, not the drawing).
+        try
+        {
+            string Walls(string z) => G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC|0 SECTION|2 ENTITIES")
+                + G("0 LINE|5 W1|8 WALLS|10 0|20 0|30 " + z + "|11 5000|21 0|31 " + z)
+                + G("0 LINE|5 W2|8 WALLS|10 0|20 200|30 " + z + "|11 5000|21 200|31 " + z)
+                + G("0 LWPOLYLINE|5 W3|8 WALLS|90 2|70 0|38 " + z + "|10 0|20 1000|10 5000|20 1000")
+                + G("0 LINE|5 W4|8 WALLS|10 0|20 1200|30 " + z + "|11 5000|21 1200|31 " + z)
+                + G("0 ENDSEC|0 EOF");
+            var options = new CadToBimIrOptions(Guid.Parse("6f0c6a52-4d3b-4a8e-9b51-2f6f9d0e7a11"));
+            var flat = CadToBimIr.FromDxf(DxfReader.Parse(new UTF8Encoding(false).GetBytes(Walls("0")), "walls-z.dxf"), options);
+            var high = CadToBimIr.FromDxf(DxfReader.Parse(new UTF8Encoding(false).GetBytes(Walls("2500")), "walls-z.dxf"), options);
+            var a = JsonSerializer.Serialize(flat);
+            var b = JsonSerializer.Serialize(high);
+            c(flat.Walls.Count > 0 && a == b, "draft: limit pinned: CadToBimIr ignores LINE z and LWPOLYLINE elevation (same draft bytes at z 0 and 2500)",
+                flat.Walls.Count.ToString(CultureInfo.InvariantCulture) + " walls; " + a.Length.ToString(CultureInfo.InvariantCulture) + " vs " + b.Length.ToString(CultureInfo.InvariantCulture) + " chars; equal " + (a == b));
+        }
+        catch (Exception error)
+        {
+            c(false, "draft z unexpected exception", error.GetType().Name + ": " + error.Message);
         }
     }
 }
