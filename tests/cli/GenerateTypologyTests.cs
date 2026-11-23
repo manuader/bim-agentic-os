@@ -2237,6 +2237,11 @@ internal static class GenerateTypologyTests
     //   StderrWriteProblems' documented limits are self-tested (both rejected, the safe side): a Console.Error named inside
     //   the guarded write's own argument, and an argument nested deeper than four parentheses; an argument exactly four
     //   deep is accepted. The docs/contracts P3-31 section's P3-32 / P3-34 wording is checked.
+    //   P3-36: CountingWriter (below) overlaps tests/mcp's AttemptWriter and the shared RejectingWriter; it is kept because
+    //   it is private to this assembly and records in memory, while AttemptWriter runs inside the real Bim.Mcp.dll process
+    //   (startup hook) and logs to a file; tests/mcp/GenerateTypologyToolTests.cs section 9 checks AttemptWriter against
+    //   RejectingWriter per overload. The partial-stdout-then-throw cases here are the only coverage of that path: in the
+    //   real MCP process the AutoFlush console stdout drops a closed-pipe write, so it is unreachable there (section 9).
     static void PartialWriteRun(string root, string scratch, string cliDll, Action<bool, string, string> check, Func<string[], (int Exit, string Out, string Err)> cli)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "P3-31 " + name, detail);
