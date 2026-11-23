@@ -422,3 +422,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay265 (2026-11-21)
 - [ ] `git pull` (main is now e6cdf02). No new owner action. P6-36 changed DXF explode geometry only under near-±Z (tilted-normal) inserts; exact ±Z drawings are byte-unchanged. ADR0010/ADR0011 decisions and the -Catalogue run remain open (see above).
+
+## Relay267 (2026-11-23, cloud)
+- No new required action. `git pull` (main f7f1b8c). Optional decision: P6-37 measured that each `Do` of a form with a malformed /Matrix warns once per invocation; say if you prefer warn-once per form. Still open: ADR0010/ADR0011, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
