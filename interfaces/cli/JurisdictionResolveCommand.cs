@@ -50,11 +50,18 @@ internal static class JurisdictionResolveCommand
 
     // P5-33: the diagnostic goes through the shared guarded SkillListCommand.WriteDiagnostic (a Console.Error that throws
     // is ignored), then the envelope is printed without it: the typed line and exit 1 still follow, nothing escapes Run.
+    // P5-35: the print is guarded too: a Console.Out that throws while the success, refusal or internal-error line is
+    // written drops only that line: exit 1, nothing escapes Run (SkillListCommand.Run's P5-33 pattern). The try spans
+    // the whole body (Resolve and WriteDiagnostic never throw), so the three P5-33 statements read unchanged inside it.
     public static void Run(string[] args)
     {
-        var envelope = Resolve(args);
-        SkillListCommand.WriteDiagnostic(envelope);
-        (envelope with { Diagnostic = null }).Print();
+        try
+        {
+            var envelope = Resolve(args);
+            SkillListCommand.WriteDiagnostic(envelope);
+            (envelope with { Diagnostic = null }).Print();
+        }
+        catch (Exception) { Environment.ExitCode = 1; }
     }
 
     // P10-27: the verb's whole handler (args[0] is the verb): the envelope Run prints, shared by the MCP tool

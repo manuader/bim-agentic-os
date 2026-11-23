@@ -15,7 +15,8 @@ namespace Bim.Mcp;
 // Success and every refusal: the text is the CLI stdout line without its newline, byte for byte (the envelope's Line),
 // isError exactly when the CLI exits 1: skills_lock_path_invalid (detail lock), jurisdiction_resolve_repository_not_found,
 // the registry's load and selection issues unchanged, jurisdiction_resolve_internal_error (its IntentPlan diagnostic on
-// the server's stderr, as on the CLI).
+// the server's stderr, as on the CLI; P5-35: written through the shared guarded SkillListCommand.WriteDiagnostic, so a
+// Console.Error that throws leaves the typed isError line, never McpServer's generic failure).
 // Usage-equivalent arguments are JSON-RPC -32602 (UsageMessage), never a tool result: whatever the verb's own parser
 // refuses as jurisdiction_resolve_usage (no selector, code with country or municipality, only one of country and
 // municipality, a blank or "--"-prefixed value), and a string that is not valid text (a lone surrogate escape, which no
@@ -50,7 +51,7 @@ internal static class JurisdictionResolveTool
         if (arguments.TryGetProperty(AllowStubParameter, out var allowStub) && allowStub.GetBoolean()) args.Add("--allow-stub");
         var envelope = JurisdictionResolveCommand.Resolve([.. args]);
         if (envelope == JurisdictionResolveCommand.UsageRefusal) throw new McpInvalidParamsException(UsageMessage);
-        if (envelope.Diagnostic is { } detail) Console.Error.WriteLine(detail);
+        SkillListCommand.WriteDiagnostic(envelope); // P5-35: stderr written guarded by the shared write (a throwing Console.Error is ignored)
         return (envelope.Line, !envelope.Succeeded);
     }
 

@@ -1890,7 +1890,8 @@ internal static class SkillListTests
         var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
         var resolvePath = Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs");
         var commandSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
-        var resolveSource = File.Exists(resolvePath) ? File.ReadAllText(resolvePath).ReplaceLineEndings("\n") : "";
+        // P5-35 documented delta: the file is read with ResolveDeltaP535 reversed (the P5-33 text; section 17 pins the new body).
+        var resolveSource = File.Exists(resolvePath) ? ReverseDelta(File.ReadAllText(resolvePath).ReplaceLineEndings("\n"), ResolveDeltaP535) ?? "" : "";
         var runBody = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(commandSource), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
         Check(runBody == "IntentEnvelopeenvelope;try{envelope=Execute(args);}catch(Exceptionerror){envelope=IntentPlan.Internal(\"\",error);}WriteDiagnostic(envelope);try{(envelopewith{Diagnostic=null}).Print();}catch(Exception){Environment.ExitCode=1;}",
             "SkillListCommand.Run: the P5-31 body with the print guarded (a throwing stdout sets exit 1)", runBody);
