@@ -17,7 +17,7 @@ writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
   * for the tilted inserts (non-axis extrusion, which DxfReader reports as ocs-non-planar instead of projecting), the
     world XY centre the projection reading would give, used as decoy label positions.
 
-P6-34 and P6-36 extensions (chain_main, z_main) are described at their sections below.
+P6-34, P6-36 and P6-38 extensions (chain_main, z_main, leaf_main) are described at their sections below.
 
 P6-32 extension (same ezdxf 1.4.2 checkout, commit 8240df57; printed after the P6-30 sections, which are unchanged):
 a second drawing (BULGE_* below, mirrored by MinsertEzdxfTests.BulgeDrawing()) whose block ARCH (base (50, 20)) holds
@@ -433,8 +433,167 @@ def z_main():
             print("// " + key + " " + r(max(max(abs(p.x - q.x), abs(p.y - q.y)) for p, q in zip(a, b, strict=True))))
 
 
+
+# P6-38: leaf z under near +-Z inserts. Block LZ (base (40, -30, 0)) holds one leaf of every modelled kind, each with a
+# non-zero z: LINE LA (z 1500 / -700), CIRCLE LC (+Z OCS, elevation 1100) and LD (exact -Z OCS, elevation 600), ARC LE
+# (+Z, 900), LF (exact -Z, 700) and LG (its own near -Z OCS (1e-7,-1e-7,-1), 500), TEXT LT (+Z, 1300) and LU (exact -Z,
+# 400), MTEXT LM (WCS z -1600), a constant ATTDEF LK (z 2100), the tilted LWPOLYLINE LP (extrusion (0.6,0,0.8), group
+# 38 200, straight along Ax = (0,1,0), world z 0.6 * 500 + 0.8 * 200 = 460) and a heavy POLYLINE LH (elevation 800;
+# not modelled by DxfReader, printed for the record only). Block TAG holds a LINE; block LHOLD (base (10, 20, 0)) holds
+# INSERT TI of TAG at z 1200 carrying ATTRIB ROOM at z 1900 (in LHOLD coordinates). Model space: Q1 (LZ under near +Z,
+# scale 1.2), Q2 (LZ under near -Z, scale 0.9, Z scale -1.5: a negative group 43, accepted like a negative 41/42) and
+# Q3 (LHOLD under near -Z). Expected WCS points: ezdxf's composed Insert.matrix44() applied to each leaf point taken to
+# block WCS by ezdxf.math.OCS(extrusion).to_wcs; cross-checked within 1e-9 against the leaf copied and transformed with
+# the entity's own transform(m) (Q3's ATTRIB: against the ATTRIB of the INSERT that Q3.virtual_entities() yields).
+# For every point the XY change when its z is set to 0 is printed, to show each is exercised above 1e-6.
+LEAF_BASE = (40.0, -30.0, 0.0)
+# name, kind, data, extrusion
+LEAF_Z = [
+    ("LA", "LINE", ((100.0, 200.0, 1500.0), (900.0, 250.0, -700.0)), (0.0, 0.0, 1.0)),
+    ("LC", "CIRCLE", ((300.0, 400.0, 1100.0), 150.0), (0.0, 0.0, 1.0)),
+    ("LD", "CIRCLE", ((300.0, 400.0, 600.0), 120.0), (0.0, 0.0, -1.0)),
+    ("LE", "ARC", ((500.0, -300.0, 900.0), 200.0, 10.0, 130.0), (0.0, 0.0, 1.0)),
+    ("LF", "ARC", ((-200.0, 100.0, 700.0), 250.0, 20.0, 200.0), (0.0, 0.0, -1.0)),
+    ("LG", "ARC", ((250.0, -150.0, 500.0), 90.0, 0.0, 90.0), (1e-7, -1e-7, -1.0)),
+    ("LT", "TEXT", ((50.0, 60.0, 1300.0), 100.0, 15.0, "Sala"), (0.0, 0.0, 1.0)),
+    ("LU", "TEXT", ((120.0, -80.0, 400.0), 100.0, 30.0, "Cocina"), (0.0, 0.0, -1.0)),
+    ("LM", "MTEXT", ((700.0, 800.0, -1600.0), 120.0, 0.0, "Bano"), (0.0, 0.0, 1.0)),
+    ("LK", "ATTDEF", ((400.0, 100.0, 2100.0), 80.0, 0.0, "K"), (0.0, 0.0, 1.0)),
+    ("LP", "LWPOLYLINE", (((100.0, 500.0), (1300.0, 500.0)), 200.0), (0.6, 0.0, 0.8)),
+    ("LH", "POLYLINE", (((0.0, 0.0), (1000.0, 0.0), (1000.0, 600.0)), 800.0), (0.0, 0.0, 1.0)),
+]
+TAG_INSERT = ("TI", (2000.0, 1000.0, 1200.0), 20.0)
+TAG_ATTRIB = ("ROOM", "Living", (2100.0, 1050.0, 1900.0), 150.0)
+LEAF_CASES = [
+    ("Q1", "LZ", (50000.0, 20000.0, 700.0), 25.0, 1.2, 1.2, 1.0, (3e-7, -2e-7, 1.0)),
+    ("Q2", "LZ", (-40000.0, 30000.0, -300.0), -40.0, 0.9, 0.9, -1.5, (-2e-7, 1e-7, -1.0)),
+    ("Q3", "LHOLD", (20000.0, -50000.0, 0.0), 10.0, 1.0, 1.0, 1.0, (2e-7, 3e-7, -1.0)),
+]
+
+
+def leaf_points(kind, data, ext, flat=False):
+    # (label, block WCS point) of every point checked for a leaf; flat sets the block WCS z of every point to 0 (the
+    # reading that drops it), after the leaf's own OCS has placed it.
+    import math
+    ocs = OCS(ext)
+    if kind == "LINE":
+        points = [("start", Vec3(data[0])), ("end", Vec3(data[1]))]
+    elif kind == "CIRCLE":
+        points = [("center", ocs.to_wcs(data[0]))]
+    elif kind == "ARC":
+        (cx, cy, cz), radius, a0, a1 = data
+        mid = a0 + ((a1 - a0) % 360.0) / 2
+        at = lambda a: ocs.to_wcs((cx + radius * math.cos(math.radians(a)), cy + radius * math.sin(math.radians(a)), cz))
+        points = [("center", ocs.to_wcs((cx, cy, cz))), ("start", at(a0)), ("mid", at(mid)), ("end", at(a1))]
+    elif kind in ("TEXT", "ATTDEF", "ATTRIB"):
+        points = [("insert", ocs.to_wcs(data[0]))]
+    elif kind == "MTEXT":
+        points = [("insert", Vec3(data[0]))]
+    elif kind in ("LWPOLYLINE", "POLYLINE"):
+        vertices, elevation = data
+        points = [("v" + str(k), ocs.to_wcs((x, y, elevation))) for k, (x, y) in enumerate(vertices)]
+    else:
+        raise ValueError(kind)
+    return [(label, Vec3(p.x, p.y, 0.0)) for label, p in points] if flat else points
+
+
+def build_leaf():
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    lz = doc.blocks.new("LZ", base_point=LEAF_BASE)
+    made = {}
+    for name, kind, data, ext in LEAF_Z:
+        if kind == "LINE":
+            e = lz.add_line(data[0], data[1])
+        elif kind == "CIRCLE":
+            e = lz.add_circle(data[0], data[1], dxfattribs={"extrusion": ext})
+        elif kind == "ARC":
+            e = lz.add_arc(data[0], data[1], data[2], data[3], dxfattribs={"extrusion": ext})
+        elif kind == "TEXT":
+            e = lz.add_text(data[3], dxfattribs={"insert": data[0], "height": data[1], "rotation": data[2], "extrusion": ext})
+        elif kind == "MTEXT":
+            e = lz.add_mtext(data[3], dxfattribs={"insert": data[0], "char_height": data[1]})
+        elif kind == "ATTDEF":
+            e = lz.add_attdef(data[3], data[0], "X", dxfattribs={"height": data[1], "flags": 2})
+        elif kind == "LWPOLYLINE":
+            e = lz.add_lwpolyline(data[0], dxfattribs={"elevation": data[1], "extrusion": ext})
+        else:
+            e = lz.add_polyline2d(data[0], dxfattribs={"elevation": (0.0, 0.0, data[1])}, close=True)
+        made[name] = e
+    tag = doc.blocks.new("TAG", base_point=(0.0, 0.0, 0.0))
+    tag.add_line((0.0, 0.0), (500.0, 0.0))
+    hold = doc.blocks.new("LHOLD", base_point=(10.0, 20.0, 0.0))
+    ti = hold.add_blockref("TAG", TAG_INSERT[1], dxfattribs={"rotation": TAG_INSERT[2]})
+    attrib = ti.add_attrib(TAG_ATTRIB[0], TAG_ATTRIB[1], TAG_ATTRIB[2], dxfattribs={"height": TAG_ATTRIB[3]})
+    attrib.dxf.insert = Vec3(TAG_ATTRIB[2])
+    msp = doc.modelspace()
+    top = {}
+    for name, block, ins, rot, sx, sy, sz, ext in LEAF_CASES:
+        top[name] = msp.add_blockref(block, ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "zscale": sz, "extrusion": ext})
+    return made, attrib, top
+
+
+def transformed_points(e, kind, m):
+    # The same points from the leaf copied and transformed by ezdxf's own entity transform.
+    import math
+    c = e.copy()
+    c.transform(m)
+    if kind == "LINE":
+        return [c.dxf.start, c.dxf.end]
+    if kind == "CIRCLE":
+        return [c.ocs().to_wcs(c.dxf.center)]
+    if kind == "ARC":
+        ocs = c.ocs()
+        span = (c.dxf.end_angle - c.dxf.start_angle) % 360.0
+        cx, cy, cz = c.dxf.center
+        at = lambda a: ocs.to_wcs((cx + c.dxf.radius * math.cos(math.radians(a)), cy + c.dxf.radius * math.sin(math.radians(a)), cz))
+        return [ocs.to_wcs(c.dxf.center), at(c.dxf.start_angle), at(c.dxf.start_angle + span / 2), at(c.dxf.end_angle)]
+    if kind in ("TEXT", "ATTDEF", "ATTRIB"):
+        return [c.ocs().to_wcs(c.dxf.insert)]
+    if kind == "MTEXT":
+        return [c.dxf.insert]
+    if kind == "LWPOLYLINE":
+        return list(c.vertices_in_wcs())
+    return [c.ocs().to_wcs(v.dxf.location) for v in c.vertices]
+
+
+def leaf_main():
+    print("// P6-38 leaf z points: (path, handle, label, x, y, xy change when z is dropped)")
+    made, attrib, top = build_leaf()
+    for name, block, *_ in LEAF_CASES:
+        m = top[name].matrix44()
+        if block == "LZ":
+            for handle, kind, data, ext in LEAF_Z:
+                points = leaf_points(kind, data, ext)
+                flat = leaf_points(kind, data, ext, flat=True)
+                got = [m.transform(p) for _, p in points]
+                check = transformed_points(made[handle], kind, m)
+                if kind == "ARC" and (check[1] - got[1]).magnitude > 1e-6:
+                    check = [check[0], check[3], check[2], check[1]]  # a mirroring transform swaps the end angles
+                assert all((a - b).magnitude <= 1e-9 for a, b in zip(got, check, strict=True)), (name, handle, got, check)
+                for (label, _), g, (_, f) in zip(points, got, flat):
+                    d = m.transform(f)
+                    print('("' + name + '", "' + handle + '", "' + label + '", ' + r(g.x) + ", " + r(g.y) + "), // dropped " + r(max(abs(g.x - d.x), abs(g.y - d.y))))
+        else:
+            # Q3: the ATTRIB of INSERT TI lives in LHOLD coordinates, so only Q3's matrix places it.
+            data = (TAG_ATTRIB[2], TAG_ATTRIB[3], 0.0, TAG_ATTRIB[1])
+            (_, p), = leaf_points("ATTRIB", data, (0.0, 0.0, 1.0))
+            (_, f), = leaf_points("ATTRIB", data, (0.0, 0.0, 1.0), flat=True)
+            g = m.transform(p)
+            virtual = [v for v in top[name].virtual_entities() if v.dxftype() == "INSERT"]
+            assert len(virtual) == 1 and len(virtual[0].attribs) == 1, virtual
+            va = virtual[0].attribs[0]
+            check = va.ocs().to_wcs(va.dxf.insert)
+            assert (check - g).magnitude <= 1e-9, (g, check)
+            assert (transformed_points(attrib, "ATTRIB", m)[0] - g).magnitude <= 1e-9
+            d = m.transform(f)
+            print('("' + name + '", "ROOM", "insert", ' + r(g.x) + ", " + r(g.y) + "), // dropped " + r(max(abs(g.x - d.x), abs(g.y - d.y))))
+    print("// P6-38 model-space tilted LWPOLYLINE LP: world z of its plane", r(leaf_points("LWPOLYLINE", LEAF_Z[10][2], LEAF_Z[10][3])[0][1].z))
+
+
 if __name__ == "__main__":
     main()
     bulge_main()
     chain_main()
     z_main()
+    leaf_main()
