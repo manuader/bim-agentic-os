@@ -464,9 +464,11 @@ internal static class RepeatedEnvelopeKeyTests
         // ---- 4. the real Release Bim.Mcp.dll over stdio ----
         {
             var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
-            Check(File.Exists(mcpDll), "fixture: the Release Bim.Mcp.dll exists (" + mcpDll + ")");
+            // P10-38: the dll is a named precondition; without it the process is never launched (one failure, not two).
+            var dllExists = File.Exists(mcpDll);
+            Check(dllExists, "precondition: the Release Bim.Mcp.dll exists, else the stdio process is not launched (" + mcpDll + ")");
             var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
-            static byte[] Ascii(string text) => System.Text.Encoding.UTF8.GetBytes(text);
+            static byte[] Utf8(string text) => System.Text.Encoding.UTF8.GetBytes(text);
             byte[] Concat(params byte[][] parts) => parts.SelectMany(part => part).ToArray();
             var wtf8Lone = new byte[] { 0xED, 0xA0, 0x80 };
             var utf8Pair = new byte[] { 0xF0, 0x9F, 0x98, 0x80 };
@@ -474,35 +476,39 @@ internal static class RepeatedEnvelopeKeyTests
             var lines = new List<(string Label, byte[] Line, string Expected)>
             {
                 // P10-34 refusals (exact bytes pinned in RunP10_34)
-                ("-32600 repeated member", Ascii("""{"jsonrpc":"2.0","id":6,"method":"ping","method":"tools/list"}"""),
+                ("-32600 repeated member", Utf8("""{"jsonrpc":"2.0","id":6,"method":"ping","method":"tools/list"}"""),
                     """{"jsonrpc":"2.0","id":6,"error":{"code":-32600,"message":"invalid_request: repeated member method"}}"""),
-                ("-32600 repeated id", Ascii("""{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}"""),
+                ("-32600 repeated id", Utf8("""{"jsonrpc":"2.0","id":1,"id":2,"method":"ping"}"""),
                     """{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"invalid_request: repeated member id"}}"""),
-                ("-32602 repeated params member", Ascii(Request("20", "tools/call", """{"name":"p10_33_unknown","name":"validate","arguments":{"project":{}}}""")),
+                ("-32602 repeated params member", Utf8(Request("20", "tools/call", """{"name":"p10_33_unknown","name":"validate","arguments":{"project":{}}}""")),
                     """{"jsonrpc":"2.0","id":20,"error":{"code":-32602,"message":"invalid_params: repeated params member name"}}"""),
-                ("-32600 member name not text", Ascii("""{"jsonrpc":"2.0","id":1,"method":"ping","\ud800":1}"""),
+                ("-32600 member name not text", Utf8("""{"jsonrpc":"2.0","id":1,"method":"ping","\ud800":1}"""),
                     """{"jsonrpc":"2.0","id":1,"error":{"code":-32600,"message":"invalid_request: member name is not valid text"}}"""),
-                ("-32600 method not text", Ascii("""{"jsonrpc":"2.0","id":"m","method":"\ud800"}"""),
+                ("-32600 method not text", Utf8("""{"jsonrpc":"2.0","id":"m","method":"\ud800"}"""),
                     """{"jsonrpc":"2.0","id":"m","error":{"code":-32600,"message":"invalid_request: method is not valid text"}}"""),
-                ("-32602 params member name not text", Ascii(Request("21", "tools/call", """{"name":"validate","\ud800":1}""")),
+                ("-32602 params member name not text", Utf8(Request("21", "tools/call", """{"name":"validate","\ud800":1}""")),
                     """{"jsonrpc":"2.0","id":21,"error":{"code":-32602,"message":"invalid_params: params member name is not valid text"}}"""),
-                ("-32602 name not text", Ascii(Request("22", "tools/call", """{"name":"\ud800"}""")),
+                ("-32602 name not text", Utf8(Request("22", "tools/call", """{"name":"\ud800"}""")),
                     """{"jsonrpc":"2.0","id":22,"error":{"code":-32602,"message":"invalid_params: name is not valid text"}}"""),
                 // P10-36
-                ("-32602 ping params name not text", Ascii(Request("1", "ping", """{"\ud800":1}""")), PingParamsRefusal),
-                ("escaped surrogate pair id", Ascii("""{"jsonrpc":"2.0","id":"\ud83d\ude00","method":"ping"}"""), PairIdEcho),
-                ("raw UTF-8 surrogate pair id", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":\""), utf8Pair, Ascii("\",\"method\":\"ping\"}")), PairIdEcho),
-                ("WTF-8 lone surrogate member name", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"ping\",\""), wtf8Lone, Ascii("\":1}")), """{"jsonrpc":"2.0","id":60,"result":{}}"""),
-                ("WTF-8 lone surrogate in method", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"ping"), wtf8Lone, Ascii("\"}")),
+                ("-32602 ping params name not text", Utf8(Request("1", "ping", """{"\ud800":1}""")), PingParamsRefusal),
+                ("escaped surrogate pair id", Utf8("""{"jsonrpc":"2.0","id":"\ud83d\ude00","method":"ping"}"""), PairIdEcho),
+                ("raw UTF-8 surrogate pair id", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":\""), utf8Pair, Utf8("\",\"method\":\"ping\"}")), PairIdEcho),
+                ("WTF-8 lone surrogate member name", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"ping\",\""), wtf8Lone, Utf8("\":1}")), """{"jsonrpc":"2.0","id":60,"result":{}}"""),
+                ("WTF-8 lone surrogate in method", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"ping"), wtf8Lone, Utf8("\"}")),
                     """{"jsonrpc":"2.0","id":61,"error":{"code":-32601,"message":"method_not_found"}}"""),
-                ("WTF-8 lone surrogate id", Concat(Ascii("{\"jsonrpc\":\"2.0\",\"id\":\""), wtf8Lone, Ascii("\",\"method\":\"ping\"}")),
+                ("WTF-8 lone surrogate id", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":\""), wtf8Lone, Utf8("\",\"method\":\"ping\"}")),
                     "{\"jsonrpc\":\"2.0\",\"id\":\"" + replaced + "\",\"result\":{}}"),
-                ("ping", Ascii("""{"jsonrpc":"2.0","id":62,"method":"ping"}"""), """{"jsonrpc":"2.0","id":62,"result":{}}"""),
+                // P10-38
+                ("-32602 ping repeated params member", Utf8(Request("63", "ping", """{"x":1,"\u0078":2}""")), P10_38PingRefusal),
+                ("ping", Utf8("""{"jsonrpc":"2.0","id":62,"method":"ping"}"""), """{"jsonrpc":"2.0","id":62,"result":{}}"""),
             };
+            var wtf8Id = lines.FindIndex(line => line.Label == "WTF-8 lone surrogate id");
             var stdin = lines.SelectMany(line => line.Line.Concat(new byte[] { (byte)'\n' })).ToArray();
             byte[] stdout = [];
             var stderr = "";
             var exit = -1;
+            if (dllExists)
             try
             {
                 var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -528,10 +534,11 @@ internal static class RepeatedEnvelopeKeyTests
             var differing = new List<string>();
             for (var i = 0; i < lines.Count; i++)
                 if (i >= got.Length || got[i] != lines[i].Expected) differing.Add(lines[i].Label + " => " + (i < got.Length ? got[i] : "<missing>"));
+            if (dllExists)
             Check(exit == 0 && stdout.AsSpan().SequenceEqual(expectedBytes),
-                "the real Bim.Mcp.dll over stdio answers the P10-34 and P10-36 lines byte for byte (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
+                "the real Bim.Mcp.dll over stdio answers the P10-34, P10-36 and P10-38 lines byte for byte (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
                 + stdout.Length.ToString(CultureInfo.InvariantCulture) + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | differing: "
-                + string.Join(" ; ", differing) + " | hex of the WTF-8 id line: " + (got.Length > 12 ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(got[12])) : "-") + " | stderr: " + Short(stderr));
+                + string.Join(" ; ", differing) + " | hex of the WTF-8 id line (" + wtf8Id.ToString(CultureInfo.InvariantCulture) + "): " + (wtf8Id >= 0 && wtf8Id < got.Length ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(got[wtf8Id])) : "-") + " | stderr: " + Short(stderr));
         }
 
         // ---- 5. static ----
@@ -555,6 +562,118 @@ internal static class RepeatedEnvelopeKeyTests
             var switchAt = dispatch.IndexOf("switch (method)", StringComparison.Ordinal);
             Check(notification > 0 && paramsText > notification && switchAt > paramsText, "Dispatch checks other methods' params names as text after the notification return, before the method switch | "
                 + string.Join(" ", new[] { notification, paramsText, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
+        }
+
+        RunP10_38(root, check);
+    }
+
+    public const string P10_38PingRefusal = """{"jsonrpc":"2.0","id":63,"error":{"code":-32602,"message":"invalid_params: repeated params member x"}}""";
+
+    // P10-38: a params member given more than once on initialize, ping or tools/list. Oracle, through McpServer.Handle with
+    // a counting Revit transport:
+    //   1. Measurement (the probe): each case's outcome is reported in the failure message (before the fix: ignored).
+    //   2. After the fix: a repeated params member (also a \u-escaped spelling of the same name, also _meta) on those methods
+    //      is -32602 "invalid_params: repeated params member <name>" with the id, as tools/call does (P10-33); a params
+    //      member name that is not valid text keeps the P10-36 refusal (checked first). Pinned as measured with the reason:
+    //      a notification's and an unknown method's params are never read (none / -32601); members repeated inside _meta
+    //      (one level down) are never read, compared or echoed (answered); array params are not an object (answered).
+    //   3. Exact bytes: one refusal per method and well-formed neighbours.
+    //   4. Static: Dispatch checks repeated params members of the other methods after their text check, before the switch.
+    static void RunP10_38(string root, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "P10-38 repeated params members of other methods: " + name);
+        var sends = 0;
+        var server = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { sends++; return null; }, null);
+        static string Request(string id, string method, string parameters) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"" + method + "\",\"params\":" + parameters + "}";
+        const string Init = "\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"p10-38\",\"version\":\"0\"}";
+        static string Outcome(string? response)
+        {
+            if (response is null) return "none";
+            var node = JsonNode.Parse(response)!.AsObject();
+            var id = node["id"]?.ToJsonString() ?? "null";
+            if (node["error"] is JsonObject error)
+                return error["code"]!.GetValue<int>().ToString(CultureInfo.InvariantCulture) + ":" + error["message"]!.GetValue<string>() + "@" + id;
+            if (node["result"] is JsonObject) return "result@" + id;
+            return "other:" + response;
+        }
+        string Safe(string line)
+        {
+            try { return Outcome(server.Handle(line)); }
+            catch (Exception error) { return "threw " + error.GetType().Name + ": " + error.Message; }
+        }
+        static string Refused(string name, string id) => "-32602:" + ParamsPrefix + name + "@" + id;
+
+        var cases = new List<(string Label, string Line, string Expected)>
+        {
+            ("P1 ping x twice", Request("1", "ping", """{"x":1,"x":2}"""), Refused("x", "1")),
+            ("P2 ping x twice escaped", Request("2", "ping", """{"x":1,"\u0078":2}"""), Refused("x", "2")),
+            ("P3 ping _meta twice", Request("\"p\"", "ping", """{"_meta":{},"_meta":{"progressToken":1}}"""), Refused("_meta", "\"p\"")),
+            ("P4 initialize protocolVersion twice", Request("3", "initialize", "{" + Init + ",\"protocolVersion\":\"2025-06-18\"}"), Refused("protocolVersion", "3")),
+            ("P5 initialize capabilities twice escaped", Request("4", "initialize", "{" + Init + ",\"\\u0063apabilities\":{}}"), Refused("capabilities", "4")),
+            ("P6 initialize clientInfo twice first", Request("5", "initialize", "{\"clientInfo\":{}," + Init + "}"), Refused("clientInfo", "5")),
+            ("P7 tools/list cursor twice", Request("6", "tools/list", """{"cursor":"a","cursor":"b"}"""), Refused("cursor", "6")),
+            ("P8 tools/list cursor twice escaped", Request("\"l\"", "tools/list", """{"\u0063ursor":"a","cursor":"a"}"""), Refused("cursor", "\"l\"")),
+            ("P9 tools/list two names repeated", Request("7", "tools/list", """{"a":1,"b":1,"b":2,"a":2}"""), Refused("b", "7")),
+            ("P10 tools/list lone name repeated stays not-text", Request("8", "tools/list", """{"cursor":"x","cursor":"y","\ud800":1}"""), "-32602:" + ParamsNotText + "@8"),
+            // pinned as measured: never read
+            ("N1 notification params member twice", """{"jsonrpc":"2.0","method":"notifications/initialized","params":{"x":1,"x":2}}""", "none"),
+            ("N2 unknown method params member twice", Request("9", "resources/list", """{"x":1,"x":2}"""), "-32601:method_not_found@9"),
+            ("N3 ping repeated inside _meta", Request("10", "ping", """{"_meta":{"a":1,"a":2}}"""), "result@10"),
+            ("N4 tools/list array params", Request("11", "tools/list", "[1,1]"), "result@11"),
+            // unchanged: tools/call keeps its own check
+            ("C1 tools/call name twice", Request("12", "tools/call", """{"name":"p10_38_unknown","name":"validate"}"""), Refused("name", "12")),
+        };
+        var measured = new List<string>();
+        var bad = new List<string>();
+        foreach (var (label, line, expected) in cases)
+        {
+            var outcome = Safe(line);
+            measured.Add(label + " => " + outcome);
+            if (outcome != expected) bad.Add(label + " (expected " + expected + ")");
+        }
+        Check(bad.Count == 0 && sends == 0,
+            "a repeated params member on initialize/ping/tools/list is refused -32602 with the id like tools/call, no transport send (sends "
+            + sends.ToString(CultureInfo.InvariantCulture) + ") | failing " + bad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", bad)
+            + " | measured: " + string.Join(" ; ", measured));
+
+        // ---- 3. exact bytes ----
+        {
+            var plainInit = server.Handle(Request("20", "initialize", "{" + Init + "}"));
+            var exact = new List<(string Label, string Line, string? Expected)>
+            {
+                ("ping repeated escaped", Request("63", "ping", """{"x":1,"\u0078":2}"""), P10_38PingRefusal),
+                ("initialize repeated", Request("\"i\"", "initialize", "{" + Init + ",\"protocolVersion\":\"x\"}"),
+                    """{"jsonrpc":"2.0","id":"i","error":{"code":-32602,"message":"invalid_params: repeated params member protocolVersion"}}"""),
+                ("tools/list repeated", Request("21", "tools/list", """{"cursor":"a","cursor":"a"}"""),
+                    """{"jsonrpc":"2.0","id":21,"error":{"code":-32602,"message":"invalid_params: repeated params member cursor"}}"""),
+                ("ping distinct members", Request("22", "ping", """{"x":1,"y":1,"_meta":{"progressToken":1}}"""), """{"jsonrpc":"2.0","id":22,"result":{}}"""),
+                ("initialize distinct members", Request("20", "initialize", "{" + Init + "}"), plainInit),
+            };
+            var differing = new List<string>();
+            foreach (var (label, line, expected) in exact)
+            {
+                string response;
+                try { response = server.Handle(line) ?? "none"; }
+                catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                if (expected is null || response != expected) differing.Add(label + " => " + response);
+            }
+            var plainList = server.Handle("""{"jsonrpc":"2.0","id":23,"method":"tools/list"}""");
+            var cursorList = server.Handle(Request("23", "tools/list", """{"cursor":"x","_meta":{}}"""));
+            if (plainList is null || plainList != cursorList) differing.Add("tools/list distinct members differ from plain tools/list");
+            Check(differing.Count == 0, "refusal and well-formed response bytes are exact | " + string.Join(" ; ", differing));
+        }
+
+        // ---- 4. static ----
+        {
+            var source = DocUpdateLinkTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")));
+            var from = source.IndexOf("string? Dispatch(", StringComparison.Ordinal);
+            var to = from < 0 ? -1 : source.IndexOf("static JsonObject Initialize(", from, StringComparison.Ordinal);
+            var dispatch = from < 0 || to < 0 ? "" : source[from..to];
+            var text = dispatch.IndexOf("params member name is not valid text", StringComparison.Ordinal);
+            var repeated = dispatch.IndexOf("repeated params member ", StringComparison.Ordinal);
+            var switchAt = dispatch.IndexOf("switch (method)", StringComparison.Ordinal);
+            Check(text > 0 && repeated > text && switchAt > repeated, "Dispatch checks other methods' repeated params members after their text check, before the method switch | "
+                + string.Join(" ", new[] { text, repeated, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
         }
     }
 }
