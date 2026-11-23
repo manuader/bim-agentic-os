@@ -425,3 +425,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay267 (2026-11-23, cloud)
 - No new required action. `git pull` (main f7f1b8c). Optional decision: P6-37 measured that each `Do` of a form with a malformed /Matrix warns once per invocation; say if you prefer warn-once per form. Still open: ADR0010/ADR0011, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
+
+## Relay268 (2026-11-23, cloud)
+- No new required action. `git pull` (main 34dc072). P5-35 changed only stream-failure handling of jurisdiction-resolve and the MCP jurisdiction_resolve tool (success/refusal bytes unchanged). Still open: ADR0010/ADR0011, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
