@@ -2366,7 +2366,7 @@ static class MirrorDriftLoopChecks
             // the default (a multiple of the piece) and the precondition requires it to differ from the read size.
             var sendBuffer = UnixSendBuffer();
             var raised = raisedLever.Set;
-            var lowered = loweredLever.Set - 1; // P2-40 PROBE PLANT (remove)
+            var lowered = loweredLever.Set;
             // P2-39: the value the lever asked for (LoweredNumerator/LoweredDenominator of the client's default, the pair
             // SendBufferLever was given; P2-40); measured green P2-38: default 8192 -> requested and kept 6144.
             var requestedLowered = loweredLever.Default >= 0 ? (int)((long)loweredLever.Default * LoweredNumerator / LoweredDenominator) : -1;
@@ -2387,6 +2387,7 @@ static class MirrorDriftLoopChecks
             // P2-40: this is the only check that names kept != requested: the precondition no longer repeats it, and the
             // lowered-run checks below (its self-test and relation, which read the kept value) run only when it holds, so a
             // rounded lowered value is exactly one red, this one.
+            // P2-40 probe red (run 45243506492) planted lowered - 1: this setup check was the only macOS red.
             var loweredKept = leversOk && lowered == requestedLowered;
             Check(loweredKept,
                 "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + requestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + loweredLever.Default + ")", macDetail);
