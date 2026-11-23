@@ -2056,3 +2056,6 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 ## Relay266
 - 2026-11-21T20:53:02Z lock taken (session_014pxpsRKCPBZcyQMUC7SRhW relay266; was FREE, relay265 released 2026-11-21T20:20:35Z)
 - 2026-11-21T20:53:30Z picked P10-38 (phase 10), P6-37 (phase 6), P7-38 (phase 7) — oldest-touched (relay262); disjoint files (McpServer.cs Dispatch checks + tests/mcp/RepeatedEnvelopeKeyTests.cs; tests/cad/PdfType3GlyphListTests.cs + PdfContent.cs InvokeXObject; tests/cli/GeneratePrototypesTests.cs). Workers spawned; background heartbeat every 20 min.
+
+## Relay267
+- 2026-11-23T16:53:14Z lock taken over (session_014pxpsRpocJeYdbCfD2ALw7 relay267; was TAKEN by relay266 session_014pxpsRKCPBZcyQMUC7SRhW, last_heartbeat 2026-11-21T20:53:30Z, ~44 h stale; no relay266-* branches on origin, its picks P10-38/P6-37/P7-38 restart here)
