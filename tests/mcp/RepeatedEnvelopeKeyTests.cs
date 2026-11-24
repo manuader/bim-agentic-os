@@ -555,9 +555,11 @@ internal static class RepeatedEnvelopeKeyTests
                     "the real Bim.Mcp.dll over stdio answers each P10-34, P10-36 and P10-38 line byte for byte, matched by id (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
                     + got.Count.ToString(CultureInfo.InvariantCulture) + " lines, expected " + lines.Count.ToString(CultureInfo.InvariantCulture) + ") | differing: "
                     + string.Join(" ; ", differing) + " | hex of the WTF-8 id line (id " + wtf8Id + "): " + (byKey.TryGetValue(wtf8Id, out var wtf8Lines) ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(wtf8Lines[0])) : "-") + " | stderr: " + Short(stderr));
-                // Reached only when every line matched: then a difference is order or framing.
-                Check(stdout.AsSpan().SequenceEqual(expectedBytes), "the stdio responses come in request order, one LF-terminated line each (" + stdout.Length.ToString(CultureInfo.InvariantCulture)
-                    + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | " + Short(string.Join(" ", got.Select(IdKey))));
+                // P10-42: run only when every per-id line matched (a missing or wrong line already failed once above); then a
+                // difference here is order or framing.
+                if (differing.Count == 0)
+                    Check(stdout.AsSpan().SequenceEqual(expectedBytes), "the stdio responses come in request order, one LF-terminated line each (" + stdout.Length.ToString(CultureInfo.InvariantCulture)
+                        + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | " + Short(string.Join(" ", got.Select(IdKey))));
             }
         }
 
@@ -695,14 +697,21 @@ internal static class RepeatedEnvelopeKeyTests
                 + string.Join(" ", new[] { text, repeated, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
         }
 
-        RunP10_40(root, check);
+        RunP10_40(check);
     }
 
-    // P10-40 helpers. The literal initialize response for a request id (the JSON text of the id).
-    public static string InitializeBytes(string id) =>
-        "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"bim-agentic-os\",\"version\":\"0.1.0\"}}}";
+    // P10-42: the server identity the initialize bytes carry. One source (McpServer.ServerName/ServerVersion), pinned to
+    // these literals by one named check in RunP10_40, so a version bump fails that check alone, not every initialize case.
+    public const string ExpectedServerName = "bim-agentic-os";
+    public const string ExpectedServerVersion = "0.1.0";
 
-    // The literal unknown_tool result for a request id.
+    // P10-40 helpers. The literal initialize response for a request id (the JSON text of the id); name and version come
+    // from McpServer (asserted against ExpectedServerName/ExpectedServerVersion, P10-42).
+    public static string InitializeBytes(string id) =>
+        "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\""
+        + McpServer.ServerName + "\",\"version\":\"" + McpServer.ServerVersion + "\"}}}";
+
+    // The literal unknown_tool result for a request id (it carries no server name or version).
     public static string UnknownToolBytes(string id) =>
         "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"status\\\":\\\"failed\\\",\\\"code\\\":\\\"unknown_tool\\\"}\"}],\"isError\":true}}";
 
@@ -735,9 +744,13 @@ internal static class RepeatedEnvelopeKeyTests
     //      when a nested repeat is also present. A refusal here would reject requests whose meaning to this server is
     //      unambiguous. A notification's nested repeat gets no response.
     //   3. No case reaches the Revit transport.
-    static void RunP10_40(string root, Action<bool, string> check)
+    static void RunP10_40(Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P10-40 nested repeated params members: " + name);
+        // P10-42: the one source of the initialize bytes' server identity.
+        Check(McpServer.ServerName == ExpectedServerName && McpServer.ServerVersion == ExpectedServerVersion,
+            "server identity: McpServer.ServerName/ServerVersion are " + ExpectedServerName + " " + ExpectedServerVersion + " (InitializeBytes takes them from McpServer) | got "
+            + McpServer.ServerName + " " + McpServer.ServerVersion);
         var sends = 0;
         var server = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { sends++; return null; }, null);
         static string Request(string id, string method, string parameters) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"" + method + "\",\"params\":" + parameters + "}";
@@ -788,5 +801,48 @@ internal static class RepeatedEnvelopeKeyTests
         // tools/list with a member repeated inside _meta: the plain tools/list bytes of a separate server.
         var listed = server.Handle(Request("30", "tools/list", """{"cursor":"x","_meta":{"progressToken":1,"progressToken":2}}"""));
         Check(ToolsListMatches(listed, "30") && sends == 0, "tools/list with a member repeated inside _meta answers the plain tools/list bytes | " + (listed is { Length: > 300 } ? listed[..300] + "..." : listed ?? "none"));
+
+        // P10-42: members repeated inside a tools/call arguments value (one level or more below the arguments object), for
+        // the validate tool. The arguments object's own names are checked (P10-31: -32602 repeated argument); a value is
+        // handed to the tool as raw JSON text and deserialized like the CLI reads its file (System.Text.Json, .NET 8).
+        // Measured: each response is reported in the failure message; expected literal bytes.
+        {
+            const string Guid1 = "00000000-0000-0000-0000-000000000001";
+            const string Guid2 = "00000000-0000-0000-0000-000000000002";
+            const string Dangling = "\"00000000-0000-0000-0000-000000000009\"";
+            static string Element(string dependencies, string provenance = """{"Source":"s","Approval":"specified"}""") =>
+                "{\"Id\":\"" + Guid2 + "\",\"Kind\":\"plan\",\"GeometryMetres\":[],\"Dependencies\":" + dependencies + ",\"Provenance\":" + provenance + "}";
+            static string Validate(string id, string project) => Request(id, "tools/call", "{\"name\":\"validate\",\"arguments\":{\"project\":" + project + "}}");
+            static string ToolText(string id, string text, bool isError) =>
+                "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + text.Replace("\"", "\\\"", StringComparison.Ordinal)
+                + "\"}],\"isError\":" + (isError ? "true" : "false") + "}}";
+            var issue = "[{\"Code\":\"missing_dependency\",\"Id\":\"" + Guid2 + "\",\"Message\":\"Dangling dependency\"}]";
+            var head = "{\"Id\":\"" + Guid1 + "\",\"Revision\":0,";
+            var argumentCases = new List<(string Label, string Line, string Expected)>
+            {
+                // neighbours without a repeat: the two values the repeats choose between
+                ("A0 no repeat, dangling dependency", Validate("40", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("40", issue, true)),
+                ("A0b no repeat, no element", Validate("41", head + "\"Elements\":[]}"), ToolText("41", "[]", false)),
+                // repeats inside the project value
+                ("A1 Elements twice, last dangling", Validate("42", head + "\"Elements\":[],\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("42", issue, true)),
+                ("A2 Elements twice, first dangling", Validate("43", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "],\"Elements\":[]}"), ToolText("43", "[]", false)),
+                ("A3 Dependencies twice in an element, last dangling", Validate("44", head + "\"Elements\":[" + Element("[],\"Dependencies\":[" + Dangling + "]") + "]}"), ToolText("44", issue, true)),
+                ("A4 Dependencies twice escaped, first dangling", Validate("45", head + "\"Elements\":[" + Element("[" + Dangling + "],\"\\u0044ependencies\":[]") + "]}"), ToolText("45", "[]", false)),
+                ("A5 Provenance Source twice (three levels down)", Validate("46", head + "\"Elements\":[" + Element("[]", """{"Source":"a","Source":"b","Approval":"specified"}""") + "]}"), ToolText("46", "[]", false)),
+            };
+            var argumentMeasured = new List<string>();
+            var argumentBad = new List<string>();
+            foreach (var (label, line, expected) in argumentCases)
+            {
+                string response;
+                try { response = server.Handle(line) ?? "none"; }
+                catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                argumentMeasured.Add(label + " => " + (response.Length > 400 ? response[..400] + "..." : response));
+                if (response != expected) argumentBad.Add(label);
+            }
+            Check(argumentBad.Count == 0 && sends == 0,
+                "members repeated inside a validate arguments value answer as measured (literal bytes), no transport send (sends " + sends.ToString(CultureInfo.InvariantCulture)
+                + ") | failing " + argumentBad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", argumentBad) + " | measured: " + string.Join(" ; ", argumentMeasured));
+        }
     }
 }
