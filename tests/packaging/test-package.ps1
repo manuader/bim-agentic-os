@@ -2345,10 +2345,11 @@ try {
             $p435Cs = [IO.File]::ReadAllText($p435CsPath)
             $p435Mismatch = Get-P435PrefixMismatch $p435Cs $p435Prefix
             Assert ($p435Prefix -ceq 'package pin cleanup failed: ' -and $p435Mismatch.Count -eq 0) "P4-35: the C# cleanup failures (tests/cli/PackageLayoutPackTests.cs CleanupFailed) share this script's prefix '$p435Prefix': $(Format-P431List $p435Mismatch)"
-            $p435Planted = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-33: cleanup failed: "; return "P4-34: cleanup failed: " + path;') 'P4-33: cleanup failed: '
+            # P4-37: the plants declare the current prefix (read back from Add-P433CleanupFailure above), not a stale task id.
+            $p435Planted = Get-P435PrefixMismatch ('const string CleanupFailed = "' + $p435Prefix + '"; return "P4-34: cleanup failed: " + path;') $p435Prefix
             Assert (($p435Planted -join '|') -ceq 'other cleanup-failed literal "P4-34: cleanup failed: "') "P4-35 self-test: a planted other C# cleanup-failed prefix is caught: $(Format-P431List $p435Planted)"
-            $p435Other = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-34: cleanup failed: ";') 'P4-33: cleanup failed: '
-            Assert ($p435Other.Count -ge 1 -and $p435Other[0].StartsWith("C# CleanupFailed 'P4-34: cleanup failed: ' differs")) "P4-35 self-test: a planted different C# CleanupFailed is caught: $(Format-P431List $p435Other)"
+            $p435Other = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-34: cleanup failed: ";') $p435Prefix
+            Assert (($p435Other -join '|') -ceq "C# CleanupFailed 'P4-34: cleanup failed: ' differs from the ps1 prefix '$p435Prefix'") "P4-35 self-test: a planted different C# CleanupFailed is caught: $(Format-P431List $p435Other)"
             $p435Reformatted = @('try { Copy-P431Layout $outA $p431Copy }', 'finally', '{', '    Remove-P434LayoutCopy   $failures `', '        $p431Copy', '}') -join "`n"
             $p435Pin = Get-P435FinallyPin $p435Reformatted
             Assert ($p435Pin -ceq 'finally 1 bare 0') "P4-35 self-test: a reformatted P4-31 finally (own lines, extra spaces, line continuation) is still found: $p435Pin (want finally 1 bare 0)"
@@ -2389,6 +2390,41 @@ try {
             $p436OtherPrefix = Get-P435PrefixMismatch ('const string CleanupFailed = "package pin cleanup failed: "; return "P4-34: cleanup failed: " + path;') $p436Neutral
             Assert (($p436OtherPrefix -join '|') -ceq 'other cleanup-failed literal "P4-34: cleanup failed: "') "P4-36 self-test: another prefix-shaped literal is flagged: $(Format-P431List $p436OtherPrefix)"
         } catch { $failures.Add("P4-36 header/finally/prefix pin self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-37 self-test: a literal starting with '<anything>: cleanup failed: ' or 'cleanup failed: ' other than the shared
+        # prefix is another prefix even with a suffix; the parity scan reads C# literals with a tokenizer (escaped quotes,
+        # '"' char literals, verbatim, raw and interpolated strings; comments are no literals; an unterminated literal is named).
+        try {
+            $p437Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p437Into 'P4-37' '/p4-37/left' { param($l, $p) 'W' }
+            $p437Prefix = if ($p437Into.Count -eq 1 -and $p437Into[0].EndsWith('W')) { $p437Into[0].Substring(0, $p437Into[0].Length - 1) } else { '<none>' }
+            Assert ($p437Prefix -ceq 'package pin cleanup failed: ') "P4-37: the plants use the shared prefix 'package pin cleanup failed: ': '$p437Prefix'"
+            $p437Decl = 'const string CleanupFailed = "' + $p437Prefix + '";'
+            $p437Stale = 'other cleanup-failed literal "P4-33: cleanup failed: "'
+            $p437RawMulti = '"""' + "`n" + '    P4-33: cleanup failed: "x"' + "`n" + '    """'
+            $p437Cases = @(
+                @{ Label = 'suffixed stale prefix'; Text = $p437Decl + ' failures.Add("P4-33: cleanup failed: build tree " + tree);'; Want = 'other cleanup-failed literal "P4-33: cleanup failed: build tree "' }
+                @{ Label = 'bare stale prefix with a suffix'; Text = $p437Decl + ' return "cleanup failed: build tree " + path;'; Want = 'other cleanup-failed literal "cleanup failed: build tree "' }
+                @{ Label = 'stale prefix after an escaped quote'; Text = $p437Decl + ' log("quote \" ", x); return "P4-33: cleanup failed: " + p;'; Want = $p437Stale }
+                @{ Label = 'stale prefix after a quote char literal'; Text = $p437Decl + ' var q = ''"''; return "P4-33: cleanup failed: " + q;'; Want = $p437Stale }
+                @{ Label = 'stale prefix after a verbatim string ending in a backslash'; Text = $p437Decl + ' var v = @"C:\dir\"; return "P4-33: cleanup failed: " + v;'; Want = $p437Stale }
+                @{ Label = 'stale prefix in a verbatim string'; Text = $p437Decl + ' return @"P4-33: cleanup failed: ""tree"" " + p;'; Want = 'other cleanup-failed literal @"P4-33: cleanup failed: ""tree"" "' }
+                @{ Label = 'stale prefix after a raw string with a lone quote'; Text = $p437Decl + ' var r = """x " y"""; return "P4-33: cleanup failed: " + r;'; Want = $p437Stale }
+                @{ Label = 'stale prefix in a raw string'; Text = $p437Decl + ' return """P4-33: cleanup failed: "tree" """ + p;'; Want = 'other cleanup-failed literal """P4-33: cleanup failed: "tree" """' }
+                @{ Label = 'stale prefix in a multi-line raw string'; Text = $p437Decl + "`nvar m = " + $p437RawMulti + ';'; Want = 'other cleanup-failed literal ' + $p437RawMulti }
+                @{ Label = 'stale prefix in an interpolated string with nested strings'; Text = $p437Decl + ' return $"P4-33: cleanup failed: {(ok ? "a" : "b")} " + p;'; Want = 'other cleanup-failed literal $"P4-33: cleanup failed: {(ok ? "a" : "b")} "' }
+                @{ Label = 'stale prefix spelled with a unicode escape'; Text = $p437Decl + ' return "P4-33\u003a cleanup failed: " + p;'; Want = 'other cleanup-failed literal "P4-33\u003a cleanup failed: "' }
+                @{ Label = 'hard-coded prefix in a verbatim string'; Text = $p437Decl + ' return @"' + $p437Prefix + 'x" + p;'; Want = 'hard-coded prefix literal @"' + $p437Prefix + 'x"' }
+                @{ Label = 'comments are no literals'; Text = $p437Decl + "`n// don't `"quote`n" + '/* "P4-33: cleanup failed: " */ return "P4-33: cleanup failed: " + p;'; Want = $p437Stale }
+                @{ Label = 'verbatim declaration'; Text = 'const string CleanupFailed = @"' + $p437Prefix + '";'; Want = '' }
+                @{ Label = 'declaration in a comment'; Text = '// const string CleanupFailed = "P4-33: cleanup failed: ";' + "`n" + $p437Decl; Want = '' }
+                @{ Label = 'check name with an escaped quote and char literals'; Text = $p437Decl + ' check(ok, "P4-37: the \"copy\" cleanup failed: named", d); var c = ''\''''; var b = ''\\''; var s = "it''s \\";'; Want = '' }
+                @{ Label = 'unterminated literal'; Text = $p437Decl + ' return "P4-33: cleanup failed: ;'; Want = "unterminated C# literal at offset $($p437Decl.Length + 8)" }
+            )
+            foreach ($p437Case in $p437Cases) {
+                $p437Found = Get-P435PrefixMismatch $p437Case.Text $p437Prefix
+                Assert (($p437Found -join '|') -ceq $p437Case.Want) "P4-37 self-test: $($p437Case.Label): $(Format-P431List $p437Found) (want [$($p437Case.Want)])"
+            }
+        } catch { $failures.Add("P4-37 prefix scan self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
