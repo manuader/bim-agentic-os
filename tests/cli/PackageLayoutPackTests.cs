@@ -595,7 +595,8 @@ internal static class PackageLayoutPackTests
     // is caught like Bim.Gltf.dll (self-tested with planted lines and a planted asset).
     // P4-35: the one prefix of every package-pin cleanup failure, shared with tests/packaging/test-package.ps1
     // Add-P433CleanupFailure (its P4-35 self-test reads this literal and requires it to be the only cleanup-failed prefix here).
-    const string CleanupFailed = "P4-33: cleanup failed: ";
+    // P4-36: neutral wording (no task id), so P4-31/P4-34/P4-35/P10-18 failures do not read as P4-33's.
+    const string CleanupFailed = "package pin cleanup failed: ";
 
     // P4-35: a killed package.ps1 never reaches its finally: removes each build tree in `now` that is not in `before`
     // (`delete` stands in for Directory.Delete(path, true) in the self-test); an IOException/UnauthorizedAccessException is

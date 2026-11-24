@@ -46,6 +46,10 @@
 # hidden-file control is a named SKIP where Copy-Item copies hidden files anyway; a left-behind P4-32 case folder is a named failure.
 # P4-34: native and resources assets in deps.json are checked like runtime assets (escaping path, Bim.Gltf); a left-behind P4-31
 # layout copy is the same named cleanup failure (Add-P433CleanupFailure); the C# McpWithoutGltf copy cleanup names IO/access errors.
+# P4-35: runtimeTargets and compile assets in deps.json are checked like runtime assets and escaping items name the deps base mcp/;
+# the C# cleanup failures share this script's prefix (parity scan); the P4-31 layout copy finally is pinned on the PowerShell AST.
+# P4-36: the shared cleanup prefix is the neutral 'package pin cleanup failed: ' (C# P10-18 self-test copy cleanup too); the
+# finally pin counts only the finally of the try that copies $outA to $p431Copy; the parity scan flags prefix-shaped literals only.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -2075,35 +2079,45 @@ try {
         function Add-P433CleanupFailure($Into, [string]$Label, [string]$Path, [scriptblock]$Remove) {
             if ($null -eq $Remove) { $Remove = { param($l, $p) Remove-PackageCaseDirectory $l $p } }
             $warning = & $Remove $Label $Path
-            if ($warning) { $Into.Add("P4-33: cleanup failed: $warning") }
+            if ($warning) { $Into.Add("package pin cleanup failed: $warning") }
         }
         # P4-34: removes the P4-31 layout copy through Add-P433CleanupFailure, so a left-behind copy is the named failure
-        # "P4-33: cleanup failed: P4-31: ..." (not only a cleanup warning); $Remove stands in for the remover in the self-test.
+        # "package pin cleanup failed: P4-31: ..." (not only a cleanup warning); $Remove stands in for the remover in the self-test.
         function Remove-P434LayoutCopy($Into, [string]$Path, [scriptblock]$Remove) {
             Add-P433CleanupFailure $Into 'P4-31' $Path $Remove
         }
         # P4-35: the C# cleanup-failed prefix parity: $CsText (tests/cli/PackageLayoutPackTests.cs) must declare
-        # const string CleanupFailed = "<prefix>"; equal to this script's prefix, and hold no other "...cleanup failed: " literal.
+        # const string CleanupFailed = "<prefix>"; equal to this script's prefix. P4-36: the scan matches the prefix exactly:
+        # a prefix-shaped literal (ending in 'cleanup failed: ') other than the prefix is another prefix, and a literal that
+        # contains the prefix but is not the declaration is a hard-coded copy; a check name that merely contains
+        # 'cleanup failed: ' is neither.
         function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
             $problems = [Collections.Generic.List[string]]::new()
             $declared = @([regex]::Matches($CsText, 'const string CleanupFailed = "([^"]*)";'))
             if ($declared.Count -ne 1) { $problems.Add("$($declared.Count) CleanupFailed declarations (want 1)") }
             elseif ($declared[0].Groups[1].Value -cne $Prefix) { $problems.Add("C# CleanupFailed '$($declared[0].Groups[1].Value)' differs from the ps1 prefix '$Prefix'") }
-            foreach ($literal in [regex]::Matches($CsText, '"[^"\r\n]*cleanup failed: [^"\r\n]*"')) {
-                if ($literal.Value -cne ('"' + $Prefix + '"')) { $problems.Add("other cleanup-failed literal $($literal.Value)") }
+            $declaration = if ($declared.Count -eq 1) { $declared[0].Groups[1].Index - 1 } else { -1 }
+            foreach ($literal in [regex]::Matches($CsText, '"[^"\r\n]*"')) {
+                $content = $literal.Value.Substring(1, $literal.Value.Length - 2)
+                if ($literal.Index -eq $declaration) { continue }
+                if ($content.EndsWith('cleanup failed: ', [StringComparison]::Ordinal) -and $content -cne $Prefix) { $problems.Add("other cleanup-failed literal $($literal.Value)") }
+                elseif ($Prefix.Length -gt 0 -and $content.Contains($Prefix, [StringComparison]::Ordinal)) { $problems.Add("hard-coded prefix literal $($literal.Value)") }
             }
             return , $problems
         }
         # P4-35: the P4-31 layout copy finally pin on the PowerShell AST of script text (so reformatting, comments and string
         # literals do not matter): "finally <n> bare <m>", n = finally blocks calling Remove-P434LayoutCopy with the
         # variables failures and p431Copy, m = Remove-PackageCaseDirectory commands whose label is the constant P4-31.
+        # P4-36: only the finally of a try whose own statements (not a nested try's) include Copy-P431Layout $outA $p431Copy.
         function Get-P435FinallyPin([string]$Text) {
             $parseErrors = $null
             $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$parseErrors)
             if ($parseErrors.Count) { return "unparsable: $($parseErrors[0].Message)" }
             $isVariable = { param($Element, [string]$Name) $Element -is [Management.Automation.Language.VariableExpressionAst] -and $Element.VariablePath.UserPath -eq $Name }
             $finallyCalls = 0
+            $copiesLayout = { param($Statement) $Statement -is [Management.Automation.Language.PipelineAst] -and $Statement.PipelineElements.Count -eq 1 -and $Statement.PipelineElements[0] -is [Management.Automation.Language.CommandAst] -and $Statement.PipelineElements[0].GetCommandName() -eq 'Copy-P431Layout' -and $Statement.PipelineElements[0].CommandElements.Count -eq 3 -and (& $isVariable $Statement.PipelineElements[0].CommandElements[1] 'outA') -and (& $isVariable $Statement.PipelineElements[0].CommandElements[2] 'p431Copy') }
             foreach ($try in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally }, $true)) {
+                if (!@($try.Body.Statements | Where-Object { & $copiesLayout $_ }).Count) { continue }
                 $finallyCalls += @($try.Finally.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-P434LayoutCopy' -and $n.CommandElements.Count -eq 3 -and (& $isVariable $n.CommandElements[1] 'failures') -and (& $isVariable $n.CommandElements[2] 'p431Copy') }, $true)).Count
             }
             $bare = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-PackageCaseDirectory' -and $n.CommandElements.Count -ge 2 -and $n.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.CommandElements[1].Value -ceq 'P4-31' }, $true)).Count
@@ -2249,7 +2263,7 @@ try {
         try {
             $p433Into = [Collections.Generic.List[string]]::new()
             Add-P433CleanupFailure $p433Into 'P4-32' '/p4-33/left' { param($l, $p) "$($l): a case folder could not be removed and is left behind: $p" }
-            Assert (($p433Into -join '|') -ceq 'P4-33: cleanup failed: P4-32: a case folder could not be removed and is left behind: /p4-33/left') "P4-33 self-test: a cleanup warning is recorded as a named failure: $(Format-P431List $p433Into)"
+            Assert (($p433Into -join '|') -ceq 'package pin cleanup failed: P4-32: a case folder could not be removed and is left behind: /p4-33/left') "P4-33 self-test: a cleanup warning is recorded as a named failure: $(Format-P431List $p433Into)"
             $p433Into.Clear()
             Add-P433CleanupFailure $p433Into 'P4-32' '/p4-33/gone' { param($l, $p) $null }
             Add-P433CleanupFailure $p433Into 'P4-32' (Join-Path $work 'p4-33 absent folder')
@@ -2260,7 +2274,7 @@ try {
         try {
             $p434Into = [Collections.Generic.List[string]]::new()
             Remove-P434LayoutCopy $p434Into '/p4-34/left' { param($l, $p) "$($l): a case folder could not be removed and is left behind: $p" }
-            Assert (($p434Into -join '|') -ceq 'P4-33: cleanup failed: P4-31: a case folder could not be removed and is left behind: /p4-34/left') "P4-34 self-test: a left-behind P4-31 layout copy is recorded as a named cleanup failure: $(Format-P431List $p434Into)"
+            Assert (($p434Into -join '|') -ceq 'package pin cleanup failed: P4-31: a case folder could not be removed and is left behind: /p4-34/left') "P4-34 self-test: a left-behind P4-31 layout copy is recorded as a named cleanup failure: $(Format-P431List $p434Into)"
             $p434Into.Clear()
             Remove-P434LayoutCopy $p434Into '/p4-34/gone' { param($l, $p) $null }
             Assert ($p434Into.Count -eq 0) "P4-34 self-test: a removed P4-31 layout copy records no failure: $(Format-P431List $p434Into)"
@@ -2274,7 +2288,7 @@ try {
             $p435CsPath = Join-Path $root 'tests/cli/PackageLayoutPackTests.cs'
             $p435Cs = [IO.File]::ReadAllText($p435CsPath)
             $p435Mismatch = Get-P435PrefixMismatch $p435Cs $p435Prefix
-            Assert ($p435Prefix -ceq 'P4-33: cleanup failed: ' -and $p435Mismatch.Count -eq 0) "P4-35: the C# cleanup failures (tests/cli/PackageLayoutPackTests.cs CleanupFailed) share this script's prefix '$p435Prefix': $(Format-P431List $p435Mismatch)"
+            Assert ($p435Prefix -ceq 'package pin cleanup failed: ' -and $p435Mismatch.Count -eq 0) "P4-35: the C# cleanup failures (tests/cli/PackageLayoutPackTests.cs CleanupFailed) share this script's prefix '$p435Prefix': $(Format-P431List $p435Mismatch)"
             $p435Planted = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-33: cleanup failed: "; return "P4-34: cleanup failed: " + path;') 'P4-33: cleanup failed: '
             Assert (($p435Planted -join '|') -ceq 'other cleanup-failed literal "P4-34: cleanup failed: "') "P4-35 self-test: a planted other C# cleanup-failed prefix is caught: $(Format-P431List $p435Planted)"
             $p435Other = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-34: cleanup failed: ";') 'P4-33: cleanup failed: '
