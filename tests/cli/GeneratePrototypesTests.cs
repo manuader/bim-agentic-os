@@ -50,6 +50,14 @@ using Bim.Generative;
 //      a whitespace / trailing-comma reformat that still rejects section 14's mutants (WritePinReachStage).
 //  16. P7-40: mutation self-tests of both section 14 pins through generic, qualified, method-group, delegate and
 //      cross-class calls, under a block-scoped namespace, and of the success-only trailing-comma reformat (WritePinScopeStage).
+//      P7-42: every section 15 / 16 mutant names the problem it is rejected for; delegate fields and properties armed
+//      outside their declaration (static constructor, method, T.X =, +=) and invoked as X?.Invoke( or X( are followed;
+//      uppercase property chains (Result.Items.Count()) are instances, not unresolved calls; nested generic and tuple type
+//      arguments are calls; Execute's calls into OutputProblem.cs, BoundedInput.cs, SkillPackLookup.cs and IntentPlan.cs
+//      are followed into those files. P7-44: those files (and GltfExporter.cs, so GltfExporter.WriteNew is followed) are
+//      read from the root the stage receives; a Func / Action parameter call (BoundedInput.Stat's call, WriteNew's wrap)
+//      is followed to the arguments its callers pass, any other parameter call is unresolved; a local or parameter that
+//      shadows a field, and a tuple-typed local declaration, are not that field or its assignment.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -2568,14 +2576,15 @@ internal static class GeneratePrototypesTests
         // c. Static: Execute never retries or writes again the success line or the pipeline refusal line.
         var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
         var command = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")));
-        var real = ExecuteWriteProblems(write, command);
+        var followed = ExecuteFollowedCode(root);
+        var real = ExecuteWriteProblems(write, command, followed);
         Check(real.Count == 0, "static: GenerateWrite.cs Execute writes the success line and the pipeline refusal line once each, never retried, completed or written again", string.Join("; ", real));
         foreach (var (label, pattern, replacement) in ExecuteMutants())
         {
             var regex = new System.Text.RegularExpressions.Regex(pattern);
             var found = regex.Matches(write).Count;
             var mutated = regex.Replace(write, replacement.Replace("$", "$$", StringComparison.Ordinal), 1);
-            var problems = ExecuteWriteProblems(mutated, command);
+            var problems = ExecuteWriteProblems(mutated, command, followed);
             Check(found == 1 && mutated != write && problems.Count > 0, "static self-test: " + label + " is rejected",
                 "anchor matches " + found.ToString(CultureInfo.InvariantCulture) + "; problems [" + string.Join("; ", problems) + "]");
         }
@@ -2713,7 +2722,9 @@ internal static class GeneratePrototypesTests
     // P7-42: the code also holds followed (default: ExecuteFollowedCode(), the real OutputProblem.cs, BoundedInput.cs,
     // SkillPackLookup.cs and IntentPlan.cs), so Execute's calls into those repository CLI helpers are followed into their
     // files like any other declared type's members, with the same stdout and resolution checks.
-    static List<string> ExecuteWriteProblems(string write, string command, string? followed = null)
+    // P7-44: followed is required (callers pass ExecuteFollowedCode(root) for the root their stage receives, or a mutant of
+    // it), and it also holds adapters/gltf/Bim.Gltf/GltfExporter.cs, so GltfExporter.WriteNew is followed too.
+    static List<string> ExecuteWriteProblems(string write, string command, string followed)
     {
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
         var problems = new List<string>();
@@ -2755,13 +2766,13 @@ internal static class GeneratePrototypesTests
             + @"catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*throw\s*;\s*\}\s*\}$") != 1)
             problems.Add("the success line is not the last statement of its try with the delete / report / rethrow catch (Exception) closing Execute");
         if (Count(body, @"\bPrint\s*\(") != 0) problems.Add("Execute calls Print(");
-        var code = write + "\n" + command + "\n" + (followed ?? ExecuteFollowedCode());
+        var code = write + "\n" + command + "\n" + followed;
         var map = new CodeMap(code);
         var executes = map.MembersOf("GenerateCommand", "Execute", false);
         if (executes.Count != 1) { problems.Add("Execute declared " + executes.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GenerateCommand, not once"); return problems; }
         var (reached, unresolved) = Reach(map, executes, ExecuteExternalCalls);
         foreach (var name in unresolved)
-            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs, GenerateCommand.cs or the followed CLI files and not a listed external call (a delegate parameter or a class the pin cannot read)");
+            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs, GenerateCommand.cs or the followed files and not a listed external call (a parameter that is no Func / Action or that no caller passes, or a class the pin cannot read)");
         foreach (var (name, start, end) in reached)
         {
             var helper = code[start..end];
@@ -2777,35 +2788,39 @@ internal static class GeneratePrototypesTests
     // P7-42: OutputProblem, BoundedInput, SkillPackLookup and IntentPlan are no longer listed: their files are followed
     // (ExecuteFollowedCode), so the BCL calls made there are listed instead, and an unqualified call with no body in the read
     // code is allowed as Type.Member of its enclosing type: BoundedInput's extern P/Invoke declarations GetFileType,
-    // NativeLStat and NativeFStat (lstat / fstat / GetFileType, no writes) and BoundedInput.Stat's Func parameter call (invoked
-    // with the lambdas LStat and FStat pass, which are followed as their text). The repository library calls
-    // (GltfExporter.WriteNew, PrototypePipeline.Run, PrototypePipelineSerializer.Serialize, SkillParser.IsId / Parse,
-    // RevitCommandPolicy.RepositoryRoot, in core / adapters) are still listed, not followed (gap: the pin reads CLI files only).
+    // NativeLStat and NativeFStat (lstat / fstat / GetFileType, no writes).
+    // P7-44: BoundedInput.call is no longer listed: Stat's Func parameter call( is followed to the lambdas LStat and FStat
+    // pass (Reach). GltfExporter.WriteNew is no longer listed: GltfExporter.cs is followed (its File / Directory calls are
+    // BCL, listed). The repository library calls still listed, each for its reason:
+    //   - PrototypePipeline.Run (core/Bim.Generative): the pure prototype pipeline over in-memory values, about 700 lines
+    //     with its model and serializer, no Console / stdout member (it returns a result; the CLI prints it);
+    //   - PrototypePipelineSerializer.Serialize (core/Bim.Generative): returns the canonical JSON string, writes nothing;
+    //   - SkillParser.IsId / SkillParser.Parse (core): a pack id check and a skill.json parse over a string, write nothing;
+    //   - RevitCommandPolicy.RepositoryRoot (core): a directory walk for the repository root, reads only.
+    // A stdout write added there is not caught by this pin (gap: those library files are not followed).
     static readonly HashSet<string> ExecuteExternalCalls = new(StringComparer.Ordinal)
     {
-        "Console.WriteLine", "Console.Error.WriteLine", "GltfExporter.WriteNew", "Convert.ToHexString", "SHA256.HashData", "JsonSerializer.Serialize",
+        "Console.WriteLine", "Console.Error.WriteLine", "Convert.ToHexString", "SHA256.HashData", "JsonSerializer.Serialize",
         "File.Delete", "PrototypePipeline.Run", "PrototypePipelineSerializer.Serialize", "JsonDocument.Parse", "Array.Empty", "Array.IndexOf",
         "SkillParser.IsId", "Guid.TryParseExact", "Encoding.UTF8.GetString", "double.IsFinite",
         "string.IsNullOrEmpty", "string.Equals", "char.IsAsciiLetter", "Path.GetFullPath", "Path.GetExtension", "Path.GetDirectoryName", "Path.Combine",
         "Path.TrimEndingDirectorySeparator", "Path.GetFileName", "Directory.Exists", "File.Exists", "File.GetAttributes", "OperatingSystem.IsWindows",
         "RevitCommandPolicy.RepositoryRoot", "SkillParser.Parse", "ArgumentException.ThrowIfNullOrEmpty", "ArgumentOutOfRangeException.ThrowIfNegativeOrZero",
-        "Encoding.UTF8.GetBytes", "BitConverter.ToInt32", "BoundedInput.GetFileType", "BoundedInput.NativeLStat", "BoundedInput.NativeFStat", "BoundedInput.call",
+        "Encoding.UTF8.GetBytes", "BitConverter.ToInt32", "BoundedInput.GetFileType", "BoundedInput.NativeLStat", "BoundedInput.NativeFStat",
     };
 
     // P7-42: the CLI files Execute's calls into GltfExportCommand.OutputProblem, BoundedInput.ReadText, SkillPackLookup.Load and
-    // IntentPlan.InternalDiagnostic lead to, comment-stripped and string-blanked, joined by newlines (read once from the
-    // repository root: the first ancestor of the test binary holding global.json, as Program.cs finds it).
-    static readonly string[] ExecuteFollowedFiles = { "OutputProblem.cs", "BoundedInput.cs", "SkillPackLookup.cs", "IntentPlan.cs" };
-    static string? executeFollowedCode;
-    static string ExecuteFollowedCode()
+    // IntentPlan.InternalDiagnostic lead to, comment-stripped and string-blanked, joined by newlines.
+    // P7-44: plus GltfExporter.cs (GltfExporter.WriteNew), as repository-relative paths read from the root the calling stage
+    // receives (the root every other check of this file uses), each time it is called: no global.json search of its own and
+    // no static cache.
+    static readonly string[] ExecuteFollowedFiles =
     {
-        if (executeFollowedCode is not null) return executeFollowedCode;
-        var directory = new DirectoryInfo(AppContext.BaseDirectory);
-        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "global.json"))) directory = directory.Parent;
-        if (directory is null) throw new InvalidOperationException("repository root with global.json not found");
-        var root = directory.FullName;
-        return executeFollowedCode = string.Join("\n", ExecuteFollowedFiles.Select(file => ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", file)))));
-    }
+        "interfaces/cli/OutputProblem.cs", "interfaces/cli/BoundedInput.cs", "interfaces/cli/SkillPackLookup.cs", "interfaces/cli/IntentPlan.cs",
+        "adapters/gltf/Bim.Gltf/GltfExporter.cs",
+    };
+    static string ExecuteFollowedCode(string root) =>
+        string.Join("\n", ExecuteFollowedFiles.Select(file => ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(new[] { root }.Concat(file.Split('/')).ToArray())))));
 
     // P7-38 / P7-40: static reachability over comment-stripped, string-blanked C# (sections 14 to 16). Not a parser.
     // A declaration is name( or name<...>( preceded by whitespace and a type-ending token (not return / throw / new / ...),
@@ -2834,7 +2849,15 @@ internal static class GeneratePrototypesTests
     //     enclosing type (Result.Items.Count() ); otherwise as above;
     //   - type-argument lists nest to any depth and hold tuples (Run<Dictionary<string, List<int>>>(, Run<(int, string)>();
     //   - an unqualified call with no body in the read code is allowed when the caller lists Type.Member for its innermost
-    //     enclosing type (an extern declaration, a delegate parameter), else unresolved.
+    //     enclosing type (an extern declaration), else unresolved.
+    // P7-44:
+    //   - a name that is a parameter of an enclosing block-bodied method, constructor or local function (CodeMap.Parameter)
+    //     is that parameter: a Func / Action parameter, called or passed on, is followed to the arguments every caller
+    //     passes for it (CodeMap.Arguments: named or at its position; a local function's callers in its member, a type
+    //     member's unqualified callers in its type and Type.method( callers anywhere); called with no such argument, or a
+    //     parameter of another type called, it is unresolved;
+    //   - a field is not followed from where a parameter or a local of an enclosing block shadows it, and an assignment of
+    //     such a local is not a field assignment (CodeMap.Shadowed); a tuple type (A a, B b) Name ends a type (AfterType).
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -2849,14 +2872,64 @@ internal static class GeneratePrototypesTests
 
     // P7-42: whether the token before index ends a type, so the name at index is declared there (a local, field, property or
     // parameter): whitespace before the name, a letter / digit / _ / > / ] / ? (not the > of =>), not a statement keyword.
+    // P7-44: not the ? of ??; and a tuple type (Action Say, int Count) Name ends a type: a ) whose ( holds two or more
+    // items at depth 0 and follows no name, call or member access (if (on) Name = ... is an assignment), or a modifier.
     static bool AfterType(string code, int index)
     {
         var (last, word, spaced) = Before(code, index);
-        if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or '?') || DeclarationBlockers.Contains(word)) return false;
-        if (last != '>') return true;
         var j = index - 1;
-        while (char.IsWhiteSpace(code[j])) j--;
+        while (j >= 0 && char.IsWhiteSpace(code[j])) j--;
+        if (spaced && last == ')')
+        {
+            var open = Opening(code, j, '(', ')');
+            if (open < 0 || Split(code, open + 1, j, true).Count < 2) return false;
+            var (before, beforeWord, _) = Before(code, open);
+            return !(char.IsLetterOrDigit(before) || before is '_' or ')' or ']' or '>' or '.' or '?') || TupleModifiers.Contains(beforeWord);
+        }
+        if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or '?') || DeclarationBlockers.Contains(word)) return false;
+        if (last == '?') return !(j > 0 && code[j - 1] == '?');
+        if (last != '>') return true;
         return !(j > 0 && code[j - 1] == '=');
+    }
+    static readonly HashSet<string> TupleModifiers = new(StringComparer.Ordinal)
+    {
+        "static", "readonly", "public", "private", "protected", "internal", "required", "volatile", "unsafe", "scoped", "ref", "out", "in", "params", "this",
+    };
+
+    // P7-44: the index of the bracket opening the one closing at close, or -1.
+    static int Opening(string code, int close, char opening, char closing)
+    {
+        var depth = 0;
+        for (var i = close; i >= 0; i--)
+        {
+            if (code[i] == closing) depth++;
+            else if (code[i] == opening && --depth == 0) return i;
+        }
+        return -1;
+    }
+
+    // P7-44: the comma-separated items of code[start, end) at bracket depth 0 (( ), [ ], { } and, when angles, < >; a > of
+    // => is not a bracket), trimmed, empty items skipped.
+    static List<(int Start, int End)> Split(string code, int start, int end, bool angles)
+    {
+        var items = new List<(int Start, int End)>();
+        var depth = 0;
+        var from = start;
+        for (var i = start; i <= end; i++)
+        {
+            if (i == end || (code[i] == ',' && depth == 0))
+            {
+                var s = from;
+                var e = i;
+                while (s < e && char.IsWhiteSpace(code[s])) s++;
+                while (e > s && char.IsWhiteSpace(code[e - 1])) e--;
+                if (e > s) items.Add((s, e));
+                from = i + 1;
+            }
+            else if (code[i] is '(' or '[' or '{' || (angles && code[i] == '<')) depth++;
+            else if (code[i] is ')' or ']' or '}' || (angles && code[i] == '>' && !(i > 0 && code[i - 1] == '='))) depth--;
+        }
+        return items;
     }
 
     // The index of the bracket closing the one at open, or -1.
@@ -3077,7 +3150,8 @@ internal static class GeneratePrototypesTests
                 {
                     if (AfterType(Code, m.Index)) continue;
                     var (types, member) = Scope(m.Index);
-                    if (member < 0 || !types.Contains(type)) continue;
+                    // P7-44: an assignment of a local or parameter that shadows the field is not a field assignment.
+                    if (member < 0 || !types.Contains(type) || Shadowed(name, m.Index)) continue;
                 }
                 var end = StatementEnd(Code, m.Index + m.Length);
                 if (end >= 0) found.Add((m.Index, end + 1));
@@ -3086,7 +3160,100 @@ internal static class GeneratePrototypesTests
         }
 
         // P7-42: the enclosing types of index (innermost first, once each) that declare name as a field or property.
-        public List<string> FieldTypes(string name, int index) => Scope(index).Types.Distinct().Where(type => IsField(type, name)).ToList();
+        // P7-44: none when a local or parameter shadows name at index.
+        public List<string> FieldTypes(string name, int index)
+        {
+            var types = Scope(index).Types.Distinct().Where(type => IsField(type, name)).ToList();
+            return types.Count > 0 && Shadowed(name, index) ? new List<string>() : types;
+        }
+
+        // P7-44: the parameter name of the innermost method, constructor or local function whose block body encloses index
+        // (walking out through the enclosing blocks of a member, not into the type body): that declaration's name, its type
+        // (innermost enclosing type, or null), the member brace of a local function (-1 for a type member), the parameter's
+        // position and whether its type is a Func<...> or Action delegate. Null when name is no such parameter (an
+        // expression-bodied member's or a lambda's parameter is not seen; a generic method's neither: its call stays
+        // unresolved).
+        public (string Method, string? Type, int Member, int Position, bool Delegate)? Parameter(string name, int index)
+        {
+            for (var b = enclosing[index]; b >= 0 && !Types.ContainsKey(b); b = parent[b])
+            {
+                var j = b - 1;
+                while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+                if (j < 0 || Code[j] != ')') continue;
+                var open = Opening(Code, j, '(', ')');
+                if (open < 1) continue;
+                var k = open - 1;
+                while (k >= 0 && char.IsWhiteSpace(Code[k])) k--;
+                var end = k + 1;
+                while (k >= 0 && (char.IsLetterOrDigit(Code[k]) || Code[k] == '_')) k--;
+                var method = Code[(k + 1)..end];
+                if (method.Length == 0 || char.IsDigit(method[0]) || CallKeywords.Contains(method)) continue;
+                var (last, word, spaced) = Before(Code, k + 1);
+                if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) continue;
+                var parameters = Split(Code, open + 1, j, true);
+                for (var p = 0; p < parameters.Count; p++)
+                {
+                    var parameter = System.Text.RegularExpressions.Regex.Match(Code[parameters[p].Start..parameters[p].End],
+                        @"^(?:\[[^\]]*\]\s*)*(?:(?:this|params|ref|out|in|scoped)\s+)*(?<type>.*?)\s*\b(?<name>[A-Za-z_]\w*)\s*(?:=.*)?$",
+                        System.Text.RegularExpressions.RegexOptions.Singleline);
+                    if (!parameter.Success || parameter.Groups["name"].Value != name || parameter.Groups["type"].Value.Length == 0) continue;
+                    var (types, member) = Scope(k + 1);
+                    var isDelegate = System.Text.RegularExpressions.Regex.IsMatch(parameter.Groups["type"].Value, @"^(?:System\s*\.\s*)?(?:Func\s*<|Action\b)");
+                    return (method, types.Count > 0 ? types[0] : null, member, p, isDelegate);
+                }
+            }
+            return null;
+        }
+
+        // P7-44: the arguments passed for the parameter name (named name: or at position) by every call of method outside its
+        // declarations: a local function's calls in its own member, a type member's unqualified calls inside its type and its
+        // Type.method( / A.B.Type.method( calls anywhere.
+        public List<(int Start, int End)> Arguments(string method, string? type, int member, string name, int position)
+        {
+            var found = new List<(int Start, int End)>();
+            var declared = Methods(method).Select(d => d.Start).ToHashSet();
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + method + TypeArguments + @"\s*\("))
+            {
+                if (declared.Contains(m.Index)) continue;
+                var (callTypes, callMember) = Scope(m.Index);
+                if (Before(Code, m.Index).Last == '.')
+                {
+                    var dot = m.Index - 1;
+                    while (Code[dot] != '.') dot--;
+                    var receiver = Receiver(Code, dot);
+                    if (member >= 0 || type is null || receiver is null || receiver.Split('.')[^1] != type) continue;
+                }
+                else if (member >= 0 ? callMember != member : type is null || !callTypes.Contains(type)) continue;
+                var open = m.Index + m.Length - 1;
+                var close = Closing(Code, open, '(', ')');
+                if (close < 0) continue;
+                var arguments = Split(Code, open + 1, close, false);
+                var named = new System.Text.RegularExpressions.Regex(@"^" + name + @"\s*:(?!:)\s*");
+                var at = arguments.FindIndex(a => named.IsMatch(Code[a.Start..a.End]));
+                if (at >= 0) found.Add((arguments[at].Start + named.Match(Code[arguments[at].Start..arguments[at].End]).Length, arguments[at].End));
+                else if (position < arguments.Count && !arguments.Take(position + 1).Any(a => System.Text.RegularExpressions.Regex.IsMatch(Code[a.Start..a.End], @"^[A-Za-z_]\w*\s*:(?!:)")))
+                    found.Add(arguments[position]);
+            }
+            return found;
+        }
+
+        // P7-44: whether a parameter or local named name is in scope at index (so name there is not a field): a parameter of
+        // an enclosing method or local function (Parameter), or a declaration after a type (AfterType; not after out / ref)
+        // followed by = ; , or in, directly in a block enclosing index inside the same member.
+        public bool Shadowed(string name, int index)
+        {
+            var blocks = new HashSet<int>();
+            for (var b = enclosing[index]; b >= 0 && !Types.ContainsKey(b); b = parent[b]) blocks.Add(b);
+            if (blocks.Count == 0) return false;
+            if (Parameter(name, index) is not null) return true;
+            var local = new System.Text.RegularExpressions.Regex(@"\G\s*(?:=(?![=>])|;|,|in\b)");
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + name + @"\b"))
+            {
+                if (!blocks.Contains(enclosing[m.Index]) || !AfterType(Code, m.Index) || Before(Code, m.Index).Word is "out" or "ref") continue;
+                if (local.Match(Code, m.Index + m.Length).Success) return true;
+            }
+            return false;
+        }
     }
 
     // The receiver chain of a member access whose dot is at dot: "A.B.C" when it is a chain of names (null for an instance:
@@ -3153,6 +3320,15 @@ internal static class GeneratePrototypesTests
                     else found.Add((type + "." + name, targets, null));
                 }
                 else if (call && external is not null && !external.Contains(receiver + "." + name)) found.Add((receiver + "." + name, none, receiver + "." + name));
+                continue;
+            }
+            // P7-44: a parameter of an enclosing method or local function (CodeMap.Parameter): a Func / Action parameter,
+            // called or passed on, is followed to the arguments its callers pass for it; called with no such argument, or
+            // any other parameter called, it is unresolved.
+            if (map.Parameter(name, at) is { } parameter)
+            {
+                var passed = parameter.Delegate ? map.Arguments(parameter.Method, parameter.Type, parameter.Member, name, parameter.Position) : none;
+                found.Add((name, passed, call && passed.Count == 0 ? name : null));
                 continue;
             }
             // P7-42: a field or property of an enclosing type is followed through its assignments too.
@@ -3255,7 +3431,8 @@ internal static class GeneratePrototypesTests
         // b. Execute's pin over the helpers it reaches.
         var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
         var command = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")));
-        var real = ExecuteWriteProblems(write, command);
+        var followed = ExecuteFollowedCode(root);
+        var real = ExecuteWriteProblems(write, command, followed);
         Check(real.Count == 0, "Execute pin accepts the real GenerateWrite.cs and GenerateCommand.cs", Problems(real));
         const string AfterOutput = @"var\s+output\s*=\s*args\s*\[\s*2\s*\]\s*;";
         const string AfterParsed = @"var\s+parsed\s*=\s*generated\s*\.\s*Parsed\s*;";
@@ -3284,7 +3461,7 @@ internal static class GeneratePrototypesTests
         {
             var mutatedWrite = Mutate(write, writeEdits);
             var mutatedCommand = Mutate(command, commandEdits);
-            var problems = mutatedWrite is null || mutatedCommand is null ? new List<string>() : ExecuteWriteProblems(mutatedWrite, mutatedCommand);
+            var problems = mutatedWrite is null || mutatedCommand is null ? new List<string>() : ExecuteWriteProblems(mutatedWrite, mutatedCommand, followed);
             Check(mutatedWrite is not null && mutatedCommand is not null && Names(problems, reason), "Execute self-test: " + label + " is rejected for " + reason,
                 (mutatedWrite is null || mutatedCommand is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
@@ -3302,7 +3479,7 @@ internal static class GeneratePrototypesTests
         };
         foreach (var (label, reformatted, reformattedCommand) in reformats)
         {
-            var problems = ExecuteWriteProblems(reformatted, reformattedCommand);
+            var problems = ExecuteWriteProblems(reformatted, reformattedCommand, followed);
             Check(reformatted != write && problems.Count == 0, "reformat self-test: Execute pin accepts GenerateWrite.cs " + label, Problems(problems));
         }
         var spreadWrite = Spread(NoTrailingComma(write));
@@ -3310,7 +3487,7 @@ internal static class GeneratePrototypesTests
         foreach (var (label, pattern, replacement) in ExecuteMutants())
         {
             var mutated = Mutate(spreadWrite, (pattern, replacement));
-            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, spreadCommand);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, spreadCommand, followed);
             var reason = ExecuteMutantReason(label);
             Check(mutated is not null && Names(problems, reason), "reformat self-test: " + label + " is still rejected on the spread source without the trailing comma, for " + reason,
                 (mutated is null ? "the anchor does not match once; " : "") + Problems(problems));
@@ -3351,6 +3528,15 @@ internal static class GeneratePrototypesTests
     //      Emit<(int, int)>() are calls: unlisted or undeclared, they are unresolved;
     //   h. Execute's calls into OutputProblem.cs, BoundedInput.cs, SkillPackLookup.cs and IntentPlan.cs are followed into
     //      those files: a stdout write hidden in each is rejected.
+    //   P7-44:
+    //   i. BoundedInput.Stat's Func parameter call( is followed to the lambdas its callers pass (no BoundedInput.call
+    //      allowance): an unrelated call( and a call( of a non-delegate parameter are unresolved, and a stdout write in a
+    //      lambda a new caller passes to Stat is rejected through call;
+    //   j. a local or parameter shadowing a delegate field armed with a stdout write is not followed to the field, a
+    //      shadowing local's assignment and a tuple-typed local declaration are not field assignments; a field assignment
+    //      after if (on) and a local of the same name in another method still leave the field followed;
+    //   k. GltfExporter.WriteNew is followed into GltfExporter.cs (not listed in ExecuteExternalCalls): a stdout write in it
+    //      and in the wrap lambda WriteGltf passes to it are rejected.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -3370,6 +3556,8 @@ internal static class GeneratePrototypesTests
         var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
         var command = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")));
         var tests = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "tests", "cli", "GeneratePrototypesTests.cs")));
+        // P7-44: the followed files are read from the root this stage receives (no second global.json search, no cache).
+        var followed = ExecuteFollowedCode(root);
 
         // a. Execute's pin through generic, qualified, method-group, delegate and cross-class calls.
         const string AfterOutput = @"var\s+output\s*=\s*args\s*\[\s*2\s*\]\s*;";
@@ -3423,7 +3611,7 @@ internal static class GeneratePrototypesTests
         foreach (var (label, edits, reason) in executeMutants)
         {
             var mutated = Mutate(write, edits);
-            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, command);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, command, followed);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "Execute self-test: " + label + " is rejected for " + reason,
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
@@ -3437,13 +3625,12 @@ internal static class GeneratePrototypesTests
         foreach (var (label, edits) in uppercase)
         {
             var mutated = Mutate(write, edits);
-            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command);
+            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command, followed);
             Check(problems.Count == 0, "receiver self-test: Execute pin accepts an uppercase property chain " + label, Problems(problems));
         }
 
         // P7-42 (h): the calls into the repository's CLI helpers are followed into their files: a stdout write hidden in each
         // is rejected.
-        var followed = ExecuteFollowedCode();
         var followedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("BoundedInput.ReadText", new[] { (@"var\s+bytes\s*=\s*ReadBytes\s*\(\s*path\s*,\s*MaxBytes\s*,\s*share\s*\)\s*;", "Console.WriteLine(path); var bytes = ReadBytes(path, MaxBytes, share);") },
@@ -3512,7 +3699,7 @@ internal static class GeneratePrototypesTests
         foreach (var (label, edits, reason) in shadowMutants)
         {
             var mutated = Mutate(write, edits);
-            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command);
+            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command, followed);
             if (reason is null) Check(problems.Count == 0, "P7-44 shadow self-test: Execute pin accepts " + label, Problems(problems));
             else Check(problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-44 shadow self-test: " + label + " is still rejected for " + reason, Problems(problems));
         }
@@ -3557,10 +3744,10 @@ internal static class GeneratePrototypesTests
             ? System.Text.RegularExpressions.Regex.Replace(code, @"\bnamespace\s+Bim\.Cli\s*;", "namespace Bim.Cli {") + "\n}" : null;
         var blockedWrite = Blocked(write);
         var blockedCommand = Blocked(command);
-        var blockedReal = blockedWrite is null || blockedCommand is null ? new List<string> { "namespace Bim.Cli; not found once" } : ExecuteWriteProblems(blockedWrite, blockedCommand);
+        var blockedReal = blockedWrite is null || blockedCommand is null ? new List<string> { "namespace Bim.Cli; not found once" } : ExecuteWriteProblems(blockedWrite, blockedCommand, followed);
         Check(blockedReal.Count == 0, "membership self-test: Execute pin accepts GenerateWrite.cs and GenerateCommand.cs in a block-scoped namespace", Problems(blockedReal));
         var blockedMutant = blockedWrite is null ? null : Mutate(blockedWrite, executeMutants[0].Edits);
-        var blockedMutantProblems = blockedMutant is null || blockedCommand is null ? new List<string>() : ExecuteWriteProblems(blockedMutant, blockedCommand);
+        var blockedMutantProblems = blockedMutant is null || blockedCommand is null ? new List<string>() : ExecuteWriteProblems(blockedMutant, blockedCommand, followed);
         Check(blockedMutant is not null && blockedMutantProblems.Any(p => p.Contains(executeMutants[0].Reason, StringComparison.Ordinal)),
             "membership self-test: " + executeMutants[0].Label + " is still rejected in a block-scoped namespace for " + executeMutants[0].Reason, Problems(blockedMutantProblems));
         var blockedTests = "namespace Bim.Cli.Tests.Blocked {\n" + tests + "\n}";
