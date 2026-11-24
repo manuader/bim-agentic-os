@@ -80,6 +80,14 @@ using Point2 = Bim.Cad.Point2;
 // nothing placed); the explode consumes the z members (every placed copy has StartZ/EndZ/Elevation 0, model-space
 // entities keep theirs); CadToBimIr's candidate copies drop them (same draft bytes at any z). INSERT group 43 = 0 is
 // refused entity-invalid like 41/42 = 0; a negative 43 is kept. A z group that is not a finite number reads as 0.
+//
+// P6-43 (RunCli, reader-options pin): InProcessDocument reads the drawing with CliDxfReadOptions, the in-process copy of
+// CadCommand's DXF reader options, and that copy is pinned against interfaces/cli/CadCommand.cs: the raw source (comments
+// included, so a commented-out copy counts) names DxfReadOptions and DxfReader. once each, the DXF read is exactly the
+// line CliDxfRead (MaxInputBytes only, nothing else on the line) and MaxInputBytes is declared once as a product of
+// integers equal to CliMaxInputBytes (32 MiB). Self-tests: an extra reader argument, a commented-out copy beside a
+// changed read and a changed cap are each caught. The options are pinned rather than shared because CadCommand reads the
+// input once for cad-draft and cad-brief (the reason recorded for the PDF reader options in the cad-brief contract).
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -389,12 +397,64 @@ internal static class MinsertEzdxfTests
     // P6-39 block of tests/cad/PdfType3GlyphListTests.cs keeps the hand-built mirror for the shared document layout.
     private static byte[] InProcessDocument(byte[] bytes, string file, bool includeBlockRegions)
     {
-        var drawing = DxfReader.Parse(bytes, file, new DxfReadOptions(32 * 1024 * 1024));
+        var drawing = DxfReader.Parse(bytes, file, CliDxfReadOptions);
         return CadBriefDocument.FromDxf(file, bytes, drawing, new BriefExtractOptions { IncludeBlockRegions = includeBlockRegions }).ToUtf8Bytes();
+    }
+
+    // P6-43: the in-process copy of CadCommand's DXF reader options, pinned against CadCommand.cs by ReaderOptionsProblems.
+    private const int CliMaxInputBytes = 32 * 1024 * 1024;
+    private static readonly DxfReadOptions CliDxfReadOptions = new(CliMaxInputBytes);
+    private const string CliDxfRead = "if (format == \"dxf\") drawing = DxfReader.Parse(bytes, sourceFile, new DxfReadOptions(MaxInputBytes));";
+    private const string CliCapPrefix = "public const int MaxInputBytes = ";
+
+    private static int Occurs(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
+
+    // Null when CadCommand.cs (raw, comments included) reads a DXF with exactly the options of CliDxfReadOptions.
+    private static string? ReaderOptionsProblems(string source)
+    {
+        var lines = source.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n').Select(l => l.Trim()).ToArray();
+        var problems = new List<string>();
+        if (Occurs(source, "DxfReadOptions") != 1) problems.Add("'DxfReadOptions' x" + Occurs(source, "DxfReadOptions").ToString(CultureInfo.InvariantCulture) + " (want 1)");
+        if (Occurs(source, "DxfReader.") != 1) problems.Add("'DxfReader.' x" + Occurs(source, "DxfReader.").ToString(CultureInfo.InvariantCulture) + " (want 1)");
+        if (lines.Count(l => l == CliDxfRead) != 1) problems.Add("the DXF read line is not exactly '" + CliDxfRead + "'");
+        var caps = lines.Where(l => l.StartsWith(CliCapPrefix, StringComparison.Ordinal)).ToArray();
+        long? cap = null;
+        if (caps.Length == 1 && caps[0].EndsWith(';'))
+        {
+            var factors = caps[0][CliCapPrefix.Length..^1].Split('*').Select(f => f.Trim()).ToArray();
+            if (factors.All(f => f.Length > 0 && f.All(char.IsAsciiDigit) && f.Length < 10)) cap = factors.Aggregate(1L, (product, f) => product * long.Parse(f, CultureInfo.InvariantCulture));
+        }
+        if (Occurs(source, "MaxInputBytes =") != 1 || cap != CliMaxInputBytes)
+            problems.Add("MaxInputBytes declared x" + caps.Length.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one product equal to " + CliMaxInputBytes.ToString(CultureInfo.InvariantCulture) + ")");
+        return problems.Count > 0 ? string.Join("; ", problems) : null;
     }
 
     private static void RunCli(Action<bool, string, string> c, byte[] bytes)
     {
+        // ---------- P6-43: CadCommand's DXF reader options against the in-process copy ----------
+        try
+        {
+            var cadCommandPath = Path.Combine(RepoRoot(), "interfaces", "cli", "CadCommand.cs");
+            var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath) : "";
+            c(cadCommand.Length > 0 && ReaderOptionsProblems(cadCommand) is null && CliDxfReadOptions == new DxfReadOptions(MaxBytes: CliMaxInputBytes),
+                "p6-43 reader options: CadCommand.cs reads a DXF with DxfReadOptions(MaxInputBytes) only, MaxInputBytes = the in-process copy's 32 MiB",
+                cadCommandPath + " " + (cadCommand.Length == 0 ? "missing" : ReaderOptionsProblems(cadCommand) ?? "pins hold") + " in-process " + CliDxfReadOptions);
+            const string realCall = "new DxfReadOptions(MaxInputBytes)";
+            foreach (var (label, drifted, expect) in new[]
+            {
+                ("an extra reader argument", cadCommand.Replace(realCall, "new DxfReadOptions(MaxInputBytes) with { MaxBytes = 1024 }", StringComparison.Ordinal), "the DXF read line"),
+                ("a commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " // " + CliDxfRead, StringComparison.Ordinal), "'DxfReadOptions' x2"),
+                ("a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "as 16777216"),
+            })
+                c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
+                    "p6-43 reader options self-test: " + label + " in CadCommand.cs is caught",
+                    drifted == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(drifted) ?? "not caught");
+        }
+        catch (Exception error)
+        {
+            c(false, "p6-43 reader options unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
         // ---------- documented limit: reader warnings of dropped inserts are not brief uncertainties ----------
         try
         {

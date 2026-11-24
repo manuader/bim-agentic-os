@@ -754,6 +754,27 @@ internal static class PdfType3GlyphListTests
                 .Select(m => m.MemberType + ":" + m.Name).Order(StringComparer.Ordinal));
             C(surface == "Method:FromDxf,Method:FromPdf,Method:ToUtf8Bytes,Method:get_Result,Property:Result",
                 "p6-41 builder surface: FromDxf, FromPdf, Result and ToUtf8Bytes only (no Create, no Scale)", surface);
+            // P6-43 wording check: the P6-39 sentence group of the cad-brief P6-35 paragraph in docs/contracts/module-contracts.md
+            // names the P6-41 factories (no Create), says the builder owns the one input hash, gives the recorded reason the
+            // PDF reader options stay source-pinned and names the DXF reader-option pin.
+            var contractPath = Path.Combine(root, "docs", "contracts", "module-contracts.md");
+            var contractLine = File.Exists(contractPath) ? File.ReadAllLines(contractPath).SingleOrDefault(l => l.StartsWith("P6-35 form matrix (cad-brief, PDF;", StringComparison.Ordinal)) ?? "" : "";
+            var p639At = contractLine.IndexOf(" P6-39: ", StringComparison.Ordinal);
+            var p639 = p639At >= 0 ? contractLine[p639At..] : "";
+            var wording = new[]
+            {
+                "`CadBriefDocument.FromDxf(sourceFile, bytes, drawing, options)`",
+                "`FromPdf(sourceFile, bytes, pdf, page, calibration, options)`",
+                "the builder owns the one input hash",
+                "CadCommand reads the input once for cad-draft and cad-brief",
+                "`DxfReadOptions(MaxInputBytes)`",
+                "tests/cad/MinsertEzdxfTests.cs",
+            };
+            var wordingProblems = string.Join("; ", wording.Where(w => !p639.Contains(w, StringComparison.Ordinal)).Select(w => "missing '" + w + "'")
+                .Concat(p639.Contains("Create(", StringComparison.Ordinal) ? new[] { "still names Create(" } : Array.Empty<string>()));
+            C(p639.Length > 0 && wordingProblems.Length == 0,
+                "p6-43 contract wording: the cad-brief P6-39 sentences name FromDxf/FromPdf, the builder's one input hash, the PDF reader-option pin reason and the DXF reader-option pin",
+                p639.Length == 0 ? "no ' P6-39: ' group in the P6-35 paragraph of " + contractPath : wordingProblems);
             // P6-41 factories against the hand-built document (members and serializer as CadCommand wrote them before
             // P6-39) for every scale branch: DXF insunits / metres-per-unit (tests/cad/fixtures/minsert-ocs.dxf has
             // $INSUNITS), PDF none / metres-per-unit / known-dimension. This mirror is kept on purpose: it is the
@@ -770,7 +791,8 @@ internal static class PdfType3GlyphListTests
                 uncertainties = result.Uncertainties,
                 issues = result.Issues,
             }, json);
-            static string H16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
+            // P6-43: one Hash16 for the whole block (it replaces the P6-41 H16 copy and the one inside the CLI branch below).
+            static string Hash16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
             var dxfBytes = File.ReadAllBytes(Path.Combine(fixtures, "minsert-ocs.dxf"));
             var dxf = DxfReader.Parse(dxfBytes, "minsert-ocs.dxf", new DxfReadOptions(cliMaxInputBytes));
             foreach (var (label, metres, scale) in new[] { ("dxf insunits", (double?)null, "insunits"), ("dxf metres-per-unit", 0.001, "metres-per-unit") })
@@ -778,8 +800,8 @@ internal static class PdfType3GlyphListTests
                 var briefOptions = new BriefExtractOptions { MetresPerUnit = metres };
                 var built = CadBriefDocument.FromDxf("minsert-ocs.dxf", dxfBytes, dxf, briefOptions).ToUtf8Bytes();
                 var mirror = Mirror("minsert-ocs.dxf", dxfBytes, "dxf", null, scale, BriefExtract.FromDxf(dxf, briefOptions));
-                C(dxf.MetresPerUnit is not null && built.AsSpan().SequenceEqual(mirror), "p6-41 factory " + label + ": FromDxf bytes equal the hand-built document",
-                    "insunits " + (dxf.MetresPerUnit?.ToString("R", CultureInfo.InvariantCulture) ?? "none") + " builder " + I(built.Length) + " " + H16(built) + " mirror " + I(mirror.Length) + " " + H16(mirror));
+                C(dxf.MetresPerUnit is not null && built.AsSpan().SequenceEqual(mirror), "p6-41 factory " + label + ": FromDxf bytes equal the hand-built document (fixture dependency: minsert-ocs.dxf sets $INSUNITS, so its MetresPerUnit is not null and the no-option case takes the insunits branch)",
+                    "insunits " + (dxf.MetresPerUnit?.ToString("R", CultureInfo.InvariantCulture) ?? "none") + " builder " + I(built.Length) + " " + Hash16(built) + " mirror " + I(mirror.Length) + " " + Hash16(mirror));
             }
             var pdfBytes = PdfToUnicodeTests.PageBytes("BT /F2 10 Tf 1 0 0 1 50 50 Tm (Sala 12 m2) Tj ET", Type1("[1 /g1]"), null);
             var pdfDoc = PdfReader.Parse(pdfBytes, "plain.pdf", new PdfReadOptions(MaxBytes: cliMaxInputBytes));
@@ -789,14 +811,13 @@ internal static class PdfType3GlyphListTests
                 var built = CadBriefDocument.FromPdf("plain.pdf", pdfBytes, pdfDoc, 1, calibration, briefOptions).ToUtf8Bytes();
                 var mirror = Mirror("plain.pdf", pdfBytes, "pdf", 1, scale, BriefExtract.FromPdf(pdfDoc, 1, calibration, briefOptions));
                 C(built.AsSpan().SequenceEqual(mirror), "p6-41 factory " + label + ": FromPdf bytes equal the hand-built document",
-                    "builder " + I(built.Length) + " " + H16(built) + " mirror " + I(mirror.Length) + " " + H16(mirror) + " " + Encoding.UTF8.GetString(built));
+                    "builder " + I(built.Length) + " " + Hash16(built) + " mirror " + I(mirror.Length) + " " + Hash16(mirror) + " " + Encoding.UTF8.GetString(built));
             }
             C(File.Exists(cliDll), "p6-35 cli precondition: the Release Bim.Cli.dll exists (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
             if (File.Exists(cliDll))
             {
                 var cliPage = "q " + string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do Q BT /F2 10 Tf 1 0 0 1 50 50 Tm (Sala 12 m2) Tj ET";
                 var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
-                static string Hash16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
                 var scratch = Path.Combine(Path.GetTempPath(), "bim-cad-p635-" + I(Environment.ProcessId));
                 if (Directory.Exists(scratch)) Directory.Delete(scratch, true);
                 Directory.CreateDirectory(scratch);
@@ -816,19 +837,9 @@ internal static class PdfType3GlyphListTests
                         var expected = CadBriefDocument.FromPdf(file, bytes, pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false }).ToUtf8Bytes();
                         // The P6-37 hand-mirrored document (members and serializer as CadCommand wrote them before P6-39) gives
                         // the same bytes: the builder moved the document without changing it.
+                        // P6-43: the same hand-built Mirror as the factory checks above (one statement of the layout).
                         var result = BriefExtract.FromPdf(pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false });
-                        var mirrored = new
-                        {
-                            kind = "cad-brief",
-                            version = 1,
-                            persisted = false,
-                            source = new { file, format = "pdf", bytes = bytes.LongLength, sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes)), page = (int?)1, scale = "none", metres_per_unit = result.MetresPerUnit },
-                            brief = System.Text.Json.Nodes.JsonNode.Parse(Bim.Core.BriefSerializer.Serialize(result.Brief)),
-                            rooms = result.Rooms,
-                            uncertainties = result.Uncertainties,
-                            issues = result.Issues,
-                        };
-                        var legacy = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(mirrored, json);
+                        var legacy = Mirror(file, bytes, "pdf", 1, "none", result);
                         C(expected.AsSpan().SequenceEqual(legacy),
                             "p6-39 cli " + label + ": CadBriefDocument bytes equal the P6-37 mirrored document bytes",
                             "builder " + I(expected.Length) + " bytes " + Hash16(expected) + " mirrored " + I(legacy.Length) + " bytes " + Hash16(legacy));
