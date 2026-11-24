@@ -544,7 +544,7 @@ internal static class InternalErrorDelegationTests
                     // P3-39 documented limit (BracedInitializerArguments): a constructor initializer whose arguments hold
                     // braces (`: this(new[] { n })`, `: base(() => { })`) splits the constructor header at that '{', so the
                     // constructor body is not seen as method-like and a local function there is NOT caught. Pinned as the
-                    // current verdict (clean) so a change in either direction is noticed; production has no such form.
+                    // current verdict (clean) so a change in either direction is noticed; no production seam read sits in one.
                     ("LIMIT BracedInitializerArguments: a local function inside a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", true),
                     ("LIMIT BracedInitializerArguments: a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", true),
                 };
@@ -818,11 +818,18 @@ internal static class InternalErrorDelegationTests
     // required/virtual/override/sealed or explicit interface members (`int I.P { get { ... } }`), init/add/remove
     // accessors, `where T : struct`, constructors (static, or with a `: this(...)`/`: base(...)` initializer) and
     // switch-expression-arm lambdas (`=> () => { ... }`) already matched.
+    // P3-39: the keyword test skips a trailing constructor initializer `) : base(...)`/`) : this(...)` (so
+    // `: base(new object())` does not hide the constructor), and `new` disqualifies a header only as object creation:
+    // `new` followed by [modifiers] type name( is the hiding modifier of a method (`public new void M()`). Checked
+    // operators (`operator checked +`), primary-constructor type members and field/property-initializer lambdas already
+    // matched. Limit (BracedInitializerArguments): initializer arguments holding braces split the header and are missed.
     static bool MethodBody(string header)
     {
         var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
         var head = constraint.Success ? header[..constraint.Index] : header;
-        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\b(?:class|struct|record|interface|enum|namespace|new)\b")) return false;
+        var test = System.Text.RegularExpressions.Regex.Replace(head, @"\)\s*:\s*(?:base|this)\s*\([^{};]*\)\s*$", ")");
+        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\b(?:class|struct|record|interface|enum|namespace)\b")) return false;
+        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*[\w.]+(?:<[^(){};]*>)?(?:\[[\s,]*\]|\?)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
         if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
         if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
