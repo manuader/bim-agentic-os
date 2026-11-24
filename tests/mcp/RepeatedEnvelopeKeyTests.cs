@@ -805,7 +805,11 @@ internal static class RepeatedEnvelopeKeyTests
         // P10-42: members repeated inside a tools/call arguments value (one level or more below the arguments object), for
         // the validate tool. The arguments object's own names are checked (P10-31: -32602 repeated argument); a value is
         // handed to the tool as raw JSON text and deserialized like the CLI reads its file (System.Text.Json, .NET 8).
-        // Measured: each response is reported in the failure message; expected literal bytes.
+        // P10-44: also diff (two Project values, same deserializer) and one Revit-forwarding tool (revit_query_elements: the
+        // raw args/document values are written into the command envelope, which RevitCommandProtocol.Parse reads with its
+        // own duplicate-member check), and a lone-surrogate member name nested in a value. These cases run on their own
+        // server and count transport sends per case, so a stray send fails the case that made it (and nothing earlier
+        // counts). Measured: each failing case's response is reported in the failure message; expected literal bytes.
         {
             const string Guid1 = "00000000-0000-0000-0000-000000000001";
             const string Guid2 = "00000000-0000-0000-0000-000000000002";
@@ -813,36 +817,117 @@ internal static class RepeatedEnvelopeKeyTests
             static string Element(string dependencies, string provenance = """{"Source":"s","Approval":"specified"}""") =>
                 "{\"Id\":\"" + Guid2 + "\",\"Kind\":\"plan\",\"GeometryMetres\":[],\"Dependencies\":" + dependencies + ",\"Provenance\":" + provenance + "}";
             static string Validate(string id, string project) => Request(id, "tools/call", "{\"name\":\"validate\",\"arguments\":{\"project\":" + project + "}}");
+            static string Diff(string id, string before, string after) => Request(id, "tools/call", "{\"name\":\"diff\",\"arguments\":{\"before\":" + before + ",\"after\":" + after + "}}");
             static string ToolText(string id, string text, bool isError) =>
                 "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"" + text.Replace("\"", "\\\"", StringComparison.Ordinal)
                 + "\"}],\"isError\":" + (isError ? "true" : "false") + "}}";
             var issue = "[{\"Code\":\"missing_dependency\",\"Id\":\"" + Guid2 + "\",\"Message\":\"Dangling dependency\"}]";
             var head = "{\"Id\":\"" + Guid1 + "\",\"Revision\":0,";
-            var argumentCases = new List<(string Label, string Line, string Expected)>
+            // P10-44 diff: the empty project and the project with one plain element, and their literal plans (SHA-256 of the
+            // System.Text.Json serialization of each project, uppercase hex).
+            var plain = Element("[]");
+            var empty = head + "\"Elements\":[]}";
+            var one = head + "\"Elements\":[" + plain + "]}";
+            const string EmptyHash = "DD35600AC5E804616F05B812C16FDD8C8EF40B7E8531036AAA1A8375AC1284D2";
+            const string OneHash = "C82909AA730F993429C007E3AC3D6816AE30C9E3FFAEBACD5584F8618F79C1D4";
+            static string PlanText(string before, string after, string operations, string dirty) =>
+                "{\"ProjectId\":\"" + Guid1 + "\",\"ExpectedRevision\":0,\"BeforeHash\":\"" + before + "\",\"AfterHash\":\"" + after + "\",\"Operations\":[" + operations + "],\"DirtyIds\":[" + dirty + "]}";
+            var createPlan = PlanText(EmptyHash, OneHash, "{\"Action\":\"create\",\"Element\":" + plain + "}", "\"" + Guid2 + "\"");
+            var samePlan = PlanText(OneHash, OneHash, "", "");
+            var emptyPlan = PlanText(EmptyHash, EmptyHash, "", "");
+            // P10-44 Revit-forwarding tool: a read-only query on an absent document path (never stat'ed), with a pipe name
+            // the transport accepts; the transport answers nothing, so a forwarded call is no_response.
+            var revit = RevitCommandCatalogue.Find("query.elements")!.ToolName;
+            var absent = JsonSerializer.Serialize(Path.GetFullPath(Path.Combine(Path.GetTempPath(), "p10-44-absent", "x.rvt")));
+            string Revit(string id, string args, string? document = null) => Request(id, "tools/call", "{\"name\":\"" + revit + "\",\"arguments\":{\"pipe_name\":\"bim-agentic-os-2025-1\",\"operation_id\":\"p10-44\",\"document\":"
+                + (document ?? "{\"path\":" + absent + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"}") + ",\"args\":" + args + "}}");
+            static string RevitFailure(string code, string? field, string? detail) =>
+                "{\"status\":\"failed\",\"code\":\"" + code + "\",\"field\":" + (field is null ? "null" : "\"" + field + "\"") + ",\"detail\":" + (detail is null ? "null" : "\"" + detail + "\"")
+                + ",\"created\":[],\"modified\":[],\"deleted\":[],\"readback\":null,\"receipt\":null,\"warnings\":[]}";
+
+            var argumentSends = 0;
+            string? forwarded = null;
+            var argumentServer = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { argumentSends++; forwarded = line; return null; }, null);
+            // Each case: its response must equal the literal bytes and it must make exactly its own expected number of sends.
+            List<string> RunCases(IEnumerable<(string Label, string Line, string Expected, int Sends)> list, List<string> measured)
             {
-                // neighbours without a repeat: the two values the repeats choose between
-                ("A0 no repeat, dangling dependency", Validate("40", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("40", issue, true)),
-                ("A0b no repeat, no element", Validate("41", head + "\"Elements\":[]}"), ToolText("41", "[]", false)),
-                // repeats inside the project value
-                ("A1 Elements twice, last dangling", Validate("42", head + "\"Elements\":[],\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("42", issue, true)),
-                ("A2 Elements twice, first dangling", Validate("43", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "],\"Elements\":[]}"), ToolText("43", "[]", false)),
-                ("A3 Dependencies twice in an element, last dangling", Validate("44", head + "\"Elements\":[" + Element("[],\"Dependencies\":[" + Dangling + "]") + "]}"), ToolText("44", issue, true)),
-                ("A4 Dependencies twice escaped, first dangling", Validate("45", head + "\"Elements\":[" + Element("[" + Dangling + "],\"\\u0044ependencies\":[]") + "]}"), ToolText("45", "[]", false)),
-                ("A5 Provenance Source twice (three levels down)", Validate("46", head + "\"Elements\":[" + Element("[]", """{"Source":"a","Source":"b","Approval":"specified"}""") + "]}"), ToolText("46", "[]", false)),
-            };
-            var argumentMeasured = new List<string>();
-            var argumentBad = new List<string>();
-            foreach (var (label, line, expected) in argumentCases)
-            {
-                string response;
-                try { response = server.Handle(line) ?? "none"; }
-                catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
-                argumentMeasured.Add(label + " => " + (response.Length > 400 ? response[..400] + "..." : response));
-                if (response != expected) argumentBad.Add(label);
+                var failing = new List<string>();
+                foreach (var (label, line, expected, expectedSends) in list)
+                {
+                    var before = argumentSends;
+                    string response;
+                    try { response = argumentServer.Handle(line) ?? "none"; }
+                    catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                    var made = argumentSends - before;
+                    if (response == expected && made == expectedSends) continue;
+                    failing.Add(label);
+                    measured.Add(label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 400 ? response[..400] + "..." : response));
+                }
+                return failing;
             }
-            Check(argumentBad.Count == 0 && sends == 0,
-                "members repeated inside a validate arguments value answer as measured (literal bytes), no transport send (sends " + sends.ToString(CultureInfo.InvariantCulture)
-                + ") | failing " + argumentBad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", argumentBad) + " | measured: " + string.Join(" ; ", argumentMeasured));
+
+            // P10-44: the last-wins pins below hold for System.Text.Json 8 on .NET 8 (JsonDocument keeps every repeated
+            // member, JsonElement lookups and JsonSerializer take the last). A target or package move that changes it fails
+            // this one named check first.
+            var stj = typeof(JsonSerializer).Assembly.GetName().Version;
+            var lastWins = JsonSerializer.Deserialize<Provenance>("""{"Source":"a","Source":"b","Approval":"specified"}""")?.Source;
+            Check(Environment.Version.Major == 8 && stj?.Major == 8 && lastWins == "b",
+                "runtime dependence: the arguments last-wins pins need System.Text.Json 8 on .NET 8 (a repeated member deserializes last-wins) | runtime "
+                + Environment.Version + ", System.Text.Json " + stj + ", repeated Source read as " + (lastWins ?? "null"));
+
+            // P10-44: own-counter self-test. A send made before the cases fails none of them; a case that sends when it
+            // expects none fails alone (the next case still passes).
+            argumentSends++;
+            var selfMeasured = new List<string>();
+            var selfFailing = RunCases(new (string, string, string, int)[]
+            {
+                ("S1 planted send", Revit("90", """{"category":"OST_Walls"}"""), ToolText("90", RevitFailure("no_response", "pipe_name", "pipe closed without a response line"), true), 0),
+                ("S2 after it", Validate("91", empty), ToolText("91", "[]", false), 0),
+            }, selfMeasured);
+            Check(selfFailing.Count == 1 && selfFailing[0] == "S1 planted send",
+                "own send counter: a send before the arguments cases fails none, a planted send fails its own case alone | failing: " + string.Join(", ", selfFailing) + " | " + string.Join(" ; ", selfMeasured));
+
+            var argumentCases = new List<(string Label, string Line, string Expected, int Sends)>
+            {
+                // ---- validate (P10-42): neighbours without a repeat, then repeats inside the project value ----
+                ("A0 no repeat, dangling dependency", Validate("40", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("40", issue, true), 0),
+                ("A0b no repeat, no element", Validate("41", empty), ToolText("41", "[]", false), 0),
+                ("A1 Elements twice, last dangling", Validate("42", head + "\"Elements\":[],\"Elements\":[" + Element("[" + Dangling + "]") + "]}"), ToolText("42", issue, true), 0),
+                ("A2 Elements twice, first dangling", Validate("43", head + "\"Elements\":[" + Element("[" + Dangling + "]") + "],\"Elements\":[]}"), ToolText("43", "[]", false), 0),
+                ("A3 Dependencies twice in an element, last dangling", Validate("44", head + "\"Elements\":[" + Element("[],\"Dependencies\":[" + Dangling + "]") + "]}"), ToolText("44", issue, true), 0),
+                ("A4 Dependencies twice escaped, first dangling", Validate("45", head + "\"Elements\":[" + Element("[" + Dangling + "],\"\\u0044ependencies\":[]") + "]}"), ToolText("45", "[]", false), 0),
+                ("A5 Provenance Source twice (three levels down)", Validate("46", head + "\"Elements\":[" + Element("[]", """{"Source":"a","Source":"b","Approval":"specified"}""") + "]}"), ToolText("46", "[]", false), 0),
+                // ---- diff (P10-44): neighbours, then repeats inside before/after ----
+                ("D0 no repeat, create", Diff("50", empty, one), ToolText("50", createPlan, false), 0),
+                ("D0b no repeat, same", Diff("51", one, one), ToolText("51", samePlan, false), 0),
+                ("D0c no repeat, both empty", Diff("52", empty, empty), ToolText("52", emptyPlan, false), 0),
+                ("D1 before Elements twice, last empty", Diff("53", head + "\"Elements\":[" + plain + "],\"Elements\":[]}", one), ToolText("53", createPlan, false), 0),
+                ("D2 before Elements twice, first empty", Diff("54", head + "\"Elements\":[],\"Elements\":[" + plain + "]}", one), ToolText("54", samePlan, false), 0),
+                ("D3 after Elements twice escaped, last empty", Diff("55", empty, head + "\"Elements\":[" + plain + "],\"\\u0045lements\":[]}"), ToolText("55", emptyPlan, false), 0),
+                ("D4 before Revision twice, last 0", Diff("56", "{\"Id\":\"" + Guid1 + "\",\"Revision\":1,\"Revision\":0,\"Elements\":[]}", empty), ToolText("56", emptyPlan, false), 0),
+                ("D5 before Revision twice, last 1", Diff("57", "{\"Id\":\"" + Guid1 + "\",\"Revision\":0,\"Revision\":1,\"Elements\":[]}", empty), ToolText("57", "{\"status\":\"failed\",\"code\":\"revision_conflict\"}", true), 0),
+                ("D6 after Provenance Source twice (three levels down), last as before", Diff("58", one, head + "\"Elements\":[" + Element("[]", """{"Source":"a","Source":"s","Approval":"specified"}""") + "]}"), ToolText("58", samePlan, false), 0),
+                // ---- revit_query_elements (P10-44): the raw value goes into the command envelope ----
+                ("R0 no repeat, forwarded once", Revit("60", """{"category":"OST_Walls"}"""), ToolText("60", RevitFailure("no_response", "pipe_name", "pipe closed without a response line"), true), 1),
+                ("R1 args member twice", Revit("61", """{"category":"OST_Walls","category":"OST_Doors"}"""), ToolText("61", RevitFailure("args_invalid", "args.category", "duplicate member"), true), 0),
+                ("R2 args member twice escaped", Revit("62", """{"category":"OST_Walls","\u0063ategory":"OST_Walls"}"""), ToolText("62", RevitFailure("args_invalid", "args.category", "duplicate member"), true), 0),
+                ("R3 document path twice", Revit("63", """{"category":"OST_Walls"}""", "{\"path\":" + absent + ",\"path\":" + absent + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"}"),
+                    ToolText("63", RevitFailure("envelope_invalid", "document.path", "unexpected or duplicate member"), true), 0),
+                // ---- a lone-surrogate member name nested in an arguments value (P10-44) ----
+                ("L1 validate project lone-surrogate name", Validate("70", head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("70", "[]", false), 0),
+                ("L2 validate element lone-surrogate name", Validate("71", head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}"), ToolText("71", "[]", false), 0),
+                ("L3 diff after lone-surrogate name", Diff("72", empty, head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("72", emptyPlan, false), 0),
+                ("L4 revit args lone-surrogate name", Revit("73", """{"category":"OST_Walls","\ud800":1}"""), ToolText("73", RevitFailure("envelope_invalid", null, "probe"), true), 0),
+            };
+            forwarded = null;
+            var argumentMeasured = new List<string>();
+            var argumentBad = RunCases(argumentCases, argumentMeasured);
+            Check(argumentBad.Count == 0,
+                "members repeated inside a validate/diff arguments value answer last-wins as System.Text.Json 8 on .NET 8 reads them, revit_query_elements refuses a repeated args/document member typed, a nested lone-surrogate name answers as measured (literal bytes, own per-case send count) | failing "
+                + argumentBad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", argumentBad) + " | measured: " + string.Join(" ; ", argumentMeasured));
+            // R0 forwarded the raw args value unchanged into the canonical command (sorted members, default escaping).
+            Check(forwarded is not null && forwarded.Contains("\"Command\":{\"args\":{\"category\":\"OST_Walls\"},\"command\":\"query.elements\",", StringComparison.Ordinal),
+                "revit_query_elements forwards the args value into the canonical command | " + (forwarded ?? "none"));
         }
     }
 }
