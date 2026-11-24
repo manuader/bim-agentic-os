@@ -808,11 +808,26 @@ internal static class InternalErrorDelegationTests
             {
                 if (depth > 0) { depth--; continue; }
                 if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
-                var start = i == 0 ? 0 : code.LastIndexOfAny(new[] { ';', '{', '}' }, i - 1) + 1;
-                if (MethodBody(code[start..i]) && ++bodies == 2) return true;
+                if (MethodBody(code[HeaderStart(code, i)..i]) && ++bodies == 2) return true;
             }
         }
         return false;
+    }
+
+    // P3-41: where the header of the '{' at index starts: after the previous ';', '{' or '}' that is not inside a
+    // parenthesised group closed before the '{' (so braces and ';' in `: this(new[] { n })` or `: base(() => { return; })`
+    // arguments do not split a constructor header). Outside such a group it is the previous ';', '{' or '}' as before.
+    static int HeaderStart(string code, int index)
+    {
+        var parens = 0;
+        for (var i = index - 1; i >= 0; i--)
+        {
+            var c = code[i];
+            if (c == ')') parens++;
+            else if (c == '(') parens--;
+            else if (parens <= 0 && (c == ';' || c == '{' || c == '}')) return i + 1;
+        }
+        return 0;
     }
 
     // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
@@ -830,14 +845,18 @@ internal static class InternalErrorDelegationTests
     // `: base(new object())` does not hide the constructor), and `new` disqualifies a header only as object creation:
     // `new` followed by [modifiers] type name( is the hiding modifier of a method (`public new void M()`). Checked
     // operators (`operator checked +`), primary-constructor type members and field/property-initializer lambdas already
-    // matched. Limit (BracedInitializerArguments): initializer arguments holding braces split the header and are missed.
+    // matched. P3-41: initializer arguments holding braces no longer split the header (HeaderStart; limit
+    // BracedInitializerArguments removed): a trailing `) : base(...)`/`) : this(...)` with balanced parentheses is first
+    // reduced to `) : base()`/`) : this()`. The hiding `new` also accepts a tuple return type (`new (int, int) M()`) and a
+    // `ref`/`ref readonly` return (`new ref int M()`).
     static bool MethodBody(string header)
     {
+        header = System.Text.RegularExpressions.Regex.Replace(header, @"\)\s*:\s*(base|this)\s*\((?>[^()]+|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*$", ") : $1()");
         var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
         var head = constraint.Success ? header[..constraint.Index] : header;
         var test = System.Text.RegularExpressions.Regex.Replace(head, @"\)\s*:\s*(?:base|this)\s*\([^{};]*\)\s*$", ")");
         if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\b(?:class|struct|record|interface|enum|namespace)\b")) return false;
-        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*[\w.]+(?:<[^(){};]*>)?(?:\[[\s,]*\]|\?)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
+        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*(?:ref\s+(?:readonly\s+)?)?(?:\([^(){};]*\)|[\w.]+(?:<[^(){};]*>)?)(?:\[[\s,]*\]|\?)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
         if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
         if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
