@@ -17,7 +17,8 @@ writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
   * for the tilted inserts (non-axis extrusion, which DxfReader reports as ocs-non-planar instead of projecting), the
     world XY centre the projection reading would give, used as decoy label positions.
 
-P6-34, P6-36 and P6-38 extensions (chain_main, z_main, leaf_main) are described at their sections below.
+P6-34, P6-36, P6-38, P6-40 and P6-42 extensions (chain_main, z_main, leaf_main, follow_main, align_main) are described
+at their sections below.
 
 P6-32 extension (same ezdxf 1.4.2 checkout, commit 8240df57; printed after the P6-30 sections, which are unchanged):
 a second drawing (BULGE_* below, mirrored by MinsertEzdxfTests.BulgeDrawing()) whose block ARCH (base (50, 20)) holds
@@ -757,6 +758,100 @@ def follow_main():
                     emit(name + ">" + mname + "[" + str(row) + "," + str(col) + "]", aname, "insert", g, m.transform(flat_of(p)))
 
 
+# P6-42: aligned / fit text (72 = 3 / 5) under near +-Z inserts. For ALIGNED and FIT ezdxf's Text.get_placement()
+# returns the group 10 point (insert) as p1 and the group 11 point (align_point) as p2 (for 72 = 1/2/4 it returns only
+# align_point); DxfReader keeps the group 10 point with the z of group 30 for both TEXT and ATTRIB/ATTDEF (an
+# ATTRIB/ATTDEF is "justified" only for 72 = 1/2/4 or 74 != 0). Block AF (base (40, -30, 0)) holds TEXT FA (72 = 3,
+# +Z), FF (72 = 5, exact -Z OCS), FN (72 = 3, its own near +Z OCS (1e-7, -1e-7, 1)) and constant ATTDEFs FB (72 = 3,
+# its own near -Z OCS (-1e-7, 2e-7, -1)) and FG (72 = 5, +Z); every one has 31 != 30 and an align point 400 away.
+# Block AHOLD (base (10, 20, 0)) holds INSERT AI of TAG (a LINE) at z 1200, rotation 20, with ATTRIBs FR (72 = 3) and
+# FS (72 = 5, exact -Z OCS), again 31 != 30. Model space: A1 (AF, near +Z, scale 1.2, elevation 700), A2 (AF, near
+# -Z, Z scale -1.5) and A3 (AHOLD, near -Z). Expected: the composed Insert.matrix44() applied to the group 10 point taken
+# to block WCS by the leaf's own OCS, cross-checked within 1e-9 against a copy transformed with its own transform(m)
+# and, for A3, against the ATTRIB of virtual_entities(). Printed for the record: how far the point moves if the z of
+# group 31 is used instead of 30, and how far the transformed align point (p2) lies from it.
+ALIGN_BLOCK_BASE = (40.0, -30.0, 0.0)
+# name, kind, insert (10/20/30), align point (11/21/31), halign (72), extrusion
+ALIGN_LEAVES = [
+    ("FA", "TEXT", (50.0, 60.0, 1300.0), (450.0, 60.0, 1700.0), 3, (0.0, 0.0, 1.0)),
+    ("FF", "TEXT", (120.0, -80.0, 400.0), (520.0, -80.0, 900.0), 5, (0.0, 0.0, -1.0)),
+    ("FN", "TEXT", (-200.0, 150.0, 600.0), (200.0, 150.0, 1100.0), 3, (1e-7, -1e-7, 1.0)),
+    ("FB", "ATTDEF", (300.0, 300.0, 1000.0), (700.0, 300.0, 1700.0), 3, (-1e-7, 2e-7, -1.0)),
+    ("FG", "ATTDEF", (-150.0, 250.0, 800.0), (250.0, 250.0, 1200.0), 5, (0.0, 0.0, 1.0)),
+]
+ALIGN_AI = ("AI", (2000.0, 1000.0, 1200.0), 20.0)
+# name, tag, insert, align point, halign, extrusion
+ALIGN_ATTRIBS = [
+    ("FR", "R", (2100.0, 1050.0, 1900.0), (2500.0, 1050.0, 1400.0), 3, (0.0, 0.0, 1.0)),
+    ("FS", "S", (-2000.0, 900.0, 1900.0), (-1600.0, 900.0, 2600.0), 5, (0.0, 0.0, -1.0)),
+]
+ALIGN_CASES = [
+    ("A1", "AF", (50000.0, 20000.0, 700.0), 25.0, 1.2, 1.2, 1.0, (3e-7, -2e-7, 1.0)),
+    ("A2", "AF", (-40000.0, 30000.0, -300.0), -40.0, 0.9, 0.9, -1.5, (-2e-7, 1e-7, -1.0)),
+    ("A3", "AHOLD", (20000.0, -50000.0, 0.0), 10.0, 1.0, 1.0, 1.0, (2e-7, 3e-7, -1.0)),
+]
+
+
+def build_align():
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    af = doc.blocks.new("AF", base_point=ALIGN_BLOCK_BASE)
+    made = {}
+    for name, kind, ins, align, h, ext in ALIGN_LEAVES:
+        attribs = {"insert": ins, "align_point": align, "halign": h, "height": 100.0, "extrusion": ext}
+        if kind == "TEXT":
+            e = af.add_text(name, dxfattribs=attribs)
+        else:
+            attribs["flags"] = 2
+            e = af.add_attdef(name, ins, "X", dxfattribs=attribs)
+            e.dxf.align_point = Vec3(align)
+        e.dxf.insert = Vec3(ins)
+        assert e.get_placement()[0].name in ("ALIGNED", "FIT"), (name, e.get_placement())
+        made[name] = e
+    tag = doc.blocks.new("TAG", base_point=(0.0, 0.0, 0.0))
+    tag.add_line((0.0, 0.0), (500.0, 0.0))
+    hold = doc.blocks.new("AHOLD", base_point=(10.0, 20.0, 0.0))
+    ai = hold.add_blockref("TAG", ALIGN_AI[1], dxfattribs={"rotation": ALIGN_AI[2]})
+    for name, tagname, ins, align, h, ext in ALIGN_ATTRIBS:
+        a = ai.add_attrib(tagname, name, ins, dxfattribs={"height": 150.0, "halign": h, "extrusion": ext})
+        a.dxf.insert = Vec3(ins)
+        a.dxf.align_point = Vec3(align)
+        made[name] = a
+    msp = doc.modelspace()
+    top = {}
+    for name, block, ins, rot, sx, sy, sz, ext in ALIGN_CASES:
+        top[name] = msp.add_blockref(block, ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "zscale": sz, "extrusion": ext})
+    return made, top
+
+
+def align_main():
+    print("// P6-42 aligned/fit points: (path, handle, x, y), group 10 point; then z-of-31 and align-point distances")
+    made, top = build_align()
+    for name, block, *_ in ALIGN_CASES:
+        m = top[name].matrix44()
+        handles = [leaf[0] for leaf in ALIGN_LEAVES] if block == "AF" else [a[0] for a in ALIGN_ATTRIBS]
+        path_name = name if block == "AF" else name + ">AI"
+        for handle in handles:
+            e = made[handle]
+            p = follow_point(e, "insert")
+            g = m.transform(p)
+            c = e.copy()
+            c.transform(m)
+            assert (follow_point(c, "insert") - g).magnitude <= 1e-9, (name, handle)
+            if block == "AHOLD":
+                virtual = [v for v in top[name].virtual_entities() if v.dxftype() == "INSERT"]
+                va = [a for a in virtual[0].attribs if a.dxf.text == handle][0]
+                assert (follow_point(va, "insert") - g).magnitude <= 1e-9, (name, handle)
+            print('("' + path_name + '", "' + handle + '", ' + r(g.x) + ", " + r(g.y) + "),")
+            e31 = e.copy()
+            q = Vec3(e.dxf.insert)
+            e31.dxf.insert = Vec3(q.x, q.y, Vec3(e.dxf.align_point).z)
+            w = m.transform(follow_point(e31, "insert"))
+            p2 = m.transform(follow_point(e, "align_point"))
+            print("//   " + path_name + " " + handle + " with the z of group 31: off by " + r(max(abs(g.x - w.x), abs(g.y - w.y)))
+                  + "; align point p2 at " + r(p2.x) + ", " + r(p2.y))
+
+
 if __name__ == "__main__":
     main()
     bulge_main()
@@ -764,3 +859,4 @@ if __name__ == "__main__":
     z_main()
     leaf_main()
     follow_main()
+    align_main()

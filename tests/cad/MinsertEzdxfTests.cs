@@ -278,6 +278,7 @@ internal static class MinsertEzdxfTests
         RunZ(C);
         RunLeaf(C);
         RunFollow(C);
+        RunAligned(C);
         if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
@@ -1026,7 +1027,7 @@ internal static class MinsertEzdxfTests
         + G("0 ATTDEF|5 JL|8 0|10 300|20 300|30 1000|11 350|21 320|31 1700|40 100|1 X|3 JL?|2 JL|70 2|72 4")
         + G("0 ATTDEF|5 JM|8 0|10 -150|20 250|30 800|11 -90|21 250|31 800|40 100|1 X|3 JM?|2 JM|70 2|72 2|74 1|210 0|220 0|230 -1")
         + G("0 ATTDEF|5 JN|8 0|10 250|20 -150|30 500|11 300|21 -120|31 900|40 100|1 X|3 JN?|2 JN|70 2|74 2|210 1e-7|220 -1e-7|230 -1")
-        + G("0 ENDBLK|5 J1|8 0")
+        + G("0 ENDBLK|5 JE|8 0")
         + G("0 BLOCK|5 T0|8 0|2 TAG|70 0|10 0|20 0|30 0|0 LINE|5 T1|8 0|10 0|20 0|11 500|21 0|0 ENDBLK|5 T2|8 0")
         + G("0 BLOCK|5 H0|8 0|2 JHOLD|70 0|10 10|20 20|30 0")
         + G("0 INSERT|5 JI|8 0|2 TAG|66 1|10 2000|20 1000|30 1200|50 20")
@@ -1241,6 +1242,233 @@ internal static class MinsertEzdxfTests
         catch (Exception error)
         {
             c(false, "follow draft candidates unexpected exception", (error.InnerException ?? error).GetType().Name + ": " + (error.InnerException ?? error).Message);
+        }
+    }
+
+    // ---------- P6-42: near-Z text follow-ups: strict 30/31, aligned/fit text, Relabel's attribute arm, handles ----------
+    //
+    // AlignedDrawing() mirrors ALIGN_* in tests/cad/tools/minsert_ezdxf_centres.py (section P6-42 align_main).
+    // * Aligned / fit text (72 = 3 / 5): ezdxf's Text.get_placement() gives the group 10 point (insert) as p1 for ALIGNED
+    //   and FIT (group 11 is the second point p2); DxfReader keeps the group 10 point with the z of group 30 for TEXT and
+    //   for ATTRIB/ATTDEF (justified only for 72 = 1/2/4 or 74 != 0). Every leaf has 31 != 30, so taking the z of group
+    //   31 would be 1.2e-4..3.6e-4 off; the group 11 point (p2) is not modelled (documented limit, pinned below).
+    // * Strict 30/31: a justified ATTRIB/ATTDEF in its own near +-Z OCS places its group 11 point with the z of group 31,
+    //   so a non-finite 31 (and a non-finite 30, which the unjustified reading refuses through the same OCS) fails the
+    //   file with a typed bad-number like every other z group that moves XY in a near +-Z OCS (group 30 of a TEXT or an
+    //   unjustified ATTDEF, group 38). Under an exact +-Z OCS the z only feeds Elevation, so a non-finite 30/31 still reads
+    //   as 0 (the P6-38 tolerance, pinned both ways).
+    // * Relabel's DxfAttribute arm (a non-definition attribute placed by an identity transform) is not reachable from
+    //   DxfReader output (an ATTRIB without its INSERT is dropped as attrib-orphan, also inside a block; block entities
+    //   hold only ATTDEFs, which EmitBlock routes through EmitAttribute), but it is reachable through the public API: a
+    //   hand-built DxfBlock holding an attribute with IsDefinition false. Kept and pinned (the copy's Elevation is 0).
+    // * Handles: every group 5 value of FollowDrawing() and AlignedDrawing() is unique (case-insensitive).
+    private static string AlignedDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 A0|8 0|2 AF|70 0|10 40|20 -30|30 0")
+        + G("0 TEXT|5 FA|8 0|10 50|20 60|30 1300|11 450|21 60|31 1700|40 100|72 3|1 FA")
+        + G("0 TEXT|5 FF|8 0|10 120|20 -80|30 400|11 520|21 -80|31 900|40 100|72 5|1 FF|210 0|220 0|230 -1")
+        + G("0 TEXT|5 FN|8 0|10 -200|20 150|30 600|11 200|21 150|31 1100|40 100|72 3|1 FN|210 1e-7|220 -1e-7|230 1")
+        + G("0 ATTDEF|5 FB|8 0|10 300|20 300|30 1000|11 700|21 300|31 1700|40 100|1 X|3 FB?|2 FB|70 2|72 3|210 -1e-7|220 2e-7|230 -1")
+        + G("0 ATTDEF|5 FG|8 0|10 -150|20 250|30 800|11 250|21 250|31 1200|40 100|1 X|3 FG?|2 FG|70 2|72 5")
+        + G("0 ENDBLK|5 A9|8 0")
+        + G("0 BLOCK|5 T0|8 0|2 TAG|70 0|10 0|20 0|30 0|0 LINE|5 T1|8 0|10 0|20 0|11 500|21 0|0 ENDBLK|5 T2|8 0")
+        + G("0 BLOCK|5 H0|8 0|2 AHOLD|70 0|10 10|20 20|30 0")
+        + G("0 INSERT|5 AI|8 0|2 TAG|66 1|10 2000|20 1000|30 1200|50 20")
+        + G("0 ATTRIB|5 FR|8 0|10 2100|20 1050|30 1900|11 2500|21 1050|31 1400|40 150|1 FR|2 R|70 0|72 3")
+        + G("0 ATTRIB|5 FS|8 0|10 -2000|20 900|30 1900|11 -1600|21 900|31 2600|40 150|1 FS|2 S|70 0|72 5|210 0|220 0|230 -1|0 SEQEND|5 AQ|8 0")
+        + G("0 ENDBLK|5 H1|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 A1|8 ROOMS|2 AF|10 50000|20 20000|30 700|41 1.2|42 1.2|50 25|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 A2|8 ROOMS|2 AF|10 -40000|20 30000|30 -300|41 0.9|42 0.9|43 -1.5|50 -40|210 -2e-7|220 1e-7|230 -1")
+        + G("0 INSERT|5 A3|8 ROOMS|2 AHOLD|10 20000|20 -50000|30 0|50 10|210 2e-7|220 3e-7|230 -1")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 WCS points (generator section P6-42 align_main): the transformed group 10 point of each 72 = 3/5 leaf.
+    private static readonly (string Path, string Handle, double X, double Y)[] AlignedPoints =
+    {
+        ("A1", "FA", 49965.23352117541, 20102.95226014045),
+        ("A1", "FF", 49851.34609059236, 19864.478766523192),
+        ("A1", "FN", 49647.69829847912, 20074.048127792546),
+        ("A1", "FB", 49462.869291053445, 20186.469859675566),
+        ("A1", "FG", 49651.362538609756, 20208.162152767036),
+        ("A2", "FA", 39941.040253627114, 30056.264286405312),
+        ("A2", "FF", 40139.23578224482, 30058.089445854363),
+        ("A2", "FN", 40061.334240288415, 30262.94112740048),
+        ("A2", "FB", 40043.501392759565, 30424.208523909132),
+        ("A2", "FG", 39969.01142213214, 30302.959730922234),
+        ("A3>AI", "FR", -21879.39020079522, -48622.722753071364),
+        ("A3>AI", "FS", -21806.95741214403, -48787.80987378988),
+    };
+
+    // The group 5 values of a G()-built drawing, in file order.
+    private static List<string> HandlesOf(string text)
+    {
+        var lines = text.Split('\n');
+        var handles = new List<string>();
+        for (var k = 0; k + 1 < lines.Length; k += 2)
+            if (lines[k] == "5") handles.Add(lines[k + 1]);
+        return handles;
+    }
+
+    private static void RunAligned(Action<bool, string, string> c)
+    {
+        // Handles of the P6-40 and P6-42 drawings are unique.
+        foreach (var (name, text) in new[] { ("FollowDrawing", FollowDrawing()), ("AlignedDrawing", AlignedDrawing()) })
+        {
+            var handles = HandlesOf(text);
+            var duplicates = handles.GroupBy(h => h, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key + "x" + g.Count().ToString(CultureInfo.InvariantCulture)).ToList();
+            c(handles.Count > 10 && duplicates.Count == 0, "aligned: " + name + "() group 5 handles are unique (" + handles.Count.ToString(CultureInfo.InvariantCulture) + ")",
+                "duplicates " + string.Join(",", duplicates));
+        }
+
+        // Aligned / fit text: every ezdxf point within 1e-6, and what the reader keeps.
+        try
+        {
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(AlignedDrawing()), "aligned-ezdxf.dxf");
+            var x = drawing.Explode();
+            c(drawing.Warnings.Count == 0 && drawing.Unsupported.Count == 0 && x.Warnings.Count == 0,
+                "aligned: no reader or explode warning and nothing unsupported",
+                "reader " + string.Join(",", drawing.Warnings.Select(w => w.Code + "@" + w.Line.ToString(CultureInfo.InvariantCulture))) + " explode " + string.Join(",", x.Warnings.Select(w => w.Code)));
+            foreach (var (path, handle, ex, ey) in AlignedPoints)
+            {
+                var found = x.Entities.Where(e => e.Provenance.Handle == handle && string.Join(">", e.Provenance.InsertPath) == path).ToList();
+                var name = "aligned: " + path + " " + handle + " (" + (found.Count == 1 ? found[0].Provenance.EntityType : "?") + ")";
+                if (found.Count != 1)
+                {
+                    c(false, name + " group 10 point equals ezdxf 1.4.2 within 1e-6", "found " + found.Count.ToString(CultureInfo.InvariantCulture));
+                    continue;
+                }
+                var got = LeafPointsOf(found[0]);
+                var ok = got.TryGetValue("insert", out var point);
+                var error = ok ? Distance(point, ex, ey) : double.PositiveInfinity;
+                c(error <= Eps && ZeroZ(found[0]), name + " group 10 point equals ezdxf 1.4.2 within 1e-6 and the copy's z members are 0",
+                    (ok ? P(point) : "no insert") + " expected (" + F(ex) + "," + F(ey) + ") error " + F(error) + " " + ZMembers(found[0]));
+            }
+            var af = drawing.Blocks.Single(b => b.Name == "AF").Entities.ToDictionary(e => e.Provenance.Handle!, StringComparer.Ordinal);
+            var ai = drawing.Blocks.Single(b => b.Name == "AHOLD").Entities.OfType<DxfInsert>().Single().Attributes.ToDictionary(a => a.Provenance.Handle!, StringComparer.Ordinal);
+            // Near-Z leaves: the OCS point moves by z x 1e-7 or so; 1e-3 still tells group 10 from group 11 (400 away)
+            // and the z of group 30 from that of 31 (400..700 away).
+            var kept = new (string Name, DxfEntity Entity, double X, double Y, double Z, double Tolerance)[]
+            {
+                ("FA", af["FA"], 50, 60, 1300, 0), ("FF", af["FF"], -120, -80, -400, 0), ("FN", af["FN"], -200, 150, 600, 1e-3),
+                ("FB", af["FB"], -300, 300, -1000, 1e-3), ("FG", af["FG"], -150, 250, 800, 0),
+                ("FR", ai["FR"], 2100, 1050, 1900, 0), ("FS", ai["FS"], 2000, 900, -1900, 0),
+            };
+            foreach (var (name, entity, ex, ey, ez, tolerance) in kept)
+            {
+                var point = LeafPointsOf(entity)["insert"];
+                var z = Member(entity, "Elevation")!.Value;
+                c(Distance(point, ex, ey) <= Math.Max(tolerance, 1e-9) && Math.Abs(z - ez) <= Math.Max(tolerance, 1e-9),
+                    "aligned: reader keeps " + name + " (" + entity.Provenance.EntityType + " 72 = 3/5) at its group 10 point (" + F(ex) + "," + F(ey) + ") with the z of group 30 (" + F(ez) + "); group 11 is not modelled",
+                    P(point) + " z " + F(z));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "aligned unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // Strict 30/31 under a near +-Z OCS of the attribute's own; the exact +-Z tolerance pinned the other way.
+        try
+        {
+            const string NearPlus = "|210 1e-7|220 -1e-7|230 1";
+            const string NearMinus = "|210 2e-7|220 1e-7|230 -1";
+            const string MinusZ = "|210 0|220 0|230 -1";
+            string Definition(string z30, string z31, string justify, string ocs) =>
+                G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0")
+                + G("0 ATTDEF|5 B1|8 0|10 100|20 50|30 " + z30 + "|11 160|21 70|31 " + z31 + "|40 100|1 X|3 P?|2 P|70 2" + justify + ocs)
+                + G("0 ENDBLK|5 B2|8 0|0 ENDSEC|0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|10 0|20 0|0 ENDSEC|0 EOF");
+            string Attribute(string z30, string z31, string justify, string ocs) =>
+                G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0|0 LINE|5 B1|8 0|10 0|20 0|11 100|21 0|0 ENDBLK|5 B2|8 0|0 ENDSEC")
+                + G("0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|66 1|10 0|20 0")
+                + G("0 ATTRIB|5 S1|8 0|10 100|20 50|30 " + z30 + "|11 160|21 70|31 " + z31 + "|40 100|1 v|2 P|70 0" + justify + ocs + "|0 SEQEND|5 S2|8 0|0 ENDSEC|0 EOF");
+            // (label, text, the non-finite value's text or null when the file must parse, expected Elevation when it parses)
+            var cases = new (string Label, string Text, string? Bad, double Elevation)[]
+            {
+                ("ATTDEF 72 1 near +Z 31 NaN", Definition("500", "NaN", "|72 1", NearPlus), "NaN", 0),
+                ("ATTDEF 72 1 near +Z 31 inf", Definition("500", "inf", "|72 1", NearPlus), "inf", 0),
+                ("ATTDEF 72 1 near +Z 31 1e999", Definition("500", "1e999", "|72 1", NearPlus), "1e999", 0),
+                ("ATTDEF 72 1 near +Z 30 NaN", Definition("NaN", "700", "|72 1", NearPlus), "NaN", 0),
+                ("ATTDEF 74 2 near -Z 31 -Infinity", Definition("500", "-Infinity", "|74 2", NearMinus), "-Infinity", 0),
+                ("ATTDEF 74 2 near -Z 30 1e999", Definition("1e999", "700", "|74 2", NearMinus), "1e999", 0),
+                ("ATTRIB 72 4 near +Z 31 NaN", Attribute("500", "NaN", "|72 4", NearPlus), "NaN", 0),
+                ("ATTRIB 72 2 near -Z 30 inf", Attribute("inf", "700", "|72 2", NearMinus), "inf", 0),
+                // Control: the unjustified reading already refused a non-finite 30 through a near-Z OCS.
+                ("ATTDEF 72 0 near +Z 30 NaN (control)", Definition("NaN", "700", "", NearPlus), "NaN", 0),
+                // Tolerated: under an exact +-Z OCS a non-finite z reads as 0 (Elevation only, no XY effect).
+                ("ATTDEF 72 1 +Z 31 NaN (tolerated)", Definition("500", "NaN", "|72 1", ""), null, 0),
+                ("ATTDEF 72 1 exact -Z 31 inf (tolerated)", Definition("500", "inf", "|72 1", MinusZ), null, 0),
+                ("ATTRIB 74 1 +Z 31 1e999 (tolerated)", Attribute("500", "1e999", "|74 1", ""), null, 0),
+                ("ATTDEF 72 1 +Z 30 NaN (not read when justified)", Definition("NaN", "700", "|72 1", ""), null, 700),
+                ("ATTDEF 72 0 +Z 30 NaN (tolerated)", Definition("NaN", "700", "", ""), null, 0),
+                // Not read: an unjustified attribute's 31 in a near-Z OCS.
+                ("ATTRIB 72 0 near +Z 31 NaN (not read when unjustified)", Attribute("500", "NaN", "", NearPlus), null, 500),
+            };
+            foreach (var (label, text, bad, elevation) in cases)
+            {
+                string outcome;
+                DxfAttribute? read = null;
+                try
+                {
+                    var d = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "strict-z.dxf");
+                    read = d.Blocks.SelectMany(b => b.Entities).OfType<DxfAttribute>().Concat(d.Entities.OfType<DxfInsert>().SelectMany(i => i.Attributes)).SingleOrDefault();
+                    outcome = "parsed: warnings " + string.Join(",", d.Warnings.Select(w => w.Code)) + " elevation " + (read is null ? "none" : F(read.Elevation));
+                }
+                catch (DxfFormatException e)
+                {
+                    outcome = e.Code + "@" + e.Line.ToString(CultureInfo.InvariantCulture) + ":" + e.Message;
+                }
+                if (bad is not null)
+                {
+                    var lines = text.Split('\n');
+                    var line = Array.IndexOf(lines, bad) + 1;
+                    var code = lines[line - 2];
+                    c(outcome.StartsWith("bad-number@" + line.ToString(CultureInfo.InvariantCulture) + ":group " + code + " value is not a finite number", StringComparison.Ordinal),
+                        "aligned: strict z: " + label + " is refused bad-number at line " + line.ToString(CultureInfo.InvariantCulture) + " (group " + code + ")", outcome);
+                }
+                else
+                {
+                    c(read is not null && Math.Abs(read.Elevation - elevation) <= 1e-3 && outcome.StartsWith("parsed: warnings  ", StringComparison.Ordinal),
+                        "aligned: strict z: " + label + " parses with Elevation " + F(elevation), outcome);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "aligned strict z unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // Relabel's DxfAttribute arm: unreachable from DxfReader output, reachable through a hand-built DxfBlock.
+        try
+        {
+            var orphan = DxfReader.Parse(new UTF8Encoding(false).GetBytes(
+                G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0|0 ATTRIB|5 B1|8 0|10 5|20 6|30 500|40 50|1 v|2 T|70 0|0 ATTDEF|5 B3|8 0|10 7|20 8|30 400|40 50|1 K|3 K?|2 K|70 2|0 ENDBLK|5 B2|8 0|0 ENDSEC")
+                + G("0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|10 0|20 0|0 ENDSEC|0 EOF")), "orphan.dxf");
+            var held = orphan.Blocks.Single().Entities;
+            c(held.Count == 1 && held[0] is DxfAttribute { IsDefinition: true } && orphan.Warnings.Select(w => w.Code).SequenceEqual(new[] { "attrib-orphan" }),
+                "aligned: relabel: DxfReader keeps no ATTRIB in a block (an ATTRIB without its INSERT is dropped as attrib-orphan), so the arm is not reached from a read file",
+                "block " + string.Join(",", held.Select(e => e.Provenance.EntityType + (e is DxfAttribute a ? ":" + a.IsDefinition : ""))) + " warnings " + string.Join(",", orphan.Warnings.Select(w => w.Code)));
+
+            var provenance = new DxfProvenance("hand.dxf", "HA", "0", "ATTRIB", 3);
+            var attribute = new DxfAttribute(provenance, "T", new Point2(5, 6), 50, 0, "v", "v", false) { Elevation = 500 };
+            var block = new DxfBlock("HB", new Point2(0, 0), "HB0", 1, new DxfEntity[] { attribute });
+            foreach (var (insertion, label) in new[] { (new Point2(0, 0), "identity"), (new Point2(10, 0), "moved") })
+            {
+                var insert = new DxfInsert(new DxfProvenance("hand.dxf", "HQ", "ROOMS", "INSERT", 9), "HB", insertion, 1, 1, 0);
+                var drawing = new DxfDrawing("hand.dxf", 4, DxfUnits.Millimetres, 0.001, Array.Empty<DxfLayer>(), new[] { block }, new DxfEntity[] { insert, attribute }, Array.Empty<DxfProvenance>(), Array.Empty<DxfWarning>());
+                var x = drawing.Explode();
+                var placed = x.Entities.Where(e => e.Provenance.InsertPath.Count == 1).ToList();
+                var top = x.Entities.Where(e => e.Provenance.InsertPath.Count == 0).ToList();
+                c(x.Warnings.Count == 0 && placed.Count == 1 && placed[0] is DxfAttribute { IsDefinition: false, Elevation: 0.0 } pa && pa.Insertion == new Point2(5 + insertion.X, 6)
+                    && pa.Provenance.Layer == "ROOMS" && pa.Provenance.InsertPath[0] == "HQ"
+                    && top.Count == 1 && ReferenceEquals(top[0], attribute),
+                    "aligned: relabel: a hand-built block's non-definition attribute placed by an " + label + " insert is a placed copy with Elevation 0 (Relabel's DxfAttribute arm is reachable through the public API); the model-space one is the object itself",
+                    string.Join(" ", x.Entities.Select(e => e.Provenance.Handle + "[" + string.Join(">", e.Provenance.InsertPath) + "]:" + ZMembers(e) + " " + string.Join(";", LeafPointsOf(e).Values.Select(P)))));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "aligned relabel unexpected exception", error.GetType().Name + ": " + error.Message);
         }
     }
 }
