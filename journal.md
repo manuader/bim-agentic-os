@@ -2103,3 +2103,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay272
 - 2026-11-24T02:53:18Z lock taken (session_014pxpsRuVP1s9TWyDkV24H3 relay272; was FREE, relay271 released 2026-11-24T02:22:01Z)
+- 2026-11-24T02:53:37Z picked P1-42 (phase 1), P2-41 (phase 2), P5-36 (phase 5) — oldest-touched (relay263/268); disjoint files (RevitCommandDeadlineTests.cs section 2i + tests/mcp/Program.cs deadline pin + ENVIRONMENT.md; tests/mirror-journal macOS block; SkillListTests.cs + TwiceReadToolTests.cs P5-34 sections). Workers spawned; heartbeat at task borders and by workers.
