@@ -353,12 +353,44 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
     // Code only: line comments dropped, so prose cannot satisfy or trip the checks.
     var p123Code=string.Join("\n",p123Body.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
     // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
+    // Comments dropped, then each `new RevitDeadlineTransport(` argument list split at depth 0 and mapped onto the
+    // constructor's own parameters (reflection): positional by position (also after in-position named ones, as C#
+    // allows), named by name, whitespace removed; an empty, unknown, repeated or CS8323 argument is refused by name.
+    var p142Parameters=typeof(Bim.Cli.RevitDeadlineTransport).GetConstructors().Single().GetParameters().Select(parameter=>parameter.Name!).ToArray();
     string P142Problems(string code) {
-        var built=code.IndexOf("new RevitDeadlineTransport(",StringComparison.Ordinal);
-        var args=built<0 ? "" : code[built..Math.Max(built,code.IndexOf(';',built))];
-        return args.Length>0 && args.Contains("RevitDeadlineTransport.McpListing",StringComparison.Ordinal) && args.Contains("cutReads: realPipe",StringComparison.Ordinal)
-            && args.Contains("RevitDeadlineTransport.ElapsedOn(QueryAllClock)",StringComparison.Ordinal) && args.Contains("QueryAllDeadline",StringComparison.Ordinal) ? "" : "not matched: "+args;
+        code=System.Text.RegularExpressions.Regex.Replace(code,@"/\*.*?\*/"," ",System.Text.RegularExpressions.RegexOptions.Singleline);
+        code=string.Join("\n",code.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
+        var built=System.Text.RegularExpressions.Regex.Matches(code,@"\bnew\s+(?:Bim\s*\.\s*Cli\s*\.\s*)?RevitDeadlineTransport\s*\(");
+        if(built.Count!=1) return built.Count+" RevitDeadlineTransport constructions, not one";
+        var p142Args=new List<string>();
+        var from=built[0].Index+built[0].Length;
+        var closed=false;
+        for(int at=from,depth=0;at<code.Length && !closed;at++) {
+            if(code[at] is '(' or '[' or '{') depth++;
+            else if(code[at] is ')' or ']' or '}') { if(depth--==0) { p142Args.Add(code[from..at].Trim()); closed=true; } }
+            else if(code[at]==',' && depth==0) { p142Args.Add(code[from..at].Trim()); from=at+1; }
+        }
+        if(!closed) return "the argument list is not closed";
+        var map=new Dictionary<string,string>(StringComparer.Ordinal);
+        string? outOfPosition=null;
+        for(var k=0;k<p142Args.Count && !(p142Args.Count==1 && p142Args[0].Length==0);k++) {
+            if(p142Args[k].Length==0) return "argument "+(k+1)+" is empty";
+            var name=System.Text.RegularExpressions.Regex.Match(p142Args[k],@"^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)");
+            string key;
+            if(name.Success) { key=name.Groups[1].Value; if(Array.IndexOf(p142Parameters,key)!=k) outOfPosition??=key; }
+            else if(outOfPosition is not null) return "positional argument "+(k+1)+" follows the out-of-position named argument '"+outOfPosition+"' (C# CS8323)";
+            else if(k>=p142Parameters.Length) return "positional argument "+(k+1)+" is past the "+p142Parameters.Length+" parameters";
+            else key=p142Parameters[k];
+            if(!p142Parameters.Contains(key)) return "no parameter named '"+key+"'";
+            if(!map.TryAdd(key,System.Text.RegularExpressions.Regex.Replace(name.Success ? p142Args[k][name.Length..] : p142Args[k],@"\s+",""))) return "parameter '"+key+"' given twice";
+        }
+        var wrong=new List<string>();
+        foreach(var (parameter,expected) in new[]{("deadline","QueryAllDeadline"),("elapsed","RevitDeadlineTransport.ElapsedOn(QueryAllClock)"),("listing","RevitDeadlineTransport.McpListing"),("cutReads","realPipe")})
+            if(!map.TryGetValue(parameter,out var actual) || actual!=expected) wrong.Add(parameter+" "+(actual ?? "absent")+", not "+expected);
+        return string.Join("; ",wrong);
     }
+    Check(p142Parameters.Length==10 && p142Parameters[4]=="deadline" && p142Parameters[5]=="elapsed" && p142Parameters[6]=="listing" && p142Parameters[7]=="cutReads",
+        "P1-42 RevitDeadlineTransport has one public constructor whose deadline, elapsed, listing and cutReads parameters the MCP deadline pin maps | "+string.Join(", ",p142Parameters));
     const string P142Call="new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, QueryAllDeadline,\n    RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe)";
     foreach(var (p142Label,p142Code) in new[]{
         ("today's call",P142Call),
@@ -375,7 +407,7 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
         ("the call only in a comment","Other();\n// "+P142Call.ReplaceLineEndings(" ")),
         ("two constructions",P142Call+"; var other = "+P142Call)})
         Check(P142Problems("var transport = "+p142Code+";\n")!="","P1-42 MCP deadline pin self-test: "+p142Label+" is flagged");
-    var p123Args=P142Problems(p123Code);
+    var p123Args=P142Problems(p123Body);
     Check(p123Args=="",
         "McpServer.RevitCallAll pages through new RevitDeadlineTransport(… QueryAllDeadline, ElapsedOn(QueryAllClock), McpListing, cutReads: realPipe …) | "+p123Args);
     var p123Own=new[]{"QueryAllClock()","TimeSpan"," - "," < "," <= ","Exceeded","PipeReadTimeout","PipeTransportWithReadTimeout","TotalMilliseconds","took longer than","RevitCommandService.Run("}
