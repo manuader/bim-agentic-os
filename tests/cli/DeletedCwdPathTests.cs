@@ -39,7 +39,7 @@ internal static class DeletedCwdPathTests
         try
         {
             Cases(scratch, cliDll, Check, Skip); Remainder(scratch, cliDll, Check, Skip); LinuxUnsearchable(scratch, cliDll, Check, Skip); UnsearchableRemainder(root, scratch, cliDll, Check, Skip);
-            LateWrites(scratch, cliDll, Check, Skip); SkillsLockUnsearchable(scratch, cliDll, Check, Skip);
+            LateWrites(scratch, cliDll, Check, Skip); SkillsLockUnsearchable(scratch, cliDll, Check, Skip); P10_41(root, scratch, cliDll, Check, Skip);
         }
         finally
         {
@@ -839,5 +839,308 @@ internal static class DeletedCwdPathTests
         }
         Check(Environment.ExitCode == exitBefore, Label("both", "Environment.ExitCode is restored (finally)"),
             Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
+    }
+
+    // ---- P10-41: the remaining MCP PathProblem copies and the lock-path verbs under an unsearchable working directory ----
+    // 1. Static pin over all eight MCP PathProblem copies (every host): the one Path.GetFullPath try in each copy is followed
+    //    by a catch filter that takes ArgumentException, NotSupportedException, PathTooLongException, FileNotFoundException and
+    //    UnauthorizedAccessException (the P10-39 SkillLockTool filter); a planted mutant without UnauthorizedAccessException
+    //    must be refused by the same reader.
+    // 2. macOS, measured through a real McpServer tools/call in process (tests/mcp does not run on macOS; this exe compiles the
+    //    same interfaces/mcp sources): the 17 P10-35 cases (one relative path parameter, every other path absolute) under a
+    //    mode-000 working directory and under a mode-000 parent; GetFullPath throws UnauthorizedAccessException there, and the
+    //    response is isError with exactly {"status":"failed","code":"<tool>_path_invalid","detail":"<parameter>"}. Linux is
+    //    covered by tests/mcp (P10-35 Unsearchable), Windows has no Unix permission bits: counted SKIP.
+    // 3. macOS and Linux: jurisdiction-resolve --lock and skills-lock pin/update/unpin with a relative lock under a mode-000
+    //    working directory or parent, through the real CLI entry point; the searchable reference succeeds, the locked line is
+    //    pinned (macOS skills_lock_path_invalid "lock"; Linux as measured), exit 1, empty stderr, the lock bytes unchanged and
+    //    nothing written. Every case runs or is a counted SKIP; on a non-root Linux or macOS runner every case runs.
+    static void P10_41(string root, string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        PathProblemFilters41(root, Check);
+        McpUnsearchable41(scratch, Check, skip);
+        LockVerbsUnsearchable41(root, scratch, cliDll, Check, skip);
+    }
+
+    static readonly string[] Tools41 = { "AuditVerifyTool", "DiffIntentTool", "DocRealizedTool", "DocUpdateTool", "GeneratePrototypesTool", "GenerateTypologyTool", "PlanLayoutsTool", "SkillLockTool" };
+    static readonly string[] Filter41 = { "ArgumentException", "NotSupportedException", "PathTooLongException", "FileNotFoundException", "UnauthorizedAccessException" };
+
+    // Null when the source's PathProblem GetFullPath catch takes every Filter41 type, else what is wrong.
+    static string? FilterProblem41(string source)
+    {
+        const string Try = "try { Path.GetFullPath(path); }";
+        var at = source.IndexOf(Try, StringComparison.Ordinal);
+        if (at < 0 || source.IndexOf(Try, at + Try.Length, StringComparison.Ordinal) >= 0) return "not exactly one '" + Try + "'";
+        var method = source.LastIndexOf(" PathProblem(", at, StringComparison.Ordinal);
+        if (method < 0 || source[method..at].Contains("\n    }", StringComparison.Ordinal)) return "the GetFullPath try is not inside PathProblem";
+        const string Catch = "catch (Exception error) when (error is ";
+        var catchAt = source.IndexOf(Catch, at, StringComparison.Ordinal);
+        if (catchAt < 0) return "no catch filter follows the GetFullPath try";
+        var between = source[(at + Try.Length)..catchAt].Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith("//", StringComparison.Ordinal)).ToArray();
+        if (between.Length > 0) return "code between the GetFullPath try and its catch: " + string.Join(" ", between);
+        var close = source.IndexOf(") {", catchAt, StringComparison.Ordinal);
+        var lineEnd = source.IndexOf('\n', catchAt);
+        if (close < 0 || (lineEnd >= 0 && close > lineEnd)) return "the catch filter is not on one line";
+        var types = source[(catchAt + Catch.Length)..close].Split(" or ", StringSplitOptions.TrimEntries);
+        var missing = Filter41.Where(type => !types.Contains(type, StringComparer.Ordinal)).ToArray();
+        return missing.Length == 0 ? null : "the filter (" + string.Join(" or ", types) + ") lacks " + string.Join(", ", missing);
+    }
+
+    static void PathProblemFilters41(string root, Action<bool, string, string> Check)
+    {
+        string? skillLock = null;
+        foreach (var tool in Tools41)
+        {
+            var path = Path.Combine(root, "interfaces", "mcp", tool + ".cs");
+            string? source = null;
+            try { source = File.ReadAllText(path); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, "P10-41 static pin: " + tool + ".cs is readable", error.Message); continue; }
+            if (tool == "SkillLockTool") skillLock = source;
+            var problem = FilterProblem41(source ?? "");
+            Check(problem is null, "P10-41 static pin: " + tool + ".PathProblem's GetFullPath catch takes UnauthorizedAccessException (with ArgumentException, NotSupportedException, PathTooLongException, FileNotFoundException)", problem ?? "");
+        }
+        Check(Tools41.Length == 8 && Tools41.Distinct().Count() == 8, "P10-41 static pin: fixture: eight PathProblem copies", string.Join(",", Tools41));
+        // The reader refuses a planted mutant (the SkillLockTool filter without UnauthorizedAccessException) and a missing try.
+        if (skillLock is not null)
+        {
+            var mutant = skillLock.Replace(" or UnauthorizedAccessException)", ")", StringComparison.Ordinal);
+            Check(mutant != skillLock && FilterProblem41(mutant) is { } why && why.Contains("UnauthorizedAccessException", StringComparison.Ordinal),
+                "P10-41 static pin: the reader refuses a filter without UnauthorizedAccessException (planted mutant)", FilterProblem41(mutant) ?? "accepted");
+            Check(FilterProblem41(skillLock.Replace("try { Path.GetFullPath(path); }", "Path.GetFullPath(path);", StringComparison.Ordinal)) is not null,
+                "P10-41 static pin: the reader refuses a PathProblem without the GetFullPath try (planted mutant)", "");
+        }
+    }
+
+    static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        const string RelativeName = "p10-41.json";
+        var absent = Path.Combine(scratch, "p10-41-absent.json");
+        var cases = new List<(string Tool, string Parameter, string Expected, System.Text.Json.Nodes.JsonObject Arguments)>();
+        void Add(string tool, string code, (string Parameter, string Detail)[] paths, System.Text.Json.Nodes.JsonObject? extra = null)
+        {
+            foreach (var (parameter, detail) in paths)
+            {
+                var arguments = new System.Text.Json.Nodes.JsonObject();
+                foreach (var (name, _) in paths) arguments[name] = name == parameter ? RelativeName : absent;
+                if (extra is not null) foreach (var (key, value) in extra) arguments[key] = value?.DeepClone();
+                cases.Add((tool, parameter, JsonSerializer.Serialize(new { status = "failed", code, detail }), arguments));
+            }
+        }
+        Add("audit_verify", "audit_verify_path_invalid", new[] { ("log_path", "log"), ("anchor_path", "anchor") });
+        Add("diff_intent", "diff_intent_path_invalid", new[] { ("project_path", "project"), ("intent_path", "intent") });
+        Add("doc_realized", "doc_realized_path_invalid", new[] { ("record", "record"), ("fixture", "fixture"), ("assignments", "assignments") },
+            new System.Text.Json.Nodes.JsonObject { ["document"] = "00000000-0000-0000-0000-000000000000-00000001" });
+        Add("doc_update", "doc_update_path_invalid", new[] { ("before", "before"), ("after", "after"), ("realized", "realized"), ("bindings", "bindings"), ("dependents", "dependents") });
+        Add("generate_prototypes", "generate_prototypes_path_invalid", new[] { ("request", "request") });
+        Add("generate_typology", "generate_typology_path_invalid", new[] { ("request_path", "request") });
+        Add("plan_layouts", "plan_layouts_path_invalid", new[] { ("brief", "brief") });
+        Add("skills_lock_verify", "skills_lock_path_invalid", new[] { ("skills_path", "skills"), ("lock_path", "lock") });
+        Check(cases.Count == 17 && cases.Select(c => c.Tool).Distinct().Count() == 8, "P10-41 MCP unsearchable (macOS): fixture: 17 cases over eight tools", cases.Count.ToString(CultureInfo.InvariantCulture));
+        string Label(string mode, string what) => "P10-41 MCP unsearchable " + mode + " (macOS): " + what;
+        var modes = new[] { "cwd", "parent" };
+        var why = !OperatingSystem.IsMacOS() ? (OperatingSystem.IsLinux() ? "macOS only here: Linux runs these cases in tests/mcp (P10-35 Unsearchable)" : "macOS only: Windows has no Unix permission bits")
+            : PrivilegeSkip(scratch, "p10-41-mcp-probe");
+        var ran = 0;
+        if (why is not null)
+        {
+            foreach (var mode in modes) foreach (var c in cases) skip(Prefix + Label(mode, c.Tool + " " + c.Parameter), why);
+        }
+        else
+        {
+            var server = new Bim.Mcp.McpServer();
+            var original = Environment.CurrentDirectory;
+            const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            foreach (var mode in modes)
+            {
+                var parent = Path.Combine(scratch, "p10-41-mcp-" + mode);
+                var cwd = Path.Combine(parent, "cwd");
+                Directory.CreateDirectory(cwd);
+                var locked = mode == "cwd" ? cwd : parent;
+                var measured = new List<(string Label, bool Ok, string Detail)>();
+                foreach (var (tool, parameter, expected, arguments) in cases)
+                {
+                    var request = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 41, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = tool, ["arguments"] = arguments.DeepClone() } }.ToJsonString();
+                    var previousError = Console.Error;
+                    var capturedError = new StringWriter();
+                    var probe = "";
+                    var thrown = "";
+                    string? response = null;
+                    try
+                    {
+                        Directory.SetCurrentDirectory(cwd);
+                        Chmod(locked, UnixFileMode.None);
+                        try { Path.GetFullPath(RelativeName); probe = "GetFullPath accepted"; }
+                        catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                        Console.SetError(capturedError);
+                        response = server.Handle(request);
+                    }
+                    catch (Exception failure) { thrown = "threw " + failure.GetType().FullName + ": " + failure.Message; }
+                    finally
+                    {
+                        Console.SetError(previousError);
+                        Chmod(locked, Owner);
+                        Directory.SetCurrentDirectory(original);
+                    }
+                    string text = "", isError = "";
+                    try
+                    {
+                        var node = response is null ? null : System.Text.Json.Nodes.JsonNode.Parse(response);
+                        text = node?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
+                        isError = node?["result"]?["isError"]?.ToJsonString() ?? "";
+                        if (text.Length == 0) text = response ?? "";
+                    }
+                    catch (Exception failure) { thrown += " response " + failure.Message; }
+                    text = text.Replace(scratch, "<scratch>", StringComparison.Ordinal);
+                    var stderr = capturedError.ToString().Trim();
+                    var ok = probe == "GetFullPath threw System.UnauthorizedAccessException" && isError == "true" && text == expected && stderr.Length == 0 && thrown.Length == 0;
+                    ran++;
+                    measured.Add((tool + " " + parameter, ok, probe + "; isError " + isError + " " + text + (stderr.Length > 0 ? " stderr " + stderr : "") + (thrown.Length > 0 ? " " + thrown : "")));
+                }
+                // Every case runs before the first check, so one failing check names every observed outcome.
+                var failing = string.Join(" || ", measured.Where(m => !m.Ok).Select(m => m.Label + " => " + m.Detail));
+                foreach (var (label, ok, detail) in measured)
+                    Check(ok, Label(mode, label + ": GetFullPath throws UnauthorizedAccessException, isError, exactly the tool's <tool>_path_invalid line, nothing on stderr"),
+                        ok ? "" : detail + " | failing cases: " + failing);
+                Check(Environment.CurrentDirectory == original, Label(mode, "the working directory is restored (finally)"), Environment.CurrentDirectory + " != " + original);
+                Directory.Delete(parent, true);
+            }
+        }
+        if (why is null) Check(ran == 34, "P10-41 MCP unsearchable (macOS): every case of both modes ran on a non-root macOS runner", "ran " + ran.ToString(CultureInfo.InvariantCulture) + " of 34");
+        if (OperatingSystem.IsMacOS() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+            Check(why is null, "P10-41 MCP unsearchable (macOS): the GitHub Actions macOS runner is non-root, so the cases run", why ?? "");
+    }
+
+    // Linux, as measured (see the contract section P10-41): GetFullPath accepts the relative lock; the read of a lock under
+    // the mode-000 directory reports it missing, and pin's exclusive write is refused write_failed.
+    const string LockMissing41 = """{"status":"failed","code":"lock_missing","subject":"skills.lock.json","detail":"lock file not found"}""";
+
+    static void LockVerbsUnsearchable41(string root, string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        const string Gamma = "bim.test.gamma";
+        const string Delta = "bim.test.delta";
+        const string Caba = "ar.caba.codigo-edificacion";
+        const string Stub = "xx.example.codigo-ejemplo";
+        var verbs = new[] { "jurisdiction-resolve", "skills-lock pin", "skills-lock update", "skills-lock unpin" };
+        var modes = new[] { "cwd", "parent" };
+        string Label(string mode, string what) => "P10-41 lock verbs, unsearchable " + mode + ": " + what;
+        var why = OperatingSystem.IsWindows() ? "Unix permission bits (chmod 000) only" : PrivilegeSkip(scratch, "p10-41-lock-probe");
+        var ran = 0;
+        if (why is not null)
+        {
+            foreach (var mode in modes) foreach (var verb in verbs) skip(Prefix + Label(mode, verb + " relative lock"), why);
+        }
+        else
+        {
+            Assembly? cli = null;
+            try { cli = Assembly.LoadFrom(cliDll); }
+            catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+            var entry = cli?.EntryPoint;
+            if (entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
+            var original = Environment.CurrentDirectory;
+            var exitBefore = Environment.ExitCode;
+            const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+            var repositorySkills = Path.Combine(root, "skills");
+            var outside = Path.Combine(scratch, "p10-41-lock-outside");
+            var skills = Path.Combine(outside, "skills");
+            foreach (var pack in new[] { Gamma, Delta })
+            {
+                Directory.CreateDirectory(Path.Combine(skills, pack));
+                File.WriteAllBytes(Path.Combine(skills, pack, "skill.json"), new UTF8Encoding(false).GetBytes(
+                    "{\"manifest_version\":1,\"id\":\"" + pack + "\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"P10-41 lock pack\",\"priority\":10}\n"));
+            }
+            var skillsDigest = string.Join("|", Directory.GetFiles(skills, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal).Select(f => f + ":" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(f)))));
+            var macOS = OperatingSystem.IsMacOS();
+            // The scratch directory and any 32-hex-digit name (a temporary lock's Guid) are replaced after serialization, in the
+            // measured line and the expected line alike.
+            string Normalize(string line) => System.Text.RegularExpressions.Regex.Replace(line.Replace(scratch, "<scratch>", StringComparison.Ordinal), "[0-9a-f]{32}", "<guid>");
+            var pathInvalid = JsonSerializer.Serialize(new { status = "failed", code = "skills_lock_path_invalid", detail = "lock" });
+            foreach (var mode in modes)
+            {
+                foreach (var verb in verbs)
+                {
+                    var label = Label(mode, verb + " relative lock");
+                    var parent = Path.Combine(scratch, "p10-41-lock-" + mode + "-" + verb.Replace(' ', '-'));
+                    var cwd = Path.Combine(parent, "cwd");
+                    Directory.CreateDirectory(cwd);
+                    var lockFile = Path.Combine(cwd, LockName39);
+                    byte[]? lockBytes = verb switch
+                    {
+                        "jurisdiction-resolve" => Bim.Core.SkillLockFile.Serialize(Bim.Core.SkillLocking.Pin(repositorySkills, new[] { Caba, Stub })),
+                        "skills-lock pin" => null,
+                        _ => Bim.Core.SkillLockFile.Serialize(Bim.Core.SkillLocking.Pin(skills, new[] { Gamma, Delta })),
+                    };
+                    void Reset()
+                    {
+                        if (File.Exists(lockFile)) File.Delete(lockFile);
+                        if (lockBytes is not null) File.WriteAllBytes(lockFile, lockBytes);
+                    }
+                    string[] args = verb switch
+                    {
+                        "jurisdiction-resolve" => new[] { "jurisdiction-resolve", "--code", "ar.caba", "--lock", LockName39 },
+                        "skills-lock pin" => new[] { "skills-lock", "pin", skills, LockName39, Gamma },
+                        "skills-lock update" => new[] { "skills-lock", "update", skills, LockName39 },
+                        _ => new[] { "skills-lock", "unpin", skills, LockName39, Gamma },
+                    };
+                    var locked = mode == "cwd" ? cwd : parent;
+                    (int Exit, string Line, string Error, string Probe) Call(bool lockIt)
+                    {
+                        var probe = "";
+                        (int Exit, string Line, string Error) run;
+                        try
+                        {
+                            run = Invoke(entry, args, () =>
+                            {
+                                Directory.SetCurrentDirectory(cwd);
+                                if (lockIt) Chmod(locked, UnixFileMode.None);
+                                try { Path.GetFullPath(LockName39); probe = "GetFullPath accepted"; }
+                                catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                            });
+                        }
+                        finally
+                        {
+                            Chmod(locked, Owner);
+                            Directory.SetCurrentDirectory(original);
+                        }
+                        return (run.Exit, Normalize(run.Line), run.Error, probe);
+                    }
+                    Reset();
+                    var reference = Call(false);
+                    var referenceWrote = File.Exists(lockFile);
+                    Check(reference.Exit == 0 && reference.Error.Length == 0 && reference.Line.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && referenceWrote,
+                        label + ": precondition: with the working directory searchable the relative lock succeeds", "exit " + reference.Exit.ToString(CultureInfo.InvariantCulture) + " " + reference.Line + " " + reference.Error);
+                    Reset();
+                    var entriesBefore = Directory.GetFileSystemEntries(cwd).Length;
+                    var result = Call(true);
+                    ran++;
+                    var measured = result.Probe + "; exit " + result.Exit.ToString(CultureInfo.InvariantCulture) + " " + result.Line + (result.Error.Length > 0 ? " stderr " + result.Error : "");
+                    var expectedProbe = macOS ? "GetFullPath threw System.UnauthorizedAccessException" : "GetFullPath accepted";
+                    string expected;
+                    if (macOS) expected = pathInvalid;
+                    else if (verb != "skills-lock pin") expected = LockMissing41;
+                    else
+                    {
+                        // Linux pin: the exclusive write of the temporary lock (cwd mode) or the directory creation (parent mode) is denied.
+                        var denied = mode == "cwd" ? Path.Combine(cwd, LockName39 + "." + new string('0', 32) + ".tmp") : cwd;
+                        expected = Normalize(JsonSerializer.Serialize(new { status = "failed", code = "write_failed", subject = LockName39, detail = "Access to the path '" + denied + "' is denied." }));
+                    }
+                    Check(result.Probe == expectedProbe, label + ": precondition: " + expectedProbe + " (" + (macOS ? "macOS" : "Linux") + ")", measured);
+                    Check(result.Exit == 1 && result.Line == expected && result.Error.Length == 0, label + ": exactly " + expected + " (exit 1, empty stderr)", measured);
+                    Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+                    var after = File.Exists(lockFile) ? File.ReadAllBytes(lockFile) : null;
+                    var unchanged = lockBytes is null ? after is null : after is not null && after.AsSpan().SequenceEqual(lockBytes);
+                    Check(unchanged && Directory.GetFileSystemEntries(cwd).Length == entriesBefore && Directory.GetFileSystemEntries(parent).Length == 1,
+                        label + ": the lock is unchanged and nothing is written", string.Join(",", Directory.GetFileSystemEntries(cwd).Concat(Directory.GetFileSystemEntries(parent))).Replace(scratch, "<scratch>", StringComparison.Ordinal));
+                    Directory.Delete(parent, true);
+                }
+            }
+            var skillsAfter = string.Join("|", Directory.GetFiles(skills, "*", SearchOption.AllDirectories).OrderBy(f => f, StringComparer.Ordinal).Select(f => f + ":" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(f)))));
+            Check(skillsAfter == skillsDigest, Label("both", "the skills directory is unchanged"), "");
+            Directory.Delete(outside, true);
+            Check(Environment.ExitCode == exitBefore, Label("both", "Environment.ExitCode is restored (finally)"),
+                Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
+            Check(ran == 8, Label("both", "every case of both modes ran on a non-root runner"), "ran " + ran.ToString(CultureInfo.InvariantCulture) + " of 8");
+        }
+        if (!OperatingSystem.IsWindows() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+            Check(why is null, "P10-41 lock verbs: the GitHub Actions Linux/macOS runner is non-root, so the cases run", why ?? "");
     }
 }
