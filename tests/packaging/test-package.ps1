@@ -38,6 +38,8 @@
 # nothing without a warning and one line per leftover, also after an early throw; P7-33 case folders have one cleanup path.
 # P7-41: the outer finally's Write-PackageCleanupWarnings call, this header and the caseLabel/one-finally checks are pinned on the
 # PowerShell AST (planted reformat and mutants); Remove-PackageCaseDirectory -Into collects a leftover into a passed list.
+# P7-43: the cleanup pin is an object; the report call must sit in the finally of the top-level try that removes $work and is
+# removed from a copy by its AST extent; -Into is checked for any user (stand-in remover) and the P7-43 block reports its own leftover.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1090,7 +1092,9 @@ try {
     $packageCleanupWarnings = [Collections.Generic.List[string]]::new()
     # P7-41: -Into collects the warning into a passed list instead (a section or self-test that reports on its own); the
     # default stays the run-wide list because every section's leftovers belong to the one report in the outer finally,
-    # which must still see them when a section throws before it could hand its own list over.
+    # which must still see them when a section throws before it could hand its own list over. P7-43: the P7-43 self-test
+    # block uses -Into and reports its own probe leftover from its own finally (so a throw there is still reported); the
+    # P7-12/P7-24/P7-31/P7-33 sections keep the default on purpose (one report for the run, nothing to hand over).
     function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent, [Collections.Generic.List[string]]$Into = $packageCleanupWarnings) {
         if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
         try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
@@ -1106,27 +1110,35 @@ try {
         }
     }
     # P7-41: the cleanup report and P7-33/P7-39 source pins read the PowerShell AST of script text (reformatting, comments
-    # and string literals do not matter): header = which of P7-39/P7-41 open a line of the leading comment block; outer =
-    # Write-PackageCleanupWarnings calls inside the finally of a top-level try; loop/asserts/unlabelled = foreach ($tool
-    # in ... $p737Ranked ...) loops, the Assert commands in them and those whose message does not use $caseLabel or uses
-    # $tool.Tool; casefinally = finally blocks calling Remove-PackageCaseDirectory 'P7-33' $p733Case; wrapper = definitions
-    # or calls of the old Remove-P733Directory.
+    # and string literals do not matter): header = which of P7-39/P7-41/P7-43 open a line of the leading comment block;
+    # outer = Write-PackageCleanupWarnings calls inside the finally of a top-level try; loop/asserts/unlabelled = foreach
+    # ($tool in ... $p737Ranked ...) loops, the Assert commands in them and those whose message does not use $caseLabel or
+    # uses $tool.Tool; casefinally = finally blocks calling Remove-PackageCaseDirectory 'P7-33' $p733Case; wrapper =
+    # definitions or calls of the old Remove-P733Directory. P7-43: returns an object (counts as properties, Summary = the
+    # P7-41 text, Error = the first parse error or $null); work = the outer calls in a finally that also runs Remove-Item
+    # on $work, and WorkReports = those CommandAsts (their Extent locates the call in the text).
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
-        if ($parseErrors.Count) { return "unparsable: $($parseErrors[0].Message)" }
+        if ($parseErrors.Count) {
+            $message = $parseErrors[0].Message
+            return [pscustomobject]@{ Error = $message; Header = $null; Outer = 0; Work = 0; WorkReports = @(); Loop = 0; Asserts = 0; Unlabelled = 0; CaseFinally = 0; Wrapper = 0; Summary = "unparsable: $message" }
+        }
         $header = [Collections.Generic.List[string]]::new()
         foreach ($token in $tokens) {
             if ($token.Kind -eq [Management.Automation.Language.TokenKind]::NewLine) { continue }
             if ($token.Kind -ne [Management.Automation.Language.TokenKind]::Comment) { break }
-            foreach ($id in @('P7-39', 'P7-41')) { if ($token.Text.StartsWith("# $($id): ") -and !$header.Contains($id)) { $header.Add($id) } }
+            foreach ($id in @('P7-39', 'P7-41', 'P7-43')) { if ($token.Text.StartsWith("# $($id): ") -and !$header.Contains($id)) { $header.Add($id) } }
         }
         $isCommand = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.CommandAst] -and $Node.GetCommandName() -eq $Name }
         $isVariable = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.VariableExpressionAst] -and $Node.VariablePath.UserPath -eq $Name }
-        $outer = 0
+        $outer = 0; $workReports = [Collections.Generic.List[object]]::new()
         $top = if ($ast.EndBlock) { @($ast.EndBlock.Statements) } else { @() }
         foreach ($try in @($top | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })) {
-            $outer += @($try.Finally.FindAll({ param($n) & $isCommand $n 'Write-PackageCleanupWarnings' }, $true)).Count
+            $reports = @($try.Finally.FindAll({ param($n) & $isCommand $n 'Write-PackageCleanupWarnings' }, $true))
+            $outer += $reports.Count
+            $cleansWork = @($try.Finally.FindAll({ param($n) (& $isCommand $n 'Remove-Item') -and @($n.CommandElements | Where-Object { & $isVariable $_ 'work' }).Count -gt 0 }, $true)).Count -gt 0
+            if ($cleansWork) { foreach ($report in $reports) { $workReports.Add($report) } }
         }
         $loops = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'tool' -and @($n.Condition.FindAll({ param($c) & $isVariable $c 'p737Ranked' }, $true)).Count -gt 0 }, $true))
         $asserts = 0; $unlabelled = 0
@@ -1145,7 +1157,11 @@ try {
         }
         $wrapper = @($ast.FindAll({ param($n) ($n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-P733Directory') -or (& $isCommand $n 'Remove-P733Directory') }, $true)).Count
         $headerText = if ($header.Count) { $header -join ',' } else { '-' }
-        return "header $headerText outer $outer loop $($loops.Count) asserts $asserts unlabelled $unlabelled casefinally $caseFinally wrapper $wrapper"
+        return [pscustomobject]@{
+            Error = $null; Header = $headerText; Outer = $outer; Work = $workReports.Count; WorkReports = $workReports.ToArray()
+            Loop = $loops.Count; Asserts = $asserts; Unlabelled = $unlabelled; CaseFinally = $caseFinally; Wrapper = $wrapper
+            Summary = "header $headerText outer $outer work $($workReports.Count) loop $($loops.Count) asserts $asserts unlabelled $unlabelled casefinally $caseFinally wrapper $wrapper"
+        }
     }
 
     # --- P7-12 skills/ ships next to cli/ (every tracked skills file, byte-identical, listed in manifest.json) and the
@@ -1797,9 +1813,8 @@ try {
                     Assert ($p739Early.Count -eq 1 -and $p739Early[0].Contains('/p7-39/early') -and $p739Probe.Count -eq 2 -and $p739Probe[1] -ceq 'thrown: P7-39 forced early throw') "P7-39 self-test: a warning collected before an early throw is reported by the finally (probe: $($p739Probe -join ' | ')); got $($p739Early.Count) line(s): $($p739Early -join ' | ')"
                     # P7-41: the caseLabel and one-finally checks read the AST (Get-P741CleanupPin), not source lines.
                     $p739Pin = Get-P741CleanupPin ([IO.File]::ReadAllText($PSCommandPath))
-                    $p739Counts = if ($p739Pin -cmatch ' asserts (\d+) unlabelled (\d+) ') { @([int]$Matches[1], [int]$Matches[2]) } else { @(0, -1) }
-                    Assert ($p739Pin -cmatch ' loop 1 ' -and $p739Counts[0] -ge 6 -and $p739Counts[1] -eq 0) "P7-39 self-test: every assertion message in the package-first tool loop names `$caseLabel (AST pin: $p739Pin; want loop 1, asserts >= 6, unlabelled 0)"
-                    Assert ($p739Pin -cmatch ' casefinally 1 wrapper 0$') "P7-39 self-test: P7-33 case folders are removed only through Remove-PackageCaseDirectory 'P7-33' (AST pin: $p739Pin; want casefinally 1 wrapper 0)"
+                    Assert ($p739Pin.Loop -eq 1 -and $p739Pin.Asserts -ge 6 -and $p739Pin.Unlabelled -eq 0) "P7-39 self-test: every assertion message in the package-first tool loop names `$caseLabel (AST pin: $($p739Pin.Summary); want loop 1, asserts >= 6, unlabelled 0)"
+                    Assert ($p739Pin.CaseFinally -eq 1 -and $p739Pin.Wrapper -eq 0) "P7-39 self-test: P7-33 case folders are removed only through Remove-PackageCaseDirectory 'P7-33' (AST pin: $($p739Pin.Summary); want casefinally 1 wrapper 0)"
                     $p739Regex = @(@($p733Sibling) + @($p737Ranked) | Where-Object { "$($_.Status)".Contains('pack_rules') }).Count
                     Assert ($p739Regex -eq 0) "P7-39 self-test: no tool Status carries the old pack_rules regex (found $p739Regex); the exact stdout members check pack_rules"
                 } catch { $failures.Add("P7-39 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
@@ -1807,8 +1822,8 @@ try {
                 # P7-41 self-test: the AST pin survives a reformat (own lines, extra spaces, line continuations, -f message)
                 # and catches planted mutants (outer finally without the report or with it only in a nested finally or a
                 # string, unlabelled messages, a second case finally, the old wrapper, a header without P7-39); this script's
-                # own outer finally is pinned, and removing its Write-PackageCleanupWarnings call from a copy of the text is
-                # caught. Remove-PackageCaseDirectory takes -Into (see its comment).
+                # own outer finally is pinned, and removing its Write-PackageCleanupWarnings CommandAst (by extent, P7-43) from
+                # a copy of the text is caught. Remove-PackageCaseDirectory takes -Into (see its comment).
                 try {
                     $p741Text = @(
                         '# P7-39: quiet cleanup report', '# P7-41: AST pins', 'param([string]$Dotnet)', 'try {',
@@ -1818,17 +1833,17 @@ try {
                         '        Assert   ($true)   ("P7-35 {0}: formatted" -f $caseLabel)', '    }',
                         '    try { $x = 1 }', '    finally', '    {', '        [void]( Remove-PackageCaseDirectory   ''P7-33''   $p733Case )', '    }',
                         '}', 'finally', '{', '    Remove-Item -LiteralPath $work', '    Write-PackageCleanupWarnings', '}') -join "`n"
-                    $p741Want = 'header P7-39,P7-41 outer 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0'
+                    $p741Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0'
                     $p741Pin = Get-P741CleanupPin $p741Text
-                    Assert ($p741Pin -ceq $p741Want) "P7-41 self-test: a reformatted script is still pinned: $p741Pin (want $p741Want)"
+                    Assert ($p741Pin.Summary -ceq $p741Want) "P7-41 self-test: a reformatted script is still pinned: $($p741Pin.Summary) (want $p741Want)"
                     $p741Mutants = @(
-                        @{ Name = 'outer finally without the report'; Pairs = @(, @('    Write-PackageCleanupWarnings', '    Remove-Item -LiteralPath $other')); Want = 'header P7-39,P7-41 outer 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
-                        @{ Name = 'report only in a nested finally'; Pairs = @(@('    Write-PackageCleanupWarnings', '    Remove-Item -LiteralPath $other'), @('$p733Case )', '$p733Case ); Write-PackageCleanupWarnings')); Want = 'header P7-39,P7-41 outer 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
-                        @{ Name = 'report only as a string'; Pairs = @(, @('    Write-PackageCleanupWarnings', '    $null = ''Write-PackageCleanupWarnings''')); Want = 'header P7-39,P7-41 outer 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
-                        @{ Name = 'message names $tool.Tool'; Pairs = @(, @('"P7-33 $($caseLabel): reformatted"', '"P7-33 $($tool.Tool) $($caseLabel): reformatted"')); Want = 'header P7-39,P7-41 outer 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
-                        @{ Name = 'constant message'; Pairs = @(, @('("P7-35 {0}: formatted" -f $caseLabel)', '''P7-35 caseLabel: constant''')); Want = 'header P7-39,P7-41 outer 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
-                        @{ Name = 'second case finally and the old wrapper'; Pairs = @(, @('    try { $x = 1 }', "    function Remove-P733Directory { }`n    try { Remove-P733Directory } finally { Remove-PackageCaseDirectory 'P7-33' `$p733Case }`n    try { `$x = 1 }")); Want = 'header P7-39,P7-41 outer 1 loop 1 asserts 2 unlabelled 0 casefinally 2 wrapper 2' },
-                        @{ Name = 'header without P7-39'; Pairs = @(, @('# P7-39: quiet cleanup report', '# P7-37: the previous header line')); Want = 'header P7-41 outer 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
+                        @{ Name = 'outer finally without the report'; Pairs = @(, @('    Write-PackageCleanupWarnings', '    Remove-Item -LiteralPath $other')); Want = 'header P7-39,P7-41 outer 0 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = 'report only in a nested finally'; Pairs = @(@('    Write-PackageCleanupWarnings', '    Remove-Item -LiteralPath $other'), @('$p733Case )', '$p733Case ); Write-PackageCleanupWarnings')); Want = 'header P7-39,P7-41 outer 0 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = 'report only as a string'; Pairs = @(, @('    Write-PackageCleanupWarnings', '    $null = ''Write-PackageCleanupWarnings''')); Want = 'header P7-39,P7-41 outer 0 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = 'message names $tool.Tool'; Pairs = @(, @('"P7-33 $($caseLabel): reformatted"', '"P7-33 $($tool.Tool) $($caseLabel): reformatted"')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
+                        @{ Name = 'constant message'; Pairs = @(, @('("P7-35 {0}: formatted" -f $caseLabel)', '''P7-35 caseLabel: constant''')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
+                        @{ Name = 'second case finally and the old wrapper'; Pairs = @(, @('    try { $x = 1 }', "    function Remove-P733Directory { }`n    try { Remove-P733Directory } finally { Remove-PackageCaseDirectory 'P7-33' `$p733Case }`n    try { `$x = 1 }")); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 2 wrapper 2' },
+                        @{ Name = 'header without P7-39'; Pairs = @(, @('# P7-39: quiet cleanup report', '# P7-37: the previous header line')); Want = 'header P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
                     foreach ($mutant in $p741Mutants) {
                         $text = $p741Text
                         foreach ($pair in $mutant.Pairs) {
@@ -1837,17 +1852,18 @@ try {
                         }
                         if ($null -eq $text) { $failures.Add("P7-41 self-test: mutant '$($mutant.Name)' could not be planted"); continue }
                         $got = Get-P741CleanupPin $text
-                        Assert ($got -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $got (want $($mutant.Want))"
+                        Assert ($got.Summary -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
                     }
                     $p741Own = [IO.File]::ReadAllText($PSCommandPath)
                     $p741OwnPin = Get-P741CleanupPin $p741Own
-                    Assert ($p741OwnPin -cmatch '^header P7-39,P7-41 outer 1 ') "P7-41: this script's header lists P7-39 and P7-41 and its outer finally calls Write-PackageCleanupWarnings once: $p741OwnPin"
-                    $p741Call = 'if (Get-Command Write-PackageCleanupWarnings -ErrorAction SilentlyContinue) { Write-PackageCleanupWarnings }'
-                    $p741At = $p741Own.LastIndexOf($p741Call)
-                    if ($p741At -lt 0) { $failures.Add('P7-41 self-test: the outer finally report call could not be found to remove from a copy') }
+                    Assert ($p741OwnPin.Header -cmatch '^P7-39,P7-41(,|$)' -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists P7-39 and P7-41 and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    # P7-43: the call is located by its CommandAst extent (not its exact text), so reformatting it does not
+                    # break the mutation.
+                    if (@($p741OwnPin.WorkReports).Count -ne 1) { $failures.Add("P7-41 self-test: the outer finally report CommandAst could not be found to remove from a copy: $($p741OwnPin.Summary)") }
                     else {
-                        $p741Removed = Get-P741CleanupPin ($p741Own.Remove($p741At, $p741Call.Length))
-                        Assert ($p741Removed -cmatch ' outer 0 ' -and $p741OwnPin -cmatch ' outer 1 ') "P7-41 self-test: removing the outer finally's Write-PackageCleanupWarnings call from a copy is caught: $p741Removed (want outer 0)"
+                        $p741Call = $p741OwnPin.WorkReports[0].Extent
+                        $p741Removed = Get-P741CleanupPin ($p741Own.Remove($p741Call.StartOffset, $p741Call.EndOffset - $p741Call.StartOffset))
+                        Assert ($p741Removed.Outer -eq 0 -and $p741Removed.Work -eq 0 -and $p741OwnPin.Outer -eq 1) "P7-41 self-test: removing the outer finally's Write-PackageCleanupWarnings CommandAst (by extent) from a copy is caught: $($p741Removed.Summary) (want outer 0 work 0)"
                     }
                     $p741Command = Get-Command Remove-PackageCaseDirectory
                     Assert ($p741Command.Parameters.ContainsKey('Into') -and $p741Command.Parameters['Into'].ParameterType -eq [Collections.Generic.List[string]]) 'P7-41: Remove-PackageCaseDirectory takes -Into (a List[string], default the run-wide $packageCleanupWarnings)'
@@ -1855,7 +1871,7 @@ try {
 
                 # P7-43 self-test: Get-P741CleanupPin returns an object; this script's one report call sits in the finally of
                 # the top-level try that removes $work (work 1, a report in another top-level try's finally reads work 0), and
-                # removing that CommandAst by its extent from a copy is caught (a reformatted call is found the same way).
+                # a reformatted call is removed by its CommandAst extent (the P7-41 block does the same on this script's copy).
                 # The -Into check runs everywhere through a stand-in Remove-Item (dynamic scope: as root a read-only folder is
                 # removed anyway), and this block reports its own probe leftover through -Into from its own finally.
                 $p743Leftovers = [Collections.Generic.List[string]]::new()
@@ -1865,11 +1881,6 @@ try {
                     $p743Pin = Get-P741CleanupPin $p743Own
                     Assert ($p743Pin -is [Management.Automation.PSCustomObject] -and $null -eq $p743Pin.Error) "P7-43: Get-P741CleanupPin returns an object (no parse error): $p743Pin"
                     Assert ($p743Pin.Header -ceq 'P7-39,P7-41,P7-43' -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists P7-39/P7-41/P7-43 and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header P7-39,P7-41,P7-43 outer 1 work 1)"
-                    if (@($p743Pin.WorkReports).Count -eq 1) {
-                        $p743Call = $p743Pin.WorkReports[0].Extent
-                        $p743Removed = Get-P741CleanupPin ($p743Own.Remove($p743Call.StartOffset, $p743Call.EndOffset - $p743Call.StartOffset))
-                        Assert ($p743Removed.Outer -eq 0 -and $p743Removed.Work -eq 0) "P7-43 self-test: removing the outer finally's report CommandAst by its extent from a copy is caught: $($p743Removed.Summary) (want outer 0 work 0)"
-                    }
                     $p743Text = @('# P7-39: a', '# P7-41: b', '# P7-43: c', 'try {', '    $x = 1', '} finally {', '    Remove-Item -LiteralPath $work -Recurse',
                         '    Write-PackageCleanupWarnings `', '        -Warnings   $packageCleanupWarnings', '}') -join "`n"
                     $p743Synthetic = Get-P741CleanupPin $p743Text
