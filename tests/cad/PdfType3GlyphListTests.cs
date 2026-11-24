@@ -665,40 +665,55 @@ internal static class PdfType3GlyphListTests
             // BT 8, Tf 9, Tm 10, Tj 11, ET 12 (overflow: /Matrix 1e60 under CTM 1e300; malformed: 5 entries).
             var root = Path.GetFullPath(Path.Combine(fixtures, "..", "..", ".."));
             var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
-            // P6-37: the expected document below is built with the options CadCommand uses, and those are pinned against
-            // interfaces/cli/CadCommand.cs (the tests do not reference Bim.Cli, whose CadCommand is internal): each line
-            // the in-process copy mirrors must occur in the source exactly the given number of times, so a changed reader
-            // option, brief option, serializer setting or document member fails here by name instead of as a digest drift.
+            // P6-39: the expected document is built by the public Bim.Cad builder CadCommand calls (CadBriefDocument.Create,
+            // then ToUtf8Bytes), so document members and serializer settings are no longer mirrored here. What stays outside
+            // the builder is pinned against interfaces/cli/CadCommand.cs read without comments and literals (so a
+            // commented-out copy of a pinned line does not count; self-tests below): the 32 MiB input cap, the one
+            // PdfReadOptions (MaxBytes only), the one builder call with the CLI's brief options, its bytes being what is
+            // written, and no direct BriefExtract/BriefSerializer use left in the CLI.
             const int cliMaxInputBytes = 32 * 1024 * 1024;
+            const string builderCall = "CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions })";
             var cadCommandPins = new (string Line, int Count)[]
             {
                 ("public const int MaxInputBytes = 32 * 1024 * 1024;", 1),
                 ("new PdfReadOptions(", 1),
                 ("pdf = PdfReader.Parse(bytes, sourceFile, new PdfReadOptions(MaxBytes: MaxInputBytes));", 1),
-                ("var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };", 1),
-                ("BriefExtract.FromPdf(pdf!, page!.Value, calibration, briefOptions)", 1),
-                ("static readonly JsonSerializerOptions Json = new() { Converters = { new JsonStringEnumConverter() } };", 1),
-                ("written = JsonSerializer.SerializeToUtf8Bytes(document, Json);", 1),
-                ("kind = \"cad-brief\",", 1),
-                ("version = 1,", 2),
-                ("persisted = false,", 2),
-                ("source = new { file = sourceFile, format, bytes = bytes.LongLength, sha256 = Convert.ToHexString(sha), page, scale, metres_per_unit = result.MetresPerUnit },", 1),
-                ("brief = JsonNode.Parse(BriefSerializer.Serialize(result.Brief)),", 1),
-                ("rooms = result.Rooms,", 1),
-                ("uncertainties = result.Uncertainties,", 2),
-                ("issues = result.Issues,", 1),
-                (": \"none\";", 1),
+                ("CadBriefDocument.", 1),
+                (builderCall, 1),
+                ("new BriefExtractOptions", 1),
+                (".ToUtf8Bytes()", 1),
+                ("BriefExtract.", 0),
+                ("BriefSerializer", 0),
             };
+            var cadCommandAnchors = new[] { "internal static class CadCommand", "static void Execute(bool draft", "static Options ParseOptions(", "static void Fail(" };
             static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins) =>
                 string.Join("; ", pins.Where(pin => Occurrences(source, pin.Line) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(source, pin.Line)) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+            static string? CodeProblems(string source, IEnumerable<(string Line, int Count)> pins, IReadOnlyList<string> anchors)
+            {
+                var stripped = StripCommentsAndLiterals(source);
+                var problems = string.Join("; ", new[] { SwallowGuard(stripped, anchors), PinProblems(stripped, pins) }.Where(p => p is not null));
+                return problems.Length > 0 ? problems : null;
+            }
             var cadCommandPath = Path.Combine(root, "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
-            C(cadCommand.Length > 0 && PinProblems(cadCommand, cadCommandPins) is null,
-                "p6-37 cli options: the expected cad-brief document mirrors CadCommand.cs (PdfReadOptions MaxBytes 32 MiB only, brief options, serializer, members)",
-                cadCommandPath + " " + (PinProblems(cadCommand, cadCommandPins) ?? "pins hold"));
+            C(cadCommand.Length > 0 && CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) is null,
+                "p6-39 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only and writes the one CadBriefDocument.Create call's ToUtf8Bytes",
+                cadCommandPath + " " + (CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) ?? "pins hold"));
             var drifted = cadCommand.Replace("new PdfReadOptions(MaxBytes: MaxInputBytes)", "new PdfReadOptions(MaxBytes: MaxInputBytes, MaxWarnings: 5)", StringComparison.Ordinal);
-            C(cadCommand.Length > 0 && PinProblems(drifted, cadCommandPins) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
-                "p6-37 cli options self-test: an extra PdfReadOptions argument in CadCommand.cs is caught by name", PinProblems(drifted, cadCommandPins) ?? "not caught");
+            C(cadCommand.Length > 0 && CodeProblems(drifted, cadCommandPins, cadCommandAnchors) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
+                "p6-37 cli options self-test: an extra PdfReadOptions argument in CadCommand.cs is caught by name", CodeProblems(drifted, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
+            // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
+            // check names it as missing.
+            const string otherCall = "CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = true })";
+            foreach (var (label, replacement) in new[] { ("a // comment", otherCall + "; // " + builderCall), ("a /* */ comment", otherCall + " /* " + builderCall + " */") })
+            {
+                var commented = cadCommand.Replace(builderCall, replacement, StringComparison.Ordinal);
+                C(cadCommand.Length > 0 && Occurrences(commented, builderCall) == 1 && CodeProblems(commented, cadCommandPins, cadCommandAnchors) is { } missed
+                    && missed.Contains("'" + builderCall + "' x0", StringComparison.Ordinal),
+                    "p6-39 cli pins self-test: a commented-out copy of the builder call in " + label + " is caught (the raw text still holds it once)",
+                    "raw x" + I(Occurrences(commented, builderCall)) + " " + (CodeProblems(commented, cadCommandPins, cadCommandAnchors) ?? "not caught"));
+            }
             C(File.Exists(cliDll), "p6-35 cli precondition: the Release Bim.Cli.dll exists (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
             if (File.Exists(cliDll))
             {
@@ -719,11 +734,14 @@ internal static class PdfType3GlyphListTests
                     {
                         var file = label + ".pdf";
                         var bytes = PdfToUnicodeTests.PageBytes(cliPage, Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>", null, RawForm(" /Matrix [" + matrix + "]", "q Q"));
-                        // The document CadCommand writes for a PDF cad-brief without a scale option (interfaces/cli/CadCommand.cs,
-                        // the mirrored lines pinned above, P6-37).
+                        // The document CadCommand writes for a PDF cad-brief without a scale option, built through the same
+                        // entry point (P6-39): the reader options pinned above, then CadBriefDocument.Create and ToUtf8Bytes.
                         var pdf = PdfReader.Parse(bytes, file, new PdfReadOptions(MaxBytes: cliMaxInputBytes));
+                        var expected = CadBriefDocument.Create(file, bytes, null, pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false }).ToUtf8Bytes();
+                        // The P6-37 hand-mirrored document (members and serializer as CadCommand wrote them before P6-39) gives
+                        // the same bytes: the builder moved the document without changing it.
                         var result = BriefExtract.FromPdf(pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false });
-                        var document = new
+                        var mirrored = new
                         {
                             kind = "cad-brief",
                             version = 1,
@@ -734,7 +752,10 @@ internal static class PdfType3GlyphListTests
                             uncertainties = result.Uncertainties,
                             issues = result.Issues,
                         };
-                        var expected = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(document, json);
+                        var legacy = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(mirrored, json);
+                        C(expected.AsSpan().SequenceEqual(legacy),
+                            "p6-39 cli " + label + ": CadBriefDocument bytes equal the P6-37 mirrored document bytes",
+                            "builder " + I(expected.Length) + " bytes " + Hash16(expected) + " mirrored " + I(legacy.Length) + " bytes " + Hash16(legacy));
                         C(Warnings(pdf) == "operand-error@1:4:6" && Messages(pdf) == warning,
                             "cli " + label + " premise: in process the page has only the Do operand-error (P6-35)", Warnings(pdf) + " " + Messages(pdf));
 

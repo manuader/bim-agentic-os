@@ -6,7 +6,6 @@ using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using Bim.Cad;
 using Bim.Gltf;
-using BriefSerializer = Bim.Core.BriefSerializer;
 
 namespace Bim.Cli;
 
@@ -146,22 +145,10 @@ internal static class CadCommand
             }
             else
             {
-                var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };
-                var result = drawing is not null ? BriefExtract.FromDxf(drawing, briefOptions) : BriefExtract.FromPdf(pdf!, page!.Value, calibration, briefOptions);
-                var scale = calibration is not null ? "known-dimension"
-                    : options.MetresPerUnit is not null ? "metres-per-unit"
-                    : drawing?.MetresPerUnit is not null ? "insunits" : "none";
-                document = new
-                {
-                    kind = "cad-brief",
-                    version = 1,
-                    persisted = false,
-                    source = new { file = sourceFile, format, bytes = bytes.LongLength, sha256 = Convert.ToHexString(sha), page, scale, metres_per_unit = result.MetresPerUnit },
-                    brief = JsonNode.Parse(BriefSerializer.Serialize(result.Brief)),
-                    rooms = result.Rooms,
-                    uncertainties = result.Uncertainties,
-                    issues = result.Issues,
-                };
+                // P6-39: the document is built by Bim.Cad's CadBriefDocument (same members and bytes as before).
+                var brief = CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions });
+                var result = brief.Result;
+                document = brief;
                 counts = new JsonObject { ["rooms"] = result.Rooms.Count, ["uncertainties"] = result.Uncertainties.Count, ["issues"] = result.Issues.Count };
             }
         }
@@ -172,7 +159,7 @@ internal static class CadCommand
 
         byte[] written;
         // Non-finite numbers cannot be written as JSON; such a draft is refused rather than written in part.
-        try { written = JsonSerializer.SerializeToUtf8Bytes(document, Json); }
+        try { written = document is CadBriefDocument brief ? brief.ToUtf8Bytes() : JsonSerializer.SerializeToUtf8Bytes(document, Json); }
         catch (ArgumentException e) { throw new Refusal("cad_output_not_serializable", e.Message); }
         try { GltfExporter.WriteNew(written, output); }
         catch (GltfExportException e) { throw new Refusal(e.Code); }
