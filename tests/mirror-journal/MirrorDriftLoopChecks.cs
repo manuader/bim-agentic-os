@@ -2199,8 +2199,14 @@ static class MirrorDriftLoopChecks
         public string[] All => new[] { Kept, Precondition, SelfTest, Raised, Lowered };
     }
 
+    // P2-43: the kept name says the requested value is the declared ratio of the default only when it is; otherwise it
+    // shows the requested value alone.
+    static string MacRequestedText(MacSendBufferCounts c) => c.RequestedLowered == (long)c.LoweredDefault * LoweredNumerator / LoweredDenominator
+        ? c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault
+        : c.RequestedLowered.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     static MacCheckNames MacNames(MacSendBufferCounts c) => new(
-        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault + ")",
+        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + MacRequestedText(c) + ")",
         MacPreconditionPrefix + "each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + c.Chunk + "-byte piece, as are the " + c.Read + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer",
         MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + 2L * c.Read + ") with queued == lowered (" + c.Lowered + ")",
         "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue",
@@ -2273,7 +2279,7 @@ static class MirrorDriftLoopChecks
             LeversOk = true, RaisedDefault = s, LoweredDefault = s, Raised = 2 * s, Lowered = lowered, RequestedLowered = lowered,
             SeamQueued = 2L * s, Handed = measured.Read + 2L * s, CliQueued = s, LoweredRun = true, LoweredQueued = lowered, LoweredHanded = measured.Read + (long)lowered,
         };
-        static LeverRecord Lever(int calls, int @default, int requested, int set) => new() { Calls = calls, Default = @default, Requested = requested, Set = set };
+        static LeverRecord Lever(int calls, int @default, int requested, int set, string error = "") => new() { Calls = calls, Default = @default, Requested = requested, Set = set, Error = error };
         (string[] Red, string[] NotRun, string Seen) Outcome(MacSendBufferCounts c)
         {
             var notRun = new List<string>();
@@ -2291,7 +2297,8 @@ static class MirrorDriftLoopChecks
         var rounded = Outcome(roundedInput);
         var roundedNames = MacNames(roundedInput);
         // P2-42: the rounding red pinned as text: it carries the measured (rounded) and requested values.
-        var roundedKept = "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + baseline.Read + ", requested=" + lowered + " = 3/4 of default " + s + ")";
+        // P2-43: the ratio in the pinned text is the declared pair, not a hand-copied "3/4".
+        var roundedKept = "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + baseline.Read + ", requested=" + lowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + s + ")";
         check(Same(rounded.Red, roundedKept) && Same(rounded.Red, roundedNames.Kept) && Same(rounded.NotRun, roundedNames.SelfTest, roundedNames.Lowered),
             "macos self-test (P2-41): a planted kernel rounding of the lowered send buffer to exactly the read size (" + baseline.Read + ") gives only the setup red, and the lowered self-test and relation each print a not-run line (P2-42: names compared in full)", rounded.Seen);
         var failedInput = baseline with { LeversOk = false };
@@ -2314,6 +2321,49 @@ static class MirrorDriftLoopChecks
         var mismatchNames = MacNames(mismatchInput);
         check(mismatchInput.RequestedLowered == lowered + chunk && Same(mismatch.Red, mismatchNames.Kept) && Same(mismatch.NotRun, mismatchNames.SelfTest, mismatchNames.Lowered),
             "macos self-test (P2-42): a planted lowered lever that requested " + (lowered + chunk) + " but kept " + lowered + " (the ratio of its default " + s + ") gives only the kept setup red: the gate compares against LeverRecord.Requested", mismatch.Seen);
+        // P2-43: the mismatch red as text: a requested value that is not the declared ratio of the default shows the
+        // requested value only (no ' = 3/4 of default' claim it does not meet).
+        var mismatchKept = "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + (lowered + chunk) + ")";
+        check(Same(mismatch.Red, mismatchKept),
+            "macos self-test (P2-43): the planted requested/kept mismatch red names the requested value only (" + (lowered + chunk) + "), not as " + LoweredNumerator + "/" + LoweredDenominator + " of the default", mismatch.Seen);
+
+        // P2-43: the gate's check names pinned as independently written text (not only through MacNames): the kept name
+        // of a requested value that is the declared ratio, the precondition, the lowered self-test and the lowered relation.
+        var baselineNames = MacNames(baseline);
+        var keptLiteral = "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + lowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + s + ")";
+        var preconditionLiteral = "macos precondition (P2-42: the P2-41 lever setup check gates it, so no lever clause here): each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the "
+            + chunk + "-byte piece, as are the " + baseline.Read + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer";
+        var selfTestLiteral = "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (" + 2L * baseline.Read + ") with queued == lowered (" + lowered + ")";
+        const string loweredLiteral = "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways";
+        check(baselineNames.Kept == keptLiteral && baselineNames.Precondition == preconditionLiteral && baselineNames.SelfTest == selfTestLiteral && baselineNames.Lowered == loweredLiteral,
+            "macos self-test (P2-43): the kept, precondition, lowered self-test and lowered relation names equal their independently written text",
+            "kept=" + baselineNames.Kept + " | precondition=" + baselineNames.Precondition + " | self_test=" + baselineNames.SelfTest + " | lowered=" + baselineNames.Lowered);
+
+        // P2-43: lever records that did not run exactly once, or recorded an error, planted through WithLevers (values
+        // otherwise as the baseline levers): each gives only the P2-41 lever setup red and every other check a not-run line.
+        var raisedOk = Lever(1, s, 2 * s, 2 * s);
+        var loweredOk = Lever(1, s, lowered, lowered);
+        var leverPlants = new (string What, LeverRecord Raised, LeverRecord Lowered)[]
+        {
+            ("raised calls=0", Lever(0, -1, -1, -1), loweredOk),
+            ("raised calls=2", Lever(2, s, 2 * s, 2 * s), loweredOk),
+            ("lowered calls=0", raisedOk, Lever(0, -1, -1, -1)),
+            ("lowered calls=2", raisedOk, Lever(2, s, lowered, lowered)),
+            ("raised error", Lever(1, s, 2 * s, 2 * s, "planted raised error"), loweredOk),
+            ("lowered error", raisedOk, Lever(1, s, lowered, lowered, "planted lowered error")),
+        };
+        var leverSeen = new List<string>();
+        var leverPlantsOk = true;
+        foreach (var (what, raisedLever, loweredLever) in leverPlants)
+        {
+            var input = WithLevers(baseline, raisedLever, loweredLever);
+            var outcome = Outcome(input);
+            leverPlantsOk &= !input.LeversOk && Same(outcome.Red, MacLeversName) && Same(outcome.NotRun, MacNames(input).All);
+            leverSeen.Add(what + ": " + outcome.Seen);
+        }
+        check(leverPlantsOk && leverPlants.Length == 6,
+            "macos self-test (P2-43): planted lever records (raised or lowered with calls 0 or 2, or with an error) through WithLevers give only the lever setup red '" + MacLeversName + "' and five not-run lines",
+            string.Join(" || ", leverSeen));
     }
 
     // P2-36/P2-37: the test-only lever (macOS): sets the connected client socket's SO_SNDBUF to numerator/denominator of
