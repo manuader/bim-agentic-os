@@ -2646,14 +2646,32 @@ internal static class GeneratePrototypesTests
         }
         // P7-38: ForcedRun itself sets stdout once and restores it once around its one reflected Run, and no other helper
         // that section 12 or 13 reaches (transitively) sets stdout or invokes by reflection (a second copy).
-        var forcedRun = Declarations(tests, "ForcedRun").Where(d => Depth(tests, d.Start) == 1).ToList();
-        if (forcedRun.Count != 1) { problems.Add("ForcedRun declared " + forcedRun.Count.ToString(CultureInfo.InvariantCulture) + " times as a class member, not once"); return problems; }
+        // P7-40: members of GeneratePrototypesTests by type membership (not brace depth 1); the reach follows generic,
+        // qualified, method-group, delegate-field and cross-class calls, and starts from the argument lists of every call of
+        // sections 12 and 13 too (a lambda passed as cli or check runs inside them), which must not set stdout or reflect.
+        var map = new CodeMap(tests);
+        var forcedRun = map.MembersOf("GeneratePrototypesTests", "ForcedRun", false);
+        if (forcedRun.Count != 1) { problems.Add("ForcedRun declared " + forcedRun.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GeneratePrototypesTests, not once"); return problems; }
         var helper = tests[forcedRun[0].Start..forcedRun[0].End];
         if (Count(helper, @"\bConsole\s*\.\s*SetOut\b") != 2 || Count(helper, @"\bConsole\s*\.\s*SetOut\s*\(\s*stdout\s*\)") != 1 || Count(helper, @"\bConsole\s*\.\s*SetOut\s*\(\s*previousOut\s*\)") != 1)
             problems.Add("ForcedRun does not call Console.SetOut exactly twice (SetOut(stdout) once, SetOut(previousOut) once): " + Count(helper, @"\bConsole\s*\.\s*SetOut\b").ToString(CultureInfo.InvariantCulture));
         if (Count(helper, Reflected) != 1) problems.Add("ForcedRun invokes by reflection other than once");
-        var roots = new[] { "PartialWriteStage", "PartialWriteContractStage" }.SelectMany(name => Declarations(tests, name).Where(d => Depth(tests, d.Start) == 1)).ToList();
-        var (reached, _) = Reach(tests, roots);
+        var sections = new[] { "PartialWriteStage", "PartialWriteContractStage" };
+        var roots = sections.SelectMany(name => map.MembersOf("GeneratePrototypesTests", name, false)).ToList();
+        if (roots.Count != 2) problems.Add("PartialWriteStage / PartialWriteContractStage declared " + roots.Count.ToString(CultureInfo.InvariantCulture) + " times as members of GeneratePrototypesTests, not once each");
+        var arguments = new List<(int Start, int End)>();
+        foreach (var name in sections)
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(tests, @"\b" + name + @"\s*\("))
+            {
+                if (roots.Any(r => r.Start == m.Index)) continue;
+                var close = Closing(tests, m.Index + m.Length - 1, '(', ')');
+                if (close < 0) continue;
+                arguments.Add((m.Index + m.Length, close));
+                var passed = tests[(m.Index + m.Length)..close];
+                if (Count(passed, @"\bConsole\s*\.\s*SetOut\b") != 0 || Count(passed, Reflected) != 0)
+                    problems.Add("a call of " + name + " passes an argument that sets stdout or invokes by reflection (a copy of ForcedRun in a lambda)");
+            }
+        var (reached, _) = Reach(map, roots.Concat(arguments).ToList(), null);
         if (!reached.Any(r => r.Start == forcedRun[0].Start)) problems.Add("sections 12 and 13 do not reach ForcedRun");
         foreach (var (name, start, end) in reached)
         {
@@ -2671,6 +2689,9 @@ internal static class GeneratePrototypesTests
     // unqualified calls is followed too: none names a stdout Console member or Print(, and every callee resolves to a
     // declared method or local function (a delegate field is not followed, so it is a problem). The success object's
     // trailing comma is optional (a reformat without it is accepted).
+    // P7-40: Execute is found as a member of GenerateCommand (not at brace depth 1), and the reach also follows generic,
+    // qualified (GenerateCommand.X(), method-group, delegate and cross-class calls (see Reach); a call into a class outside
+    // the two files is allowed only when listed in ExecuteExternalCalls, else unresolved (a problem).
     static List<string> ExecuteWriteProblems(string write, string command)
     {
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
@@ -2714,11 +2735,12 @@ internal static class GeneratePrototypesTests
             problems.Add("the success line is not the last statement of its try with the delete / report / rethrow catch (Exception) closing Execute");
         if (Count(body, @"\bPrint\s*\(") != 0) problems.Add("Execute calls Print(");
         var code = write + "\n" + command;
-        var executes = Declarations(code, "Execute").Where(d => Depth(code, d.Start) == 1).ToList();
+        var map = new CodeMap(code);
+        var executes = map.MembersOf("GenerateCommand", "Execute", false);
         if (executes.Count != 1) { problems.Add("Execute declared " + executes.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GenerateCommand, not once"); return problems; }
-        var (reached, unresolved) = Reach(code, executes);
+        var (reached, unresolved) = Reach(map, executes, ExecuteExternalCalls);
         foreach (var name in unresolved)
-            problems.Add("Execute reaches " + name + "(, declared as no method or local function in GenerateWrite.cs or GenerateCommand.cs (a delegate or a helper the pin cannot follow)");
+            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs or GenerateCommand.cs and not a listed external call (a delegate parameter or a class the pin cannot read)");
         foreach (var (name, start, end) in reached)
         {
             var helper = code[start..end];
@@ -2728,10 +2750,35 @@ internal static class GeneratePrototypesTests
         return problems;
     }
 
-    // P7-38: static reachability over comment-stripped, string-blanked C# (sections 14 and 15). Not a parser: a
-    // declaration is name( preceded by whitespace and a type-ending token (not return / throw / new / ...), whose
-    // parameter list is followed by a block or =>; a call is an unqualified name( (not after . or new); generic calls,
-    // method groups and delegates are not followed (a callee declared nowhere is reported as unresolved).
+    // P7-40: the calls into classes outside GenerateWrite.cs and GenerateCommand.cs that Execute may reach, as written
+    // (Type.Member): BCL and library code, and CLI helpers that write nothing to stdout (OutputProblem, BoundedInput,
+    // SkillPackLookup, IntentPlan.InternalDiagnostic; not followed into their files). Console's members are listed so the
+    // stdout checks, not this list, judge them. Any other external call Execute reaches is unresolved.
+    static readonly HashSet<string> ExecuteExternalCalls = new(StringComparer.Ordinal)
+    {
+        "Console.WriteLine", "Console.Error.WriteLine", "GltfExportCommand.OutputProblem", "GltfExporter.WriteNew", "Convert.ToHexString",
+        "SHA256.HashData", "JsonSerializer.Serialize", "File.Delete", "SkillPackLookup.Load", "PrototypePipeline.Run",
+        "PrototypePipelineSerializer.Serialize", "BoundedInput.ReadText", "JsonDocument.Parse", "Array.Empty", "Array.IndexOf",
+        "SkillParser.IsId", "Guid.TryParseExact", "Encoding.UTF8.GetString", "IntentPlan.InternalDiagnostic", "double.IsFinite",
+    };
+
+    // P7-38 / P7-40: static reachability over comment-stripped, string-blanked C# (sections 14 to 16). Not a parser.
+    // A declaration is name( or name<...>( preceded by whitespace and a type-ending token (not return / throw / new / ...),
+    // whose parameter list (and where clauses) is followed by a block or =>. Membership, not brace depth: a declaration is
+    // a member of the class / struct / interface / record whose body is its innermost enclosing brace, else local to the
+    // member whose body (the outermost brace inside that type body) encloses it. From each reached text (P7-40):
+    //   - an unqualified name( or name<...>( resolves to the local functions and delegate declarators of the same member,
+    //     then to the methods and delegate declarators of the enclosing types (all overloads); declared nowhere it is
+    //     unresolved (a delegate parameter, say);
+    //   - T.name( or A.B.T.name( (generic or not), with T a type declared in the code, resolves to T's members of that name
+    //     (declared nowhere: unresolved); with T not declared in the code the call is allowed only when the caller lists it
+    //     as external (Type.Member exactly), else unresolved;
+    //   - any other receiver (an instance, ?., a call result): the methods of that name of every type declared in the code
+    //     (an instance method of an external type is not followed);
+    //   - new T( or new T { with T declared in the code: T's whole body (constructors, initializers);
+    //   - a name not followed by ( (bare or T.-qualified) that names a method in scope (a method group passed or assigned),
+    //     or a delegate field or property: that method or declarator;
+    //   - a delegate declarator (name = / += / ??= / => / { get; ... } = ...) is followed through its right-hand side.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -2739,6 +2786,9 @@ internal static class GeneratePrototypesTests
         "else", "yield", "case", "not", "and", "or", "with", "goto", "get", "set",
     };
     static readonly HashSet<string> DeclarationBlockers = new(StringComparer.Ordinal) { "return", "throw", "new", "await", "else", "in", "is", "as", "case", "yield", "not", "and", "or", "when", "goto" };
+    static readonly HashSet<string> KeywordTypes = new(StringComparer.Ordinal) { "string", "int", "long", "double", "float", "decimal", "bool", "char", "byte", "short", "uint", "ulong", "object" };
+    // An optional type-argument list (one nesting level): Foo<T>(, Foo<List<int>, string>(.
+    const string TypeArguments = @"(?:\s*<(?:[\w\s,.?\[\]]|<[\w\s,.?\[\]]*>)*>)?";
 
     // The index of the bracket closing the one at open, or -1.
     static int Closing(string code, int open, char opening, char closing)
@@ -2752,18 +2802,6 @@ internal static class GeneratePrototypesTests
         return -1;
     }
 
-    // Brace depth at index (class members of a file-scoped namespace are at 1).
-    static int Depth(string code, int index)
-    {
-        var depth = 0;
-        for (var i = 0; i < index; i++)
-        {
-            if (code[i] == '{') depth++;
-            else if (code[i] == '}') depth--;
-        }
-        return depth;
-    }
-
     // The last word before index (skipping whitespace) and the character it ends at ('\0' at the start).
     static (char Last, string Word, bool Spaced) Before(string code, int index)
     {
@@ -2775,11 +2813,11 @@ internal static class GeneratePrototypesTests
         return (code[end - 1], code[(j + 1)..end], end < index);
     }
 
-    // The declarations of name as [start, end) spans from the name to the body's closing brace or semicolon.
+    // The declarations of name (generic or not) as [start, end) spans from the name to the body's closing brace or semicolon.
     static List<(int Start, int End)> Declarations(string code, string name)
     {
         var spans = new List<(int Start, int End)>();
-        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code, @"\b" + name + @"\s*\("))
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code, @"\b" + name + TypeArguments + @"\s*\("))
         {
             var (last, word, spaced) = Before(code, m.Index);
             if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) continue;
@@ -2787,61 +2825,239 @@ internal static class GeneratePrototypesTests
             if (paren < 0) continue;
             var at = paren + 1;
             while (at < code.Length && char.IsWhiteSpace(code[at])) at++;
+            // Generic constraints: where T : ... up to the body.
+            if (System.Text.RegularExpressions.Regex.IsMatch(code[at..Math.Min(code.Length, at + 6)], @"^where\b"))
+                while (at < code.Length && code[at] != '{' && code[at] != ';' && !(code[at] == '=' && at + 1 < code.Length && code[at + 1] == '>')) at++;
             var end = -1;
             if (at < code.Length && code[at] == '{') end = Closing(code, at, '{', '}');
-            else if (at + 1 < code.Length && code[at] == '=' && code[at + 1] == '>')
-            {
-                var depth = 0;
-                for (var i = at; i < code.Length && end < 0; i++)
-                {
-                    if (code[i] is '(' or '{') depth++;
-                    else if (code[i] is ')' or '}') depth--;
-                    else if (code[i] == ';' && depth == 0) end = i;
-                }
-            }
+            else if (at + 1 < code.Length && code[at] == '=' && code[at + 1] == '>') end = StatementEnd(code, at + 2);
             if (end >= 0) spans.Add((m.Index, end + 1));
         }
         return spans;
     }
 
-    // The unqualified callees of body, in order (duplicates kept).
-    static List<string> Callees(string body)
+    // The index of the ; ending the expression starting at start (at bracket depth 0), or of the bracket closing an
+    // enclosing one (an initializer inside { } or an argument inside ( )), or -1.
+    static int StatementEnd(string code, int start)
     {
-        var names = new List<string>();
-        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(body, @"\b([A-Za-z_]\w*)\s*\("))
+        var depth = 0;
+        for (var i = start; i < code.Length; i++)
         {
-            var name = m.Groups[1].Value;
-            if (CallKeywords.Contains(name)) continue;
-            var (last, word, _) = Before(body, m.Index);
-            if (last == '.' || word == "new") continue;
-            names.Add(name);
+            if (code[i] is '(' or '{' or '[') depth++;
+            else if (code[i] is ')' or '}' or ']') { if (--depth < 0) return i - 1; }
+            else if (code[i] == ';' && depth == 0) return i;
         }
-        return names;
+        return -1;
     }
 
-    // The declarations reached from the roots through unqualified calls, transitively (a name resolves to class members,
-    // depth 1, and to local functions inside a root or a reached declaration; all overloads are followed), and the callee
-    // names declared nowhere in that scope. Declarations inside a root are not listed (the root's own text covers them).
-    static (List<(string Name, int Start, int End)> Reached, List<string> Unresolved) Reach(string code, List<(int Start, int End)> roots)
+    // P7-40: the brace structure and the type bodies of a comment-stripped C# text.
+    sealed class CodeMap
     {
-        var scopes = new List<(int Start, int End)>(roots);
+        readonly int[] enclosing;
+        readonly Dictionary<int, int> parent = new();
+        readonly Dictionary<string, List<(int Start, int End)>> methods = new(StringComparer.Ordinal);
+        readonly Dictionary<string, List<(int Start, int End)>> declarators = new(StringComparer.Ordinal);
+
+        public CodeMap(string code)
+        {
+            Code = code;
+            enclosing = new int[code.Length + 1];
+            var stack = new Stack<int>();
+            for (var i = 0; i <= code.Length; i++)
+            {
+                enclosing[i] = stack.Count == 0 ? -1 : stack.Peek();
+                if (i == code.Length) break;
+                if (code[i] == '{') { parent[i] = enclosing[i]; stack.Push(i); }
+                else if (code[i] == '}' && stack.Count > 0) stack.Pop();
+            }
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code, @"\b(?:class|struct|interface|record)\s+([A-Za-z_]\w*)"))
+            {
+                var name = m.Groups[1].Value;
+                if (name is "class" or "struct" || CallKeywords.Contains(name)) continue;
+                var depth = 0;
+                for (var i = m.Index + m.Length; i < code.Length; i++)
+                {
+                    if (code[i] is '(' or '[') depth++;
+                    else if (code[i] is ')' or ']') depth--;
+                    else if (depth == 0 && code[i] == ';') break;
+                    else if (depth == 0 && code[i] == '{')
+                    {
+                        var close = Closing(code, i, '{', '}');
+                        if (close > 0) Types[i] = (name, close);
+                        break;
+                    }
+                }
+            }
+        }
+
+        public string Code { get; }
+
+        // The type bodies by opening brace: the type's name and closing brace.
+        public Dictionary<int, (string Name, int Close)> Types { get; } = new();
+
+        // The names of the types enclosing index (innermost first) and its member brace: the outermost brace inside the
+        // innermost enclosing type body (-1 when index is directly in a type body).
+        public (List<string> Types, int Member) Scope(int index)
+        {
+            var types = new List<string>();
+            var member = -1;
+            var candidate = -1;
+            for (var b = enclosing[index]; b >= 0; b = parent[b])
+            {
+                if (Types.TryGetValue(b, out var type))
+                {
+                    if (types.Count == 0) member = candidate;
+                    types.Add(type.Name);
+                }
+                else candidate = b;
+            }
+            if (types.Count == 0) member = candidate;
+            return (types, member);
+        }
+
+        // The type directly enclosing index when index is a type member (null for a local or a top-level declaration).
+        public string? MemberOf(int index)
+        {
+            var (types, member) = Scope(index);
+            return member < 0 && types.Count > 0 ? types[0] : null;
+        }
+
+        public bool IsType(string name) => Types.Values.Any(t => t.Name == name);
+
+        public List<(int Start, int End)> Methods(string name)
+        {
+            if (!methods.TryGetValue(name, out var found)) methods[name] = found = Declarations(Code, name);
+            return found;
+        }
+
+        // The delegate declarators of name: name = / += / ??= / => / { get; ... } = ..., as [name, end of the right-hand side).
+        public List<(int Start, int End)> Declarators(string name)
+        {
+            if (declarators.TryGetValue(name, out var cached)) return cached;
+            var found = new List<(int Start, int End)>();
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code,
+                @"\b" + name + @"\s*(?:(?:\+|\?\?)?=(?![=>])|=>|\{\s*get\s*;[^{}]*\}\s*=(?![=>]))"))
+            {
+                if (Before(Code, m.Index).Last == '.') continue;
+                var end = StatementEnd(Code, m.Index + m.Length);
+                if (end >= 0) found.Add((m.Index, end + 1));
+            }
+            return declarators[name] = found;
+        }
+
+        // The spans of name visible from index: locals of the same member, then members of the enclosing types.
+        public List<(int Start, int End)> Visible(string name, int index, bool withDeclarators, bool localDeclarators)
+        {
+            var (types, member) = Scope(index);
+            var result = new List<(int Start, int End)>();
+            void Add(List<(int Start, int End)> spans, bool locals)
+            {
+                foreach (var d in spans)
+                {
+                    var (dTypes, dMember) = Scope(d.Start);
+                    if (dMember < 0 ? dTypes.Count > 0 && types.Contains(dTypes[0]) : locals && dMember == member) result.Add(d);
+                }
+            }
+            Add(Methods(name), true);
+            if (withDeclarators) Add(Declarators(name), localDeclarators);
+            return result;
+        }
+
+        // The member spans of name in the types called type.
+        public List<(int Start, int End)> MembersOf(string type, string name, bool withDeclarators) =>
+            Methods(name).Concat(withDeclarators ? Declarators(name) : Enumerable.Empty<(int Start, int End)>()).Where(d => MemberOf(d.Start) == type).ToList();
+    }
+
+    // The receiver chain of a member access whose dot is at dot: "A.B.C" when it is a chain of names (null for an instance:
+    // ?., a call result, an indexer, a literal).
+    static string? Receiver(string code, int dot)
+    {
+        var segments = new List<string>();
+        var j = dot;
+        while (true)
+        {
+            var k = j - 1;
+            while (k >= 0 && char.IsWhiteSpace(code[k])) k--;
+            var end = k + 1;
+            while (k >= 0 && (char.IsLetterOrDigit(code[k]) || code[k] == '_')) k--;
+            if (end == k + 1) return null;
+            segments.Insert(0, code[(k + 1)..end]);
+            while (k >= 0 && char.IsWhiteSpace(code[k])) k--;
+            if (k >= 1 && code[k] == '.' && code[k - 1] != '?') { j = k; continue; }
+            if (k >= 0 && code[k] == '.') return null;
+            return string.Join('.', segments);
+        }
+    }
+
+    // The references of the text [start, end): (label, the spans it reaches, an unresolved label or null).
+    static List<(string Name, List<(int Start, int End)> Targets, string? Unresolved)> References(CodeMap map, int start, int end, IReadOnlySet<string>? external)
+    {
+        var code = map.Code;
+        var found = new List<(string Name, List<(int Start, int End)> Targets, string? Unresolved)>();
+        var none = new List<(int Start, int End)>();
+        foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code[start..end], @"\b([A-Za-z_]\w*)" + TypeArguments + @"(\s*[({])?"))
+        {
+            var name = m.Groups[1].Value;
+            if (CallKeywords.Contains(name) || char.IsDigit(name[0])) continue;
+            var at = start + m.Index;
+            var opener = m.Groups[2].Success ? m.Groups[2].Value.Trim() : "";
+            var call = opener == "(";
+            var (last, word, _) = Before(code, at);
+            if (word == "new" && char.IsLetter(last))
+            {
+                if (opener.Length > 0 && map.IsType(name))
+                    found.Add(("new " + name, map.Types.Where(t => t.Value.Name == name).Select(t => (Start: t.Key, End: t.Value.Close + 1)).ToList(), null));
+                continue;
+            }
+            if (last == '.')
+            {
+                var dot = at - 1;
+                while (code[dot] != '.') dot--;
+                var receiver = Receiver(code, dot);
+                var type = receiver?.Split('.')[^1];
+                if (receiver is null || (char.IsLower(receiver[0]) && !KeywordTypes.Contains(receiver.Split('.')[0])))
+                {
+                    if (call) found.Add((name, map.Types.Values.Select(t => t.Name).Distinct().SelectMany(t => map.MembersOf(t, name, false)).ToList(), null));
+                }
+                else if (type is not null && map.IsType(type))
+                {
+                    var targets = map.MembersOf(type, name, true);
+                    if (call && targets.Count == 0) found.Add((type + "." + name, none, type + "." + name));
+                    else found.Add((type + "." + name, targets, null));
+                }
+                else if (call && external is not null && !external.Contains(receiver + "." + name)) found.Add((receiver + "." + name, none, receiver + "." + name));
+                continue;
+            }
+            if (call)
+            {
+                var targets = map.Visible(name, at, true, true);
+                found.Add((name, targets, targets.Count == 0 ? name : null));
+            }
+            else found.Add((name, map.Visible(name, at, true, false), null));
+        }
+        return found;
+    }
+
+    // The declarations reached from the roots, transitively (see above), and the unresolved callees. Declarations inside a
+    // root are not listed (the root's own text covers them).
+    static (List<(string Name, int Start, int End)> Reached, List<string> Unresolved) Reach(CodeMap map, List<(int Start, int End)> roots, IReadOnlySet<string>? external)
+    {
         var reached = new List<(string Name, int Start, int End)>();
         var unresolved = new List<string>();
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-        var queue = new Queue<string>();
-        foreach (var (start, end) in roots) foreach (var name in Callees(code[start..end])) queue.Enqueue(name);
-        while (queue.Count > 0)
+        var seen = new HashSet<(int, int)>(roots);
+        var texts = new Queue<(int Start, int End)>(roots);
+        while (texts.Count > 0)
         {
-            var name = queue.Dequeue();
-            if (!seen.Add(name)) continue;
-            var found = Declarations(code, name).Where(d => Depth(code, d.Start) == 1 || scopes.Any(s => s.Start <= d.Start && d.Start < s.End)).ToList();
-            if (found.Count == 0) { unresolved.Add(name); continue; }
-            foreach (var d in found)
+            var (start, end) = texts.Dequeue();
+            foreach (var (name, targets, problem) in References(map, start, end, external))
             {
-                if (roots.Any(r => r.Start <= d.Start && d.End <= r.End)) continue;
-                reached.Add((name, d.Start, d.End));
-                scopes.Add(d);
-                foreach (var callee in Callees(code[d.Start..d.End])) queue.Enqueue(callee);
+                if (problem is not null) { if (!unresolved.Contains(problem)) unresolved.Add(problem); continue; }
+                foreach (var target in targets)
+                {
+                    if (roots.Any(r => r.Start <= target.Start && target.End <= r.End) || !seen.Add(target)) continue;
+                    reached.Add((name, target.Start, target.End));
+                    texts.Enqueue(target);
+                }
             }
         }
         return (reached, unresolved);
@@ -2964,7 +3180,12 @@ internal static class GeneratePrototypesTests
 
     // P7-40: section 15's trailing-comma reformat: GenerateWrite.cs with the success object's trailing comma (after sha256)
     // removed and no other change; null unless that comma is found exactly once.
-    static string? SuccessTrailingCommaRemoved(string code) => System.Text.RegularExpressions.Regex.Replace(code, @",(\s*\})", "$1");
+    static string? SuccessTrailingCommaRemoved(string code)
+    {
+        const string SuccessComma = @"\bsha256\s*,(\s*\}\s*\)\s*\)\s*;)";
+        return System.Text.RegularExpressions.Regex.Matches(code, SuccessComma).Count == 1
+            ? System.Text.RegularExpressions.Regex.Replace(code, SuccessComma, "sha256$1") : null;
+    }
 
     // ---- 16. P7-40: the section 14 write pins through generic, qualified, method-group, delegate and cross-class calls ----
     //   a. ExecuteWriteProblems (section 14 c) rejects a stdout write hidden behind an explicit generic call Echo<string>(,
