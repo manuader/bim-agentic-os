@@ -2150,3 +2150,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay277
 - 2026-11-24T12:53:41Z lock taken (session_014pxpsR3YnZMDZJisF8w1AZ relay277; was FREE, relay276 released 2026-11-24T12:20:06Z)
+- 2026-11-24T12:53:58Z picked P3-39 (phase 3), P4-36 (phase 4), P6-42 (phase 6) — oldest-touched (relay273); disjoint files (tests/cli/InternalErrorDelegationTests.cs P3-29 section; tests/packaging/test-package.ps1 header/P4 section + tests/cli/PackageLayoutPackTests.cs; tests/cad/MinsertEzdxfTests.cs + minsert_ezdxf_centres.py + Bim.Cad if defect + cad-brief P6-34 paragraph). Workers spawned; heartbeat via /home/claude/hb.sh.
