@@ -2610,6 +2610,24 @@ internal static class GeneratePrototypesTests
         };
     }
 
+    // P7-42: the problem (a substring of one of ExecuteWriteProblems' problems) each ExecuteMutants mutant must be
+    // rejected for (section 15 c); a label without one is a failure.
+    static string ExecuteMutantReason(string label) => label switch
+    {
+        "a second write of the refusal line" or "a guarded retry of the refusal line" => "Execute does not write the refusal line with exactly one Console.WriteLine(refused)",
+        "a newline completing the refusal line" => "Execute uses a stdout Console member other than twice",
+        "the refusal line written on stderr too" => "Execute writes stderr other than the one PartialOutputLeft line",
+        "a loop writing the refusal line" or "a goto retry of the refusal line" or "a goto retry of the success write" or "a loop around the success try" => "Execute has a loop or goto",
+        "a lambda writing the refusal line twice" => "Execute has a lambda other than the accepted count",
+        "the success line written again in the cleanup catch" or "a second success write after the first" => "Execute does not write the success line with exactly one Console.WriteLine(JsonSerializer.Serialize(new {",
+        "a re-run of Execute in the cleanup catch" => "Execute calls itself",
+        "a filtered retry catch on the success write" => "Execute has an exception filter other than the WriteNew IO one",
+        "a newline completing the success line" => "the success line is not the last statement of its try",
+        "a finally completing the success line" => "Execute has a finally",
+        "a second pipeline run" => "Execute runs Generate( other than once",
+        _ => "<no reason listed for " + label + ">",
+    };
+
     // P7-36 / P7-38: over the comment-stripped, string-blanked GeneratePrototypesTests.cs: the problems that would let
     // section 12 or 13 replace stdout other than through the one shared ForcedRun helper (empty = pinned).
     static List<string> ForcedRunCopyProblems(string tests)
@@ -2692,7 +2710,7 @@ internal static class GeneratePrototypesTests
     // P7-40: Execute is found as a member of GenerateCommand (not at brace depth 1), and the reach also follows generic,
     // qualified (GenerateCommand.X(), method-group, delegate and cross-class calls (see Reach); a call into a class outside
     // the two files is allowed only when listed in ExecuteExternalCalls, else unresolved (a problem).
-    static List<string> ExecuteWriteProblems(string write, string command)
+    static List<string> ExecuteWriteProblems(string write, string command, string? followed = null)
     {
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
         var problems = new List<string>();
@@ -2754,6 +2772,21 @@ internal static class GeneratePrototypesTests
     // (Type.Member): BCL and library code, and CLI helpers that write nothing to stdout (OutputProblem, BoundedInput,
     // SkillPackLookup, IntentPlan.InternalDiagnostic; not followed into their files). Console's members are listed so the
     // stdout checks, not this list, judge them. Any other external call Execute reaches is unresolved.
+    // P7-42: the CLI files Execute's calls into GltfExportCommand.OutputProblem, BoundedInput.ReadText, SkillPackLookup.Load and
+    // IntentPlan.InternalDiagnostic lead to, comment-stripped and string-blanked, joined by newlines (read once from the
+    // repository root: the first ancestor of the test binary holding global.json, as Program.cs finds it).
+    static readonly string[] ExecuteFollowedFiles = { "OutputProblem.cs", "BoundedInput.cs", "SkillPackLookup.cs", "IntentPlan.cs" };
+    static string? executeFollowedCode;
+    static string ExecuteFollowedCode()
+    {
+        if (executeFollowedCode is not null) return executeFollowedCode;
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory is not null && !File.Exists(Path.Combine(directory.FullName, "global.json"))) directory = directory.Parent;
+        if (directory is null) throw new InvalidOperationException("repository root with global.json not found");
+        var root = directory.FullName;
+        return executeFollowedCode = string.Join("\n", ExecuteFollowedFiles.Select(file => ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", file)))));
+    }
+
     static readonly HashSet<string> ExecuteExternalCalls = new(StringComparer.Ordinal)
     {
         "Console.WriteLine", "Console.Error.WriteLine", "GltfExportCommand.OutputProblem", "GltfExporter.WriteNew", "Convert.ToHexString",
@@ -3099,21 +3132,26 @@ internal static class GeneratePrototypesTests
         const string ClassMember = @"\bstatic\s+void\s+PartialWriterExecuteStage\s*\(";
         const string Copy = "static void ForcedRunCopy(System.Reflection.MethodInfo run, TextWriter stdout, string[] args) { var previous = Console.Out; "
             + "try { Console.SetOut(stdout); run.Invoke(null, new object?[] { args }); } finally { Console.SetOut(previous); } } static void PartialWriterExecuteStage(";
-        var copyMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        // P7-42: each mutant of this section names the problem it must be rejected for (a substring of one problem).
+        static bool Names(List<string> problems, string reason) => problems.Any(p => p.Contains(reason, StringComparison.Ordinal));
+        const string CopyReached = "section 12 or 13 reaches ForcedRunCopy, which sets stdout or invokes by reflection";
+        var copyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
-            ("a second Console.SetOut in ForcedRun", new[] { (ForcedSetOut, "Console.SetOut(stdout); Console.SetOut(stdout); Console.SetError(stderr); Environment.ExitCode = 0; seams[") }),
-            ("a Console.SetOut of section 12's own", new[] { (TwelveCall, "Console.SetOut(stdout); ForcedRun(runMethod, seams, stdout, before, work, stage, args)") }),
-            ("a copied helper called by section 13 besides ForcedRun", new[] { (ThirteenCall, "ForcedRunCopy(runMethod, stdout, args); var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);"), (ClassMember, Copy) }),
+            ("a second Console.SetOut in ForcedRun", new[] { (ForcedSetOut, "Console.SetOut(stdout); Console.SetOut(stdout); Console.SetError(stderr); Environment.ExitCode = 0; seams[") },
+                "ForcedRun does not call Console.SetOut exactly twice"),
+            ("a Console.SetOut of section 12's own", new[] { (TwelveCall, "Console.SetOut(stdout); ForcedRun(runMethod, seams, stdout, before, work, stage, args)") }, "section 12 calls Console.SetOut 1 times itself"),
+            ("a copied helper called by section 13 besides ForcedRun", new[] { (ThirteenCall, "ForcedRunCopy(runMethod, stdout, args); var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);"), (ClassMember, Copy) }, CopyReached),
             ("a copied helper reached from section 12 through a second helper", new[] { (TwelveCall, "Prepare(runMethod, stdout, args); ForcedRun(runMethod, seams, stdout, before, work, stage, args)"),
-                (ClassMember, "static void Prepare(System.Reflection.MethodInfo run, TextWriter stdout, string[] args) => ForcedRunCopy(run, stdout, args); " + Copy) }),
-            ("a copied helper replacing section 13's call", new[] { (ThirteenCall, "ForcedRunCopy(runMethod, stdout, args); var r = (Thrown: (Exception?)null, Events: new List<string>(), Exit: 0, Out: stdout, Restored: true);"), (ClassMember, Copy) }),
-            ("a copy inlined in section 13", new[] { (ThirteenCall, "var previous = Console.Out; Console.SetOut(stdout); runMethod.Invoke(null, new object?[] { args }); Console.SetOut(previous); var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);") }),
+                (ClassMember, "static void Prepare(System.Reflection.MethodInfo run, TextWriter stdout, string[] args) => ForcedRunCopy(run, stdout, args); " + Copy) }, CopyReached),
+            ("a copied helper replacing section 13's call", new[] { (ThirteenCall, "ForcedRunCopy(runMethod, stdout, args); var r = (Thrown: (Exception?)null, Events: new List<string>(), Exit: 0, Out: stdout, Restored: true);"), (ClassMember, Copy) }, CopyReached),
+            ("a copy inlined in section 13", new[] { (ThirteenCall, "var previous = Console.Out; Console.SetOut(stdout); runMethod.Invoke(null, new object?[] { args }); Console.SetOut(previous); var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);") },
+                "section 13 calls Console.SetOut 2 times itself"),
         };
-        foreach (var (label, edits) in copyMutants)
+        foreach (var (label, edits, reason) in copyMutants)
         {
             var mutated = Mutate(tests, edits);
             var problems = mutated is null ? new List<string>() : ForcedRunCopyProblems(mutated);
-            Check(mutated is not null && problems.Count > 0, "one-copy self-test: " + label + " is rejected", (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+            Check(mutated is not null && Names(problems, reason), "one-copy self-test: " + label + " is rejected for " + reason, (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
         // b. Execute's pin over the helpers it reaches.
@@ -3125,29 +3163,31 @@ internal static class GeneratePrototypesTests
         const string AfterParsed = @"var\s+parsed\s*=\s*generated\s*\.\s*Parsed\s*;";
         const string AfterResult = @"var\s+result\s*=\s*generated\s*\.\s*Result\s*;";
         const string BeforeFail = @"\bstatic\s+void\s+Fail\s*\(";
-        var helperMutants = new (string Label, (string Pattern, string Replacement)[] Write, (string Pattern, string Replacement)[] Command)[]
+        const string Through = "Execute reaches a stdout Console member through the helper ";
+        var helperMutants = new (string Label, (string Pattern, string Replacement)[] Write, (string Pattern, string Replacement)[] Command, string Reason)[]
         {
             ("a private helper writing stdout, called before the pipeline",
-                new[] { (AfterOutput, "var output = args[2]; Announce();"), (BeforeFail, "static void Announce() { Console.Out.Write(string.Empty); } static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterOutput, "var output = args[2]; Announce();"), (BeforeFail, "static void Announce() { Console.Out.Write(string.Empty); } static void Fail(") }, Array.Empty<(string, string)>(), Through + "Announce"),
             ("an expression-bodied private helper writing the document",
-                new[] { (AfterParsed, "var parsed = generated.Parsed; Echo(generated.Json);"), (BeforeFail, "static void Echo(string line) => Console.WriteLine(line); static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterParsed, "var parsed = generated.Parsed; Echo(generated.Json);"), (BeforeFail, "static void Echo(string line) => Console.WriteLine(line); static void Fail(") }, Array.Empty<(string, string)>(), Through + "Echo"),
             ("a private helper writing stdout through a second helper",
-                new[] { (AfterResult, "var result = generated.Result; Prepare(result);"), (BeforeFail, "static void Prepare(PrototypePipelineResult result) { Emit(result.Alternatives.Count); } static void Emit(int count) { Console.Write(count); } static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterResult, "var result = generated.Result; Prepare(result);"), (BeforeFail, "static void Prepare(PrototypePipelineResult result) { Emit(result.Alternatives.Count); } static void Emit(int count) { Console.Write(count); } static void Fail(") }, Array.Empty<(string, string)>(), Through + "Emit"),
             ("a private helper calling Fail",
-                new[] { (AfterOutput, "var output = args[2]; Report();"), (BeforeFail, "static void Report() => Fail(UsageCode, null); static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterOutput, "var output = args[2]; Report();"), (BeforeFail, "static void Report() => Fail(UsageCode, null); static void Fail(") }, Array.Empty<(string, string)>(), Through + "Fail"),
             ("a private helper printing an IntentPlan envelope",
-                new[] { (AfterOutput, "var output = args[2]; Warn(args);"), (BeforeFail, "static void Warn(string[] args) { IntentPlan.Internal(args[0], new InvalidOperationException()).Print(); } static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterOutput, "var output = args[2]; Warn(args);"), (BeforeFail, "static void Warn(string[] args) { IntentPlan.Internal(args[0], new InvalidOperationException()).Print(); } static void Fail(") }, Array.Empty<(string, string)>(),
+                "Execute reaches Print( through the helper Warn"),
             ("a delegate field writing stdout",
-                new[] { (AfterParsed, "var parsed = generated.Parsed; Echo(generated.Json);"), (BeforeFail, "static readonly Action<string> Echo = Console.WriteLine; static void Fail(") }, Array.Empty<(string, string)>()),
+                new[] { (AfterParsed, "var parsed = generated.Parsed; Echo(generated.Json);"), (BeforeFail, "static readonly Action<string> Echo = Console.WriteLine; static void Fail(") }, Array.Empty<(string, string)>(), Through + "Echo"),
             ("a helper of Generate in GenerateCommand.cs writing stdout", Array.Empty<(string, string)>(),
-                new[] { (@"var\s+parsed\s*=\s*Parse\s*\(\s*text\s*\)\s*;", "var parsed = Parse(text); Log(parsed);"), (@"\bstatic\s+Parsed\s+Parse\s*\(", "static void Log(Parsed parsed) { Console.WriteLine(parsed.Pack); } static Parsed Parse(") }),
+                new[] { (@"var\s+parsed\s*=\s*Parse\s*\(\s*text\s*\)\s*;", "var parsed = Parse(text); Log(parsed);"), (@"\bstatic\s+Parsed\s+Parse\s*\(", "static void Log(Parsed parsed) { Console.WriteLine(parsed.Pack); } static Parsed Parse(") }, Through + "Log"),
         };
-        foreach (var (label, writeEdits, commandEdits) in helperMutants)
+        foreach (var (label, writeEdits, commandEdits, reason) in helperMutants)
         {
             var mutatedWrite = Mutate(write, writeEdits);
             var mutatedCommand = Mutate(command, commandEdits);
             var problems = mutatedWrite is null || mutatedCommand is null ? new List<string>() : ExecuteWriteProblems(mutatedWrite, mutatedCommand);
-            Check(mutatedWrite is not null && mutatedCommand is not null && problems.Count > 0, "Execute self-test: " + label + " is rejected",
+            Check(mutatedWrite is not null && mutatedCommand is not null && Names(problems, reason), "Execute self-test: " + label + " is rejected for " + reason,
                 (mutatedWrite is null || mutatedCommand is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
@@ -3173,7 +3213,8 @@ internal static class GeneratePrototypesTests
         {
             var mutated = Mutate(spreadWrite, (pattern, replacement));
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, spreadCommand);
-            Check(mutated is not null && problems.Count > 0, "reformat self-test: " + label + " is still rejected on the spread source without the trailing comma",
+            var reason = ExecuteMutantReason(label);
+            Check(mutated is not null && Names(problems, reason), "reformat self-test: " + label + " is still rejected on the spread source without the trailing comma, for " + reason,
                 (mutated is null ? "the anchor does not match once; " : "") + Problems(problems));
         }
     }
@@ -3201,6 +3242,17 @@ internal static class GeneratePrototypesTests
     //      brace depth 2) and still reject a mutant there.
     //   d. SuccessTrailingCommaRemoved (section 15's reformat) removes the success object's trailing comma only: another
     //      trailing comma added to GenerateWrite.cs is kept.
+    //   P7-42: every mutant of sections 15 and 16 is rejected for its own reason (a substring of one problem), not only
+    //   rejected; and
+    //   e. a delegate field or property assigned outside its declaration (in a static constructor, a method, another class's
+    //      expression-bodied method as GenerateCommand.Echo =, or added to with +=) and invoked as Echo?.Invoke( or Echo( (the
+    //      PostWriteStageProbe shape) is followed to the assigned delegate, in Execute's pin and in the one-copy pin;
+    //   f. an uppercase property chain (Result.Items.Count(), GenerateCommand.Result.Items.Count()) is an instance receiver,
+    //      not an unresolved external call, and its method is followed (Result.Say() writing stdout is rejected);
+    //   g. nested generic and tuple type arguments (Run<Dictionary<string, List<int>>>(, Run<(int Count, string Name)>(,
+    //      Emit<(int, int)>() are calls: unlisted or undeclared, they are unresolved;
+    //   h. Execute's calls into OutputProblem.cs, BoundedInput.cs, SkillPackLookup.cs and IntentPlan.cs are followed into
+    //      those files: a stdout write hidden in each is rejected.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -3229,31 +3281,86 @@ internal static class GeneratePrototypesTests
         const string ClassHeader = @"\binternal\s+static\s+partial\s+class\s+GenerateCommand\b";
         const string Echo = "static void Echo(string line) => Console.WriteLine(line); static void Fail(";
         const string Parsed = "var parsed = generated.Parsed; ";
-        var executeMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        // P7-42: each mutant names the problem it must be rejected for (a substring of one of ExecuteWriteProblems' problems).
+        const string Through = "Execute reaches a stdout Console member through the helper ";
+        const string Holder = "static Holder Result { get; } = new(); sealed class Holder { internal int[] Items { get; } = new int[0]; internal void Say() => Console.WriteLine(); } static void Fail(";
+        var executeMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
-            ("an explicit generic call Echo<string>(", new[] { (AfterParsed, Parsed + "Echo<string>(generated.Json);"), (BeforeFail, "static void Echo<T>(T line) => Console.WriteLine(line); static void Fail(") }),
+            ("an explicit generic call Echo<string>(", new[] { (AfterParsed, Parsed + "Echo<string>(generated.Json);"), (BeforeFail, "static void Echo<T>(T line) => Console.WriteLine(line); static void Fail(") }, Through + "Echo"),
             ("an inferred call of a generic helper with a where clause", new[] { (AfterParsed, Parsed + "Echo(generated.Json);"),
-                (BeforeFail, "static void Echo<T>(T line) where T : class { Console.Out.Write(line); } static void Fail(") }),
-            ("a qualified GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }),
-            ("a namespace-qualified Bim.Cli.GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "Bim.Cli.GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }),
-            ("a method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(Echo);"), (BeforeFail, Echo) }),
-            ("a qualified method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(GenerateCommand.Echo);"), (BeforeFail, Echo) }),
-            ("a method group assigned to a local delegate", new[] { (AfterParsed, Parsed + "Action<string> say = Echo; say(generated.Json);"), (BeforeFail, Echo) }),
+                (BeforeFail, "static void Echo<T>(T line) where T : class { Console.Out.Write(line); } static void Fail(") }, Through + "Echo"),
+            ("a qualified GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }, Through + "GenerateCommand.Echo"),
+            ("a namespace-qualified Bim.Cli.GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "Bim.Cli.GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }, Through + "GenerateCommand.Echo"),
+            ("a method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(Echo);"), (BeforeFail, Echo) }, Through + "Echo"),
+            ("a qualified method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(GenerateCommand.Echo);"), (BeforeFail, Echo) }, Through + "GenerateCommand.Echo"),
+            ("a method group assigned to a local delegate", new[] { (AfterParsed, Parsed + "Action<string> say = Echo; say(generated.Json);"), (BeforeFail, Echo) }, Through + "Echo"),
             ("a static method of a class nested in GenerateCommand", new[] { (AfterParsed, Parsed + "Echoes.Line(generated.Json);"),
-                (BeforeFail, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } static void Fail(") }),
+                (BeforeFail, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } static void Fail(") }, Through + "Echoes.Line"),
             ("a static method of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "Echoes.Line(generated.Json);"),
-                (ClassHeader, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } internal static partial class GenerateCommand") }),
+                (ClassHeader, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } internal static partial class GenerateCommand") }, Through + "Echoes.Line"),
             ("an instance method of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "new Echoer().Say(generated.Json);"),
-                (ClassHeader, "sealed class Echoer { internal void Say(string line) => Console.Out.WriteLine(line); } internal static partial class GenerateCommand") }),
+                (ClassHeader, "sealed class Echoer { internal void Say(string line) => Console.Out.WriteLine(line); } internal static partial class GenerateCommand") }, Through + "Say"),
             ("a constructor of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "_ = new Echoer(generated.Json);"),
-                (ClassHeader, "sealed class Echoer { internal Echoer(string line) { Console.Write(line); } } internal static partial class GenerateCommand") }),
-            ("a call into a class the pin does not read (GltfExportCommand.Run)", new[] { (AfterOutput, "var output = args[2]; GltfExportCommand.Run(args);") }),
+                (ClassHeader, "sealed class Echoer { internal Echoer(string line) { Console.Write(line); } } internal static partial class GenerateCommand") }, Through + "new Echoer"),
+            ("a call into a class the pin does not read (GltfExportCommand.Run)", new[] { (AfterOutput, "var output = args[2]; GltfExportCommand.Run(args);") }, "Execute reaches GltfExportCommand.Run("),
+            // P7-42 (e): a delegate field or property assigned outside its declaration (the PostWriteStageProbe shape).
+            ("a delegate field assigned in a static constructor, invoked as Echo?.Invoke(", new[] { (AfterParsed, Parsed + "Echo?.Invoke(generated.Json);"),
+                (BeforeFail, "static Action<string>? Echo; static GenerateCommand() { Echo = line => Console.WriteLine(line); } static void Fail(") }, Through + "Echo"),
+            ("a delegate property assigned in a method, invoked as Echo?.Invoke()", new[] { (AfterParsed, Parsed + "Echo?.Invoke();"),
+                (BeforeFail, "internal static Action? Echo { get; set; } static void Arm() { Echo = () => Console.Out.Write(string.Empty); } static void Fail(") }, Through + "Echo"),
+            ("a delegate property assigned as GenerateCommand.Echo by another class's expression-bodied method", new[] { (AfterParsed, Parsed + "Echo?.Invoke();"),
+                (BeforeFail, "internal static Action? Echo { get; set; } static void Fail("),
+                (ClassHeader, "static class Arming { internal static void Arm() => GenerateCommand.Echo = () => Console.WriteLine(); } internal static partial class GenerateCommand") }, Through + "Echo"),
+            ("a delegate field initialized to null, added to in a static constructor, called Echo(", new[] { (AfterParsed, Parsed + "Echo(generated.Json);"),
+                (BeforeFail, "static Action<string>? Echo = null; static GenerateCommand() { Echo += Console.WriteLine; } static void Fail(") }, Through + "Echo"),
+            // P7-42 (f): an uppercase property receiver is an instance: its method is followed.
+            ("an instance method reached through an uppercase property Result.Say()", new[] { (AfterResult, "var result = generated.Result; Result.Say();"), (BeforeFail, Holder) }, Through + "Say"),
+            // P7-42 (g): nested generic and tuple type arguments are calls.
+            ("an unlisted external call with a nested generic type argument", new[] { (AfterOutput, "var output = args[2]; GltfExportCommand.Run<Dictionary<string, List<int>>>(args);") }, "Execute reaches GltfExportCommand.Run("),
+            ("an unlisted external call with a named tuple type argument", new[] { (AfterOutput, "var output = args[2]; GltfExportCommand.Run<(int Count, string Name)>(args);") }, "Execute reaches GltfExportCommand.Run("),
+            ("an undeclared callee with a tuple type argument", new[] { (AfterOutput, "var output = args[2]; Emit<(int, int)>((1, 2));") }, "Execute reaches Emit("),
+            ("a helper called with a nested generic tuple type argument", new[] { (AfterParsed, Parsed + "Echo<Dictionary<string, List<(int, string)>>>(null);"),
+                (BeforeFail, "static void Echo<T>(T value) => Console.WriteLine(value); static void Fail(") }, Through + "Echo"),
         };
-        foreach (var (label, edits) in executeMutants)
+        foreach (var (label, edits, reason) in executeMutants)
         {
             var mutated = Mutate(write, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, command);
-            Check(mutated is not null && problems.Count > 0, "Execute self-test: " + label + " is rejected", (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "Execute self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-42 (f): uppercase property chains whose methods are not declared in the code are not unresolved external calls.
+        var uppercase = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        {
+            ("Result.Items.Count()", new[] { (AfterResult, "var result = generated.Result; var count = Result.Items.Count();"), (BeforeFail, Holder) }),
+            ("GenerateCommand.Result.Items.Count()", new[] { (AfterResult, "var result = generated.Result; var count = GenerateCommand.Result.Items.Count();"), (BeforeFail, Holder) }),
+        };
+        foreach (var (label, edits) in uppercase)
+        {
+            var mutated = Mutate(write, edits);
+            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command);
+            Check(problems.Count == 0, "receiver self-test: Execute pin accepts an uppercase property chain " + label, Problems(problems));
+        }
+
+        // P7-42 (h): the calls into the repository's CLI helpers are followed into their files: a stdout write hidden in each
+        // is rejected.
+        var followed = ExecuteFollowedCode();
+        var followedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("BoundedInput.ReadText", new[] { (@"var\s+bytes\s*=\s*ReadBytes\s*\(\s*path\s*,\s*MaxBytes\s*,\s*share\s*\)\s*;", "Console.WriteLine(path); var bytes = ReadBytes(path, MaxBytes, share);") },
+                Through + "BoundedInput.ReadText"),
+            ("GltfExportCommand.OutputProblem", new[] { (@"\bformat\s*=\s*""""\s*;", "format = \"\"; Console.Out.Write(path);") }, Through + "GltfExportCommand.OutputProblem"),
+            ("SkillPackLookup.Load", new[] { (@"if\s*\(\s*pack\s*\.\s*Id\s*!=\s*packId\s*\)", "Console.WriteLine(packId); if (pack.Id != packId)") }, Through + "SkillPackLookup.Load"),
+            ("IntentPlan.InternalDiagnostic", new[] { (@"InternalDiagnostic\s*\(\s*string\s+verb\s*,\s*Exception\s+error\s*\)\s*=>\s*verb\b", "InternalDiagnostic(string verb, Exception error) => Shout(verb)"),
+                (@"\bstatic\s+IntentStep\s*<\s*T\s*>\s+Refuse\s*<", "static string Shout(string text) { Console.WriteLine(text); return text; } static IntentStep<T> Refuse<") }, Through + "Shout"),
+        };
+        foreach (var (label, edits, reason) in followedMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "followed self-test: a stdout write in " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
@@ -3263,23 +3370,32 @@ internal static class GeneratePrototypesTests
         const string ContractCall = @"\bPartialWriteContractStage\s*\(\s*root\s*,\s*scratch\s*,\s*cliDll\s*,\s*expected\s*,\s*check\s*,\s*arguments\s*=>\s*Cli\s*\(\s*arguments\s*\)\s*\)\s*;";
         const string CopyBody = "{ var previous = Console.Out; try { Console.SetOut(stdout); run.Invoke(null, new object?[] { args }); } finally { Console.SetOut(previous); } }";
         const string Copy = "static void ForcedRunCopy(System.Reflection.MethodInfo run, TextWriter stdout, string[] args) " + CopyBody + " static void PartialWriterExecuteStage(";
-        var copyMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        const string Copied = " which sets stdout or invokes by reflection";
+        var copyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("a copy in a delegate field section 13 calls", new[] { (ThirteenCall, "Runner(runMethod, stdout, args); " + Thirteen),
-                (ClassMember, "static readonly Action<System.Reflection.MethodInfo, TextWriter, string[]> Runner = (run, stdout, args) => " + CopyBody + "; static void PartialWriterExecuteStage(") }),
+                (ClassMember, "static readonly Action<System.Reflection.MethodInfo, TextWriter, string[]> Runner = (run, stdout, args) => " + CopyBody + "; static void PartialWriterExecuteStage(") }, "reaches Runner," + Copied),
             ("a copy in the lambda section 13's caller passes as cli", new[] { (ContractCall,
-                "PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); return Cli(arguments); } finally { Console.SetOut(previous); } });") }),
+                "PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); return Cli(arguments); } finally { Console.SetOut(previous); } });") },
+                "a call of PartialWriteContractStage passes an argument that sets stdout"),
             ("a copy behind an explicit generic call", new[] { (ThirteenCall, "ForcedRunCopy<TextWriter>(runMethod, stdout, args); " + Thirteen),
-                (ClassMember, "static void ForcedRunCopy<T>(System.Reflection.MethodInfo run, T stdout, string[] args) where T : TextWriter " + CopyBody + " static void PartialWriterExecuteStage(") }),
-            ("a copy behind a qualified GeneratePrototypesTests. call", new[] { (ThirteenCall, "GeneratePrototypesTests.ForcedRunCopy(runMethod, stdout, args); " + Thirteen), (ClassMember, Copy) }),
+                (ClassMember, "static void ForcedRunCopy<T>(System.Reflection.MethodInfo run, T stdout, string[] args) where T : TextWriter " + CopyBody + " static void PartialWriterExecuteStage(") }, "reaches ForcedRunCopy," + Copied),
+            ("a copy behind a qualified GeneratePrototypesTests. call", new[] { (ThirteenCall, "GeneratePrototypesTests.ForcedRunCopy(runMethod, stdout, args); " + Thirteen), (ClassMember, Copy) },
+                "reaches GeneratePrototypesTests.ForcedRunCopy," + Copied),
             ("a copy behind a method group passed to Array.ForEach", new[] { (ThirteenCall, "Array.ForEach(new[] { args }, ForcedRunEach); " + Thirteen),
-                (ClassMember, "static void ForcedRunEach(string[] args) { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); } finally { Console.SetOut(previous); } } static void PartialWriterExecuteStage(") }),
+                (ClassMember, "static void ForcedRunEach(string[] args) { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); } finally { Console.SetOut(previous); } } static void PartialWriterExecuteStage(") },
+                "reaches ForcedRunEach," + Copied),
+            // P7-42 (e): a delegate field assigned in a static constructor and invoked as Runner?.Invoke(.
+            ("a copy in a delegate field assigned in a static constructor, invoked as Runner?.Invoke(", new[] { (ThirteenCall, "Runner?.Invoke(runMethod, stdout, args); " + Thirteen),
+                (ClassMember, "static Action<System.Reflection.MethodInfo, TextWriter, string[]>? Runner; static GeneratePrototypesTests() { Runner = (run, stdout, args) => " + CopyBody + "; } static void PartialWriterExecuteStage(") },
+                "reaches Runner," + Copied),
         };
-        foreach (var (label, edits) in copyMutants)
+        foreach (var (label, edits, reason) in copyMutants)
         {
             var mutated = Mutate(tests, edits);
             var problems = mutated is null ? new List<string>() : ForcedRunCopyProblems(mutated);
-            Check(mutated is not null && problems.Count > 0, "one-copy self-test: " + label + " is rejected", (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "one-copy self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
         // c. Type membership, not brace depth 1: a block-scoped namespace around the sources.
@@ -3291,13 +3407,15 @@ internal static class GeneratePrototypesTests
         Check(blockedReal.Count == 0, "membership self-test: Execute pin accepts GenerateWrite.cs and GenerateCommand.cs in a block-scoped namespace", Problems(blockedReal));
         var blockedMutant = blockedWrite is null ? null : Mutate(blockedWrite, executeMutants[0].Edits);
         var blockedMutantProblems = blockedMutant is null || blockedCommand is null ? new List<string>() : ExecuteWriteProblems(blockedMutant, blockedCommand);
-        Check(blockedMutant is not null && blockedMutantProblems.Count > 0, "membership self-test: " + executeMutants[0].Label + " is still rejected in a block-scoped namespace", Problems(blockedMutantProblems));
+        Check(blockedMutant is not null && blockedMutantProblems.Any(p => p.Contains(executeMutants[0].Reason, StringComparison.Ordinal)),
+            "membership self-test: " + executeMutants[0].Label + " is still rejected in a block-scoped namespace for " + executeMutants[0].Reason, Problems(blockedMutantProblems));
         var blockedTests = "namespace Bim.Cli.Tests.Blocked {\n" + tests + "\n}";
         var blockedCopy = ForcedRunCopyProblems(blockedTests);
         Check(blockedCopy.Count == 0, "membership self-test: one-copy pin accepts the tests file in a block-scoped namespace", Problems(blockedCopy));
         var blockedCopyMutant = Mutate(blockedTests, copyMutants[0].Edits);
         var blockedCopyProblems = blockedCopyMutant is null ? new List<string>() : ForcedRunCopyProblems(blockedCopyMutant);
-        Check(blockedCopyMutant is not null && blockedCopyProblems.Count > 0, "membership self-test: " + copyMutants[0].Label + " is still rejected in a block-scoped namespace", Problems(blockedCopyProblems));
+        Check(blockedCopyMutant is not null && blockedCopyProblems.Any(p => p.Contains(copyMutants[0].Reason, StringComparison.Ordinal)),
+            "membership self-test: " + copyMutants[0].Label + " is still rejected in a block-scoped namespace for " + copyMutants[0].Reason, Problems(blockedCopyProblems));
 
         // d. The trailing-comma reformat touches the success object only.
         var removed = SuccessTrailingCommaRemoved(write);
