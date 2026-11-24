@@ -34,6 +34,10 @@
 # P7-37: the same copy: a ranked generate_typology document (16 x 16 m lot) is pinned by sha256 and byte length (CLI == MCP), every
 # pinned document's byte length and exact stdout status members are asserted; P7-12 cleans up through the warning helper, and
 # cleanup warnings are collected and reported once at the end.
+# P7-39: the tool loop's P7-33/P7-35/P7-37 messages name the case label (ranked reads as ranked); the cleanup report prints
+# nothing without a warning and one line per leftover, also after an early throw; P7-33 case folders have one cleanup path.
+# P7-41: the outer finally's Write-PackageCleanupWarnings call, this header and the caseLabel/one-finally checks are pinned on the
+# PowerShell AST (planted reformat and mutants); Remove-PackageCaseDirectory -Into collects a leftover into a passed list.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1080,12 +1084,15 @@ try {
     # collected and one line per leftover otherwise. It runs from the outer finally, so warnings collected before an early
     # throw (anywhere after this list exists) are still reported; the P7-39 self-test forces such a throw.
     $packageCleanupWarnings = [Collections.Generic.List[string]]::new()
-    function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent) {
+    # P7-41: -Into collects the warning into a passed list instead (a section or self-test that reports on its own); the
+    # default stays the run-wide list because every section's leftovers belong to the one report in the outer finally,
+    # which must still see them when a section throws before it could hand its own list over.
+    function Remove-PackageCaseDirectory([string]$Label, [string]$Path, [switch]$Silent, [Collections.Generic.List[string]]$Into = $packageCleanupWarnings) {
         if (!$Path -or !(Test-Path -LiteralPath $Path)) { return $null }
         try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue } catch { }
         if (!(Test-Path -LiteralPath $Path)) { return $null }
         $warning = "$($Label): a case folder could not be removed and is left behind: $Path"
-        if (!$Silent) { $packageCleanupWarnings.Add($warning) }
+        if (!$Silent) { $Into.Add($warning) }
         return $warning
     }
     function Write-PackageCleanupWarnings($Warnings = $packageCleanupWarnings) {
