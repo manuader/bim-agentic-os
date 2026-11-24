@@ -496,9 +496,6 @@ internal static class InternalErrorDelegationTests
                     // constructors (incl. static and with a this(...) initializer), finalizers and switch-expression-arm
                     // lambdas; and the pinned read directly in such a member stays clean.
                     ("the read moved into a local function inside a required property init accessor (planted)", declaration + "\nsealed class C { public required int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
-                    ("the read moved into a local function inside a virtual property get accessor", declaration + "\nclass C { public virtual int P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
-                    ("the read moved into a local function inside an override property set accessor", declaration + "\nclass C : B { public override int P { get => 0; set { void Later() { " + read + " } Later(); } } }\n", false),
-                    ("the read moved into a local function inside a sealed override protected set accessor", declaration + "\nclass C : B { public sealed override int P { get => 0; protected set { void Later() { " + read + " } Later(); } } }\n", false),
                     ("the read moved into a local function inside an explicit interface get accessor (planted)", declaration + "\nsealed class C : I { int I.P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
                     ("the read moved into a local function inside an explicit interface indexer get accessor", declaration + "\nsealed class C : I { int I.this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
                     ("the read moved into a local function inside an init accessor", declaration + "\nsealed class C { int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
@@ -522,7 +519,46 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a method constrained where T : struct", declaration + "\nstatic void W<T>() where T : struct { try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("an unrelated switch-expression-arm lambda closed before the pinned read", declaration + "\nstatic void W(int n) { Action unrelated = n switch { _ => () => { } }; try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("an unrelated local function inside a finalizer closed before the pinned read", declaration + "\nclass C { ~C() { void Unrelated() { } Unrelated(); } }\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    // P3-39: constructors with a : base(...) initializer (also one whose arguments create an object), methods
+                    // carrying the `new` hiding modifier, checked operators, members of primary-constructor types, and
+                    // lambdas, local functions and anonymous methods in field or property initializers.
+                    ("the read moved into a local function inside a constructor with a base(n) initializer (planted)", declaration + "\nclass C : B { public C(int n) : base(n) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(new object()) initializer (planted)", declaration + "\nclass C : B { public C() : base(new object()) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a new-modifier (hiding) method (planted)", declaration + "\nclass C : B { public new void M() { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a protected new static method returning int[]", declaration + "\nclass C : B { protected new static int[] M() { void Later() { " + read + " } Later(); return null; } }\n", false),
+                    ("the read moved into a local function inside an operator checked + body (planted)", declaration + "\nsealed class C { public static C operator checked +(C a, C b) { void Later() { " + read + " } Later(); return a; } public static C operator +(C a, C b) => a; }\n", false),
+                    ("the read moved into a local function inside an explicit operator checked int body", declaration + "\nsealed class C { public static explicit operator checked int(C c) { void Later() { " + read + " } Later(); return 0; } public static explicit operator int(C c) => 0; }\n", false),
+                    ("the read moved into a local function inside a method of a primary-constructor class (planted)", declaration + "\nsealed class C(int n) { int M() { void Later() { " + read + " } Later(); return n; } }\n", false),
+                    ("the read moved into a local function inside an accessor of a primary-constructor record with a base", declaration + "\nrecord R(int N) : B(N) { int P { get { void Later() { " + read + " } Later(); return N; } } }\n", false),
+                    ("the read moved into a local function inside a this(0) constructor of a primary-constructor struct", declaration + "\nreadonly struct S(int n) { public S() : this(0) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a block lambda in a static field initializer (planted)", declaration + "\nstatic readonly Action Later = () => { " + read + " };\n", false),
+                    ("the read moved into a local function inside a field-initializer lambda", declaration + "\nstatic readonly Action Later = () => { void Inner() { " + read + " } Inner(); };\n", false),
+                    ("the read moved into a block lambda in a property initializer", declaration + "\nstatic Action P { get; } = () => { " + read + " };\n", false),
+                    ("the read moved into an anonymous method in a field initializer", declaration + "\nstatic readonly Action Later = delegate { " + read + " };\n", false),
+                    ("the read moved into an expression lambda in a field initializer", declaration + "\nstatic readonly Action Later = () => " + read + "\n", false),
+                    ("the pinned read in a constructor with a base(new object()) initializer", declaration + "\nclass C : B { public C() : base(new object()) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in an operator checked + body", declaration + "\nsealed class C { public static C operator checked +(C a, C b) { try { " + read + " } catch (Exception) { throw; } return a; } public static C operator +(C a, C b) => a; }\n", true),
+                    ("the pinned read in a method of a primary-constructor class", declaration + "\nsealed class C(int n) { void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in a new-modifier (hiding) method", declaration + "\nclass C : B { public new void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("an unrelated field-initializer lambda closed before the pinned read", declaration + "\nstatic readonly Action Unrelated = () => { };\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    // P3-39 documented limit (BracedInitializerArguments): a constructor initializer whose arguments hold
+                    // braces (`: this(new[] { n })`, `: base(() => { })`) splits the constructor header at that '{', so the
+                    // constructor body is not seen as method-like and a local function there is NOT caught. Pinned as the
+                    // current verdict (clean) so a change in either direction is noticed; production has no such form.
+                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", true),
+                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", true),
                 };
+                // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
+                // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
+                // so the property's modifiers never reach it; the rows guard against a future change that starts reading
+                // the property header (and the class base list `: B`).
+                foreach (var (modifiers, accessors) in new[]
+                {
+                    ("virtual", "get { void Later() { " + read + " } Later(); return 0; }"),
+                    ("override", "get => 0; set { void Later() { " + read + " } Later(); }"),
+                    ("sealed override", "get => 0; protected set { void Later() { " + read + " } Later(); }"),
+                })
+                    cases.Add(("the read moved into a local function inside a " + modifiers + " property accessor", declaration + "\nclass C : B { public " + modifiers + " int P { " + accessors + " } }\n", false));
                 if (full)
                 {
                     var other = type == "Action" ? "internal static Action<string>? " + seam + " { get; set; }" : "internal static Action? " + seam + " { get; set; }";
@@ -564,9 +600,10 @@ internal static class InternalErrorDelegationTests
             }
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
-            // cases (P3-37) for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of
-            // the four new seams: 583.
-            Check(selfTests == 9 * (8 + 8 + 14 + 27) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 583, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
+            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls, 2 pinned limits) for each
+            // of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 772.
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 772, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
