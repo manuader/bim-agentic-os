@@ -25,6 +25,9 @@ using Bim.Core;
 //   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault. P1-39: a pipe-dispose
 //      control (D2) proves the detector's StreamReader filter; a completed read records its result; E claims no collection.
 //   P1-39: one strip helper (StripCode: comments, literals, interpolation holes as code) and brace-matched member bodies.
+//   P1-43: Run ends with one summary line listing every FAIL name (::warning::, beyond the 10 error annotations a step
+//      shows); the Windows D2/B measured runtime is declared once and a different one is a named ::notice::; MemberBody
+//      reads its head at bracket depth 0 (a parameter list or attribute may hold ';', '=>', '{'); {x::} pinned as measured.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -165,10 +168,24 @@ internal static class RevitCommandDeadlineTests
         return read < readTimeout ? cut(read) : transport;
     };
 
+    // P1-43: the step's FAIL names are collected and listed on one summary line at the end, even when a step throws.
     public static void Run(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        var failed = new List<string>();
+        try { RunSteps(root, work, dotnet, cliDll, Collecting(check, failed)); }
+        finally
+        {
+            string[] names;
+            lock (failed) names = failed.ToArray();
+            Console.WriteLine(FailSummary(names));
+        }
+    }
+
+    static void RunSteps(string root, string work, string dotnet, string cliDll, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, name, detail);
         _ = root;
+        VisibilitySelfTest(root, check);
         var dir = Path.Combine(work, "p1-21");
         Directory.CreateDirectory(dir);
         var walls = Path.Combine(dir, "walls.json");
@@ -852,6 +869,85 @@ internal static class RevitCommandDeadlineTests
             early + " sent " + N(sent) + " cuts " + N(cuts));
     }
 
+    // ---- P1-43: one FAIL summary line per test step; the Windows measured runtime declared once ----
+    // GitHub Actions shows at most 10 error annotations per step, so ::error:: FAIL lines after the tenth are hidden. Run
+    // ends with one summary line listing every FAIL name of this test step, as a ::warning:: annotation (a budget of its
+    // own, which cli-inputs only uses for failing P10-30/P10-32 probes); with no failure a plain line says 0 FAIL.
+    const string SummaryTitle = "cli-inputs P1-21..P1-43 deadline tests";
+
+    static string FailSummary(IReadOnlyList<string> failed)
+    {
+        if (failed.Count == 0) return SummaryTitle + ": 0 FAIL";
+        static string Escape(string text) => text.Replace("%", "%25", StringComparison.Ordinal).Replace("\r", "%0D", StringComparison.Ordinal).Replace("\n", "%0A", StringComparison.Ordinal);
+        return "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL: " + string.Join("; ", failed.Select((name, k) => "#" + N(k + 1) + " " + Escape(name)));
+    }
+
+    // The check the steps call: records each FAIL name (in order) and passes every call on unchanged.
+    static Action<bool, string, string> Collecting(Action<bool, string, string> check, List<string> failed) => (condition, name, detail) =>
+    {
+        if (!condition) lock (failed) failed.Add(name);
+        check(condition, name, detail);
+    };
+
+    // The Windows D2/B pins of section 3e were measured on this runtime, OS and CI run (P1-39), declared here only.
+    const string WindowsMeasuredRuntime = ".NET 8.0.34";
+    const string WindowsMeasuredOs = "Windows 10.0.26100";
+    const string WindowsMeasuredRun = "44873211457";
+    static string WindowsMeasured => "Windows pins measured on " + WindowsMeasuredRuntime + ", " + WindowsMeasuredOs + " (CI run " + WindowsMeasuredRun + ")";
+
+    // null when the running runtime and OS are the measured ones; otherwise a named ::notice:: line (the pins still apply).
+    static string? RuntimeNotice(string framework, string os) =>
+        framework == WindowsMeasuredRuntime && os.Contains(WindowsMeasuredOs, StringComparison.Ordinal) ? null
+            : "::notice::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
+                + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
+
+    // P1-43: echoes the format an interpolation hole passes (the compiler's reading of a hole like {x::}).
+    sealed class EchoFormat : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? formatProvider) => "[" + (format ?? "no format") + "]";
+        public override string ToString() => "[no format]";
+    }
+
+    static void VisibilitySelfTest(string root, Action<bool, string, string> check)
+    {
+        var names = Enumerable.Range(1, 12).Select(k => "P1-43 synthetic failure " + N(k)).ToList();
+        names[3] = "P1-43 synthetic failure 4 with a ';' and a '|'";
+        names[7] = "P1-43 synthetic failure 8\nsecond line 100%";
+        var summary = FailSummary(names);
+        var escaped = names.Select(name => name.Replace("%", "%25", StringComparison.Ordinal).Replace("\r", "%0D", StringComparison.Ordinal).Replace("\n", "%0A", StringComparison.Ordinal)).ToArray();
+        var positions = escaped.Select((name, k) => summary.IndexOf("#" + N(k + 1) + " " + name, StringComparison.Ordinal)).ToArray();
+        check(summary.StartsWith("::warning::" + SummaryTitle + ": 12 FAIL: ", StringComparison.Ordinal) && !summary.Contains('\n') && !summary.Contains('\r')
+            && positions.All(at => at > 0) && positions.Zip(positions.Skip(1)).All(pair => pair.First < pair.Second),
+            "P1-43 summary self-test: 12 FAIL names (more than the 10 error annotations a step shows) are listed in order on one ::warning:: line, % CR LF escaped",
+            summary.Replace("\n", "<LF>", StringComparison.Ordinal).Replace("\r", "<CR>", StringComparison.Ordinal));
+        check(FailSummary(Array.Empty<string>()) == SummaryTitle + ": 0 FAIL", "P1-43 summary self-test: no failure is one plain line (no annotation)", FailSummary(Array.Empty<string>()));
+        var calls = new List<string>();
+        var failed = new List<string>();
+        var collecting = Collecting((condition, name, detail) => calls.Add((condition ? "PASS " : "FAIL ") + name + " | " + detail), failed);
+        collecting(true, "a", "1");
+        collecting(false, "b", "2");
+        collecting(false, "c", "");
+        check(calls.SequenceEqual(new[] { "PASS a | 1", "FAIL b | 2", "FAIL c | " }) && failed.SequenceEqual(new[] { "b", "c" }),
+            "P1-43 summary self-test: the collecting check passes every call on unchanged and records the FAIL names in order",
+            string.Join(", ", calls) + " ; failed " + string.Join(", ", failed));
+
+        var framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+        var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+        var same = RuntimeNotice(WindowsMeasuredRuntime, "Microsoft " + WindowsMeasuredOs);
+        var newer = RuntimeNotice(".NET 8.0.99", "Microsoft " + WindowsMeasuredOs);
+        var otherOs = RuntimeNotice(WindowsMeasuredRuntime, "Microsoft Windows 10.0.20348");
+        check(same is null && newer is { } n && n.StartsWith("::notice::", StringComparison.Ordinal) && n.Contains(WindowsMeasured, StringComparison.Ordinal) && n.Contains(".NET 8.0.99", StringComparison.Ordinal)
+            && otherOs is { } o && o.StartsWith("::notice::", StringComparison.Ordinal) && o.Contains("10.0.20348", StringComparison.Ordinal),
+            "P1-43 runtime self-test: the measured runtime and OS give no notice; a different runtime or OS is a named ::notice:: naming both",
+            (same ?? "null") + " ; " + (newer ?? "null") + " ; " + (otherOs ?? "null"));
+        var selfPath = Path.Combine(root, "tests", "cli", "RevitCommandDeadlineTests.cs");
+        var self = File.Exists(selfPath) ? File.ReadAllText(selfPath) : "";
+        int Occurrences(string text) { var count = 0; for (var at = self.IndexOf(text, StringComparison.Ordinal); at >= 0; at = self.IndexOf(text, at + 1, StringComparison.Ordinal)) count++; return count; }
+        check(self.Length > 0 && Occurrences(WindowsMeasuredRuntime) == 1 && Occurrences(WindowsMeasuredOs) == 1 && Occurrences(WindowsMeasuredRun) == 1,
+            "P1-43 runtime self-test: the Windows measured runtime, OS and run each appear once in this file (their declaration)",
+            selfPath + ": " + N(Occurrences(WindowsMeasuredRuntime)) + "/" + N(Occurrences(WindowsMeasuredOs)) + "/" + N(Occurrences(WindowsMeasuredRun)) + "; this run " + framework + ", " + os);
+    }
+
     // ---- 2g. P1-36: RevitDeadlineTransport has one page seam ----
     // Static, on the comment-stripped source of interfaces/cli/RevitDeadlineTransport.cs: no cutTransport or
     // connectTransport seam and no measured flag remain, and Send makes every real-pipe page through one
@@ -989,18 +1085,30 @@ internal static class RevitCommandDeadlineTests
     // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
     // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
     // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
+    // P1-43: the head is read at bracket depth 0 only: a ';', '=>' or '{' inside the parameter list or an attribute
+    // (inside '(' .. ')' or '[' .. ']') is not the member's own end, arrow or block.
     static string? MemberBody(string code, string signature)
     {
         var start = code.IndexOf(signature, StringComparison.Ordinal);
-        var open = start < 0 ? -1 : code.IndexOf('{', start);
-        if (open < 0) return null;
-        var head = code[start..open];
-        if (head.Contains(';') || head.Contains("=>", StringComparison.Ordinal)) return null;
-        var depth = 0;
-        for (var k = open; k < code.Length; k++)
+        if (start < 0) return null;
+        var nested = 0;
+        for (var k = start; k < code.Length; k++)
         {
-            if (code[k] == '{') depth++;
-            else if (code[k] == '}' && --depth == 0) return code[start..(k + 1)];
+            var c = code[k];
+            if (c is '(' or '[') nested++;
+            else if (c is ')' or ']') nested--;
+            else if (nested > 0) continue;
+            else if (c == ';' || (c == '=' && k + 1 < code.Length && code[k + 1] == '>')) return null;
+            else if (c == '{')
+            {
+                var depth = 0;
+                for (var end = k; end < code.Length; end++)
+                {
+                    if (code[end] == '{') depth++;
+                    else if (code[end] == '}' && --depth == 0) return code[start..(end + 1)];
+                }
+                return null;
+            }
         }
         return null;
     }
@@ -1179,6 +1287,52 @@ internal static class RevitCommandDeadlineTests
         var arrowContinuation = clean.Replace("TimeSpan readTimeout)\n    {\n", "TimeSpan readTimeout) => Body(readLine, readTimeout);\n    static string? Body(Func<CancellationToken, Task<string?>> readLine, TimeSpan readTimeout)\n    {\n", StringComparison.Ordinal);
         check(arrowContinuation != clean && ContinuationProblems(arrowContinuation).Length > 0,
             "P1-41 MemberBody self-test: the continuation check flags an expression-bodied ReadReplyLine whose body is the next method", "no problem flagged");
+
+        // P1-43: a ';', '=>' or '{' inside the parameter list or an attribute (bracket depth > 0) is not the member's own:
+        // a block member keeps its body there, on raw and on stripped text; abstract and expression-bodied members with
+        // such parameters still have none (mutants: the P1-41 head check returned null or the attribute's braces).
+        const string Tail = "\n    {\n        return line;\n    }";
+        const string Next = "\n    string? After(string line)\n    {\n        return line;\n    }\n}\n";
+        var blockMembers = new (string Label, string Signature, string Member)[]
+        {
+            ("a parameter attribute holding '=>' and ';' text", "public string? Send(", "public string? Send([Note(\"a => b; c\")] string line)" + Tail),
+            ("a parameter attribute holding an array initializer's braces", "public string? Send(", "public string? Send([Values(new[] { 1, 2 })] string line, Func<int, int>? map = null)" + Tail),
+            ("a member attribute holding '=>' and ';' text", "[Note(\"x => y;\")] public string? Send(", "[Note(\"x => y;\")] public string? Send(string line)" + Tail),
+            ("a generic constraint after a parameter attribute", "public string? Send<T>(", "public string? Send<T>([Note(\"(;)\")] T line) where T : class, new()" + Tail),
+        };
+        foreach (var (label, signature, member) in blockMembers)
+        {
+            var source = "class T\n{\n    " + member + Next;
+            var stripped = StripCode(source);
+            var strippedMember = StripCode(member);
+            check(MemberBody(source, signature) == member && MemberBody(stripped, StripCode(signature)) == strippedMember,
+                "P1-43 MemberBody self-test: a block member with " + label + " keeps its body (raw and stripped)",
+                (MemberBody(source, signature) ?? "null") + " ; " + (MemberBody(stripped, StripCode(signature)) ?? "null"));
+        }
+        var bodiless = new (string Label, string Signature, string Member)[]
+        {
+            ("an abstract member with an array initializer in a parameter attribute", "public abstract string? Send(", "public abstract string? Send([Values(new[] { 1 })] string line);"),
+            ("an expression-bodied member with a '{' in a parameter attribute", "public string? Peek(", "public string? Peek([Note(\"{\")] string line) => line;"),
+            ("an expression-bodied member with braces in its parameters and its expression", "public string? Make(", "public string? Make([Values(new[] { 1 })] string line) => new Holder { Line = line }.Line;"),
+        };
+        foreach (var (label, signature, member) in bodiless)
+        {
+            var source = "abstract class T\n{\n    " + member + Next;
+            check(MemberBody(source, signature) is null && MemberBody(StripCode(source), StripCode(signature)) is null,
+                "P1-43 MemberBody self-test: " + label + " has no body (raw and stripped)",
+                (MemberBody(source, signature) ?? "null") + " ; " + (MemberBody(StripCode(source), StripCode(signature)) ?? "null"));
+        }
+        var attributedArrow = "class T\n{\n    public string? Send([Values(new[] { 1 })] string line) => pipe(line);\n    string? Other(string line)\n    {\n        var pipe = connectThenRead(wait, ReadAfter);\n        return pipe(line);\n    }\n}\n";
+        check(SeamProblems(attributedArrow).Length > 0, "P1-43 MemberBody self-test: the seam check flags an expression-bodied Send with braces in a parameter attribute whose page seam is in the next method", "no problem flagged");
+
+        // P1-43: a hole ending in '::' like {x::}, as measured. The C# compiler reads the first ':' at hole depth 0 as the
+        // format start (an IFormattable receives the format ":"); StripCode, following P1-41's rule that a ':' next to a
+        // ':' is code, keeps x:: as code. They differ only on such a hole, which no pinned source holds.
+        var echo = new EchoFormat();
+        var compiled = $"{echo::}";
+        check(compiled == "[:]", "P1-43 strip self-test: the compiler reads {x::} as x with the format \":\" (measured)", compiled);
+        check(StripCode("var s = $\"{x::}\";") == "var s = \"{x::}\";" && StripCode("var s = $@\"{x::}\";") == "var s = \"{x::}\";",
+            "P1-43 strip self-test: StripCode reads {x::} as the code x:: (P1-41 '::' rule, pinned as measured)", StripCode("var s = $\"{x::}\";") + " ; " + StripCode("var s = $@\"{x::}\";"));
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
@@ -1739,8 +1893,11 @@ internal static class RevitCommandDeadlineTests
             // decoder fault), so the same filter would see B's fault; where it completes (Windows) it reads end of stream.
             var disposeControl = Step("D2", false, false, false);
             // P1-41: the failure text names the runtime the Windows D2/B pins were measured on and the one of this run.
-            var runtime = "Windows pins measured on .NET 8.0.34, Windows 10.0.26100 (CI run 44873211457); this run "
-                + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription + ", " + System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+            // P1-43: that runtime is declared once (WindowsMeasured*); on Windows a different one is a named ::notice::.
+            var framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+            var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+            var runtime = WindowsMeasured + "; this run " + framework + ", " + os;
+            if (OperatingSystem.IsWindows() && RuntimeNotice(framework, os) is { } notice) Console.WriteLine(notice);
             check(disposeControl.Collected && disposeControl.Outcome.Count == 3 && disposeControl.Outcome[0] == "unobserved" && disposeControl.Outcome[1] == "served p1-37 D2"
                 && (OperatingSystem.IsWindows()
                     ? disposeControl.Outcome[2].StartsWith("completed null in ", StringComparison.Ordinal) && disposeControl.Faults.Length == 0
@@ -1761,7 +1918,7 @@ internal static class RevitCommandDeadlineTests
             check(honoured.Collected && honoured.Outcome.Count == 3 && honoured.Outcome[0] == timeout && honoured.Outcome[1] == "served p1-37 A"
                 && !honoured.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !honoured.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && honoured.Faults.Length == 0,
                 "P1-37 real pipe: the production read form (honouring the cancel, pipe disposed at once) times out and raises no UnobservedTaskException", Describe(honoured));
-            // Measured (CI probe run 44788387750; P1-39 re-measured in run 44873211457 on .NET 8.0.34, Windows 10.0.26100,
+            // Measured (CI probe run 44788387750; P1-39 re-measured on the WindowsMeasured runtime, OS and run,
             // Ubuntu 26.04.1, macOS 25.6): A ends canceled on Linux, macOS and Windows; B (pipe disposed under a read
             // ignoring the cancel) ends faulted on Linux and macOS (IOException, the late fault the continuation observes;
             // D2 shows its type) and on Windows completes successfully with null, end of stream (no fault); C and D fault
