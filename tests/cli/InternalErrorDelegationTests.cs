@@ -541,12 +541,18 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a method of a primary-constructor class", declaration + "\nsealed class C(int n) { void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("the pinned read in a new-modifier (hiding) method", declaration + "\nclass C : B { public new void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("an unrelated field-initializer lambda closed before the pinned read", declaration + "\nstatic readonly Action Unrelated = () => { };\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
-                    // P3-39 documented limit (BracedInitializerArguments): a constructor initializer whose arguments hold
-                    // braces (`: this(new[] { n })`, `: base(() => { })`) splits the constructor header at that '{', so the
-                    // constructor body is not seen as method-like and a local function there is NOT caught. Pinned as the
-                    // current verdict (clean) so a change in either direction is noticed; no production seam read sits in one.
-                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", true),
-                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", true),
+                    // P3-41: the P3-39 limit BracedInitializerArguments is removed: a constructor initializer whose arguments
+                    // hold braces (`: this(new[] { n })`, `: base(() => { })`, even with a ';' inside) no longer splits the
+                    // constructor header. New-modifier (hiding) methods with a tuple or ref/ref readonly return type.
+                    ("the read moved into a local function inside a constructor with a this(new[] { n }) initializer (planted)", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { return; }) initializer", declaration + "\nclass C : B { public C() : base(() => { return; }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning a tuple (planted)", declaration + "\nclass C : B { public new (int, int) M() { void Later() { " + read + " } Later(); return (0, 0); } }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning ref int (planted)", declaration + "\nclass C : B { int f; public new ref int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
+                    ("the read moved into a local function inside a protected new static method returning ref readonly int", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
+                    ("the pinned read in a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { try { " + read + " } catch (Exception) { throw; } } C(int[] a) { } }\n", true),
+                    ("the pinned read in a new-modifier method returning a tuple", declaration + "\nclass C : B { public new (int, int) M() { try { " + read + " } catch (Exception) { throw; } return (0, 0); } }\n", true),
+                    ("the pinned read in a new-modifier method returning ref int", declaration + "\nclass C : B { int f; public new ref int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
                 };
                 // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
                 // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
@@ -601,9 +607,11 @@ internal static class InternalErrorDelegationTests
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
-            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls, 2 pinned limits) for each
-            // of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 772.
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 772, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls; its 2 pinned limits are
+            // now planted) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 planted, 3 clean controls)
+            // for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new
+            // seams: 835.
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 835, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
