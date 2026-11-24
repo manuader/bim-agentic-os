@@ -252,6 +252,12 @@ internal static class DeletedCwdPathToolTests
         var counts = "ran " + ran.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", skipped " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture);
         if (skipped > 0) Console.WriteLine("SKIP P10-35 unsearchable working directory: " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture) + " cases skipped (" + counts + ")");
         Check(ran + skipped == 2 * cases.Count && (ran == 0 || skipped == 0 || ran == cases.Count), "P10-37 every case of both modes ran or was a counted SKIP (" + counts + " of " + (2 * cases.Count).ToString(System.Globalization.CultureInfo.InvariantCulture) + ")");
+        // P10-39: the ran-count floor. On a Linux runner where a mode-000 directory is not listable (non-root; the GitHub
+        // ubuntu runner is) every case of both modes runs: nothing may be skipped there.
+        var nonRoot = LinuxNonRoot(work);
+        if (nonRoot) Check(ran == 2 * cases.Count && ran == 34 && skipped == 0, "P10-39 on a Linux non-root runner every case of both modes ran (" + counts + ", expected ran 34)");
+        if (OperatingSystem.IsLinux() && Environment.GetEnvironmentVariable("GITHUB_ACTIONS") == "true")
+            Check(nonRoot, "P10-39 the GitHub Actions Linux runner is non-root (a mode-000 directory is not listable), so the ran-count floor applies (" + counts + ")");
         ValidLockRelativeSkills(work, call, check);
     }
 
@@ -287,6 +293,7 @@ internal static class DeletedCwdPathToolTests
         const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
         var original = Environment.CurrentDirectory;
         var skipped = 0;
+        var ran = 0;
         foreach (var mode in modes)
         {
             var parent = Path.GetFullPath(Path.Combine(work, "p10-37-" + mode + "-" + Guid.NewGuid().ToString("N")));
@@ -344,6 +351,7 @@ internal static class DeletedCwdPathToolTests
                 && reference.Stderr.Length == 0 && reference.Thrown.Length == 0,
                 mode + ": precondition: with the working directory searchable the relative skills_path verifies | " + reference.Text + " isError " + reference.IsError + " " + reference.Stderr + reference.Thrown);
             var run = Call(true);
+            ran++;
             var measured = run.Probe + "; isError " + run.IsError + " " + run.Text + (run.Stderr.Length > 0 ? " stderr " + run.Stderr : "") + (run.Thrown.Length > 0 ? " " + run.Thrown : "");
             string? code = null;
             try { code = JsonNode.Parse(run.Text)?["code"]?.GetValue<string>(); }
@@ -359,5 +367,29 @@ internal static class DeletedCwdPathToolTests
             File.Delete(lockFile);
         }
         if (skipped > 0) Console.WriteLine("SKIP P10-37 skills_lock_verify valid lock, relative skills_path, unsearchable working directory: " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture) + " cases skipped");
+        // P10-39: this block's own count: each mode ran or was a counted SKIP, and on a Linux non-root runner both ran.
+        var counts = "ran " + ran.ToString(System.Globalization.CultureInfo.InvariantCulture) + ", skipped " + skipped.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        Check(ran + skipped == modes.Length, "P10-39 every mode ran or was a counted SKIP (" + counts + " of " + modes.Length.ToString(System.Globalization.CultureInfo.InvariantCulture) + ")");
+        if (LinuxNonRoot(work)) Check(ran == 2 && skipped == 0, "P10-39 on a Linux non-root runner both modes ran (" + counts + ")");
+    }
+
+    // P10-39: a behavioural privilege probe for the count floors, independent of the per-mode probes above: Linux, and a
+    // fresh mode-000 directory cannot be listed (not root / CAP_DAC_OVERRIDE).
+    static bool LinuxNonRoot(string work)
+    {
+        if (!OperatingSystem.IsLinux()) return false;
+        var probe = Path.Combine(work, "p10-39-privilege-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(probe);
+        try
+        {
+            Chmod(probe, UnixFileMode.None);
+            try { Directory.GetFileSystemEntries(probe); return false; }
+            catch (UnauthorizedAccessException) { return true; }
+        }
+        finally
+        {
+            Chmod(probe, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            Directory.Delete(probe);
+        }
     }
 }

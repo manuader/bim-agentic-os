@@ -12,8 +12,8 @@ namespace Bim.Mcp;
 // no link, regular non-empty file, at most SkillLock.MaxInputChars, strict UTF-8; packs: SkillPackHash limits).
 //
 // Both paths must be non-blank, without NUL, at most MaxPathChars characters and accepted by Path.GetFullPath (on .NET 8
-// the only GetFullPath-only rejection is P10-28: a relative path under a deleted working directory, FileNotFoundException
-// on Linux/macOS), else {"status":"failed","code":"skills_lock_path_invalid","detail":"skills"|"lock"}. A lock that cannot be read or parsed
+// the GetFullPath-only rejections are P10-28: a relative path under a deleted working directory, FileNotFoundException
+// on Linux/macOS, and P10-39: under an unsearchable working directory, UnauthorizedAccessException on macOS), else {"status":"failed","code":"skills_lock_path_invalid","detail":"skills"|"lock"}. A lock that cannot be read or parsed
 // is {"status":"failed","code":<SkillLockCodes>,"subject":<lock file name or member path>,"detail":..,"mode":"verify",
 // "verified":false,"packs":[],"issues":[<that issue>]}.
 // Otherwise the report (UTF-8, compact):
@@ -46,8 +46,10 @@ internal static class SkillLockTool
         if (string.IsNullOrWhiteSpace(path) || path.IndexOf('\0') >= 0 || path.Length > MaxPathChars) return Failure(PathInvalid, null, name);
         // P10-28: a relative path cannot be resolved once the working directory is deleted; on Linux and macOS .NET 8
         // GetFullPath then throws FileNotFoundException (observed, run 44329715033), refused like any other unusable path.
+        // P10-39: on macOS a relative path under an unsearchable working directory (it or its parent mode 000) makes
+        // GetFullPath throw UnauthorizedAccessException (observed, run 45285740027: Program's generic catch), refused alike.
         try { Path.GetFullPath(path); }
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return Failure(PathInvalid, null, name); }
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException or UnauthorizedAccessException) { return Failure(PathInvalid, null, name); }
         return null;
     }
 

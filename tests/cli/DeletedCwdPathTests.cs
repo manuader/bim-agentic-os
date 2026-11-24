@@ -27,9 +27,20 @@ internal static class DeletedCwdPathTests
             if (name.StartsWith(Prefix, StringComparison.Ordinal)) check(false, Prefix + "P10-37 a check label carries the prefix once", name);
             check(condition, Prefix + name, detail);
         }
+        // P10-39: every skip label carries the prefix exactly once (the P10-37 rule for checks, applied to skips).
+        void Skip(string name, string why)
+        {
+            if (!name.StartsWith(Prefix, StringComparison.Ordinal) || name.IndexOf(Prefix, Prefix.Length, StringComparison.Ordinal) >= 0)
+                check(false, Prefix + "P10-39 a skip label carries the prefix once", name);
+            skip(name, why);
+        }
         var scratch = Path.Combine(work, "deleted-cwd-path-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
-        try { Cases(scratch, cliDll, Check, skip); Remainder(scratch, cliDll, Check, skip); LinuxUnsearchable(scratch, cliDll, Check, skip); UnsearchableRemainder(root, scratch, cliDll, Check, skip); }
+        try
+        {
+            Cases(scratch, cliDll, Check, Skip); Remainder(scratch, cliDll, Check, Skip); LinuxUnsearchable(scratch, cliDll, Check, Skip); UnsearchableRemainder(root, scratch, cliDll, Check, Skip);
+            LateWrites(scratch, cliDll, Check, Skip); SkillsLockUnsearchable(scratch, cliDll, Check, Skip);
+        }
         finally
         {
             try { if (Directory.Exists(scratch)) Directory.Delete(scratch, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -630,6 +641,201 @@ internal static class DeletedCwdPathTests
             var written = Directory.GetFiles(cwd).Concat(Directory.GetFiles(parent)).ToArray();
             Check(written.Length == 0, label + ": no output file is written", string.Join(",", written));
             Directory.Delete(parent, true);
+        }
+        Check(Environment.ExitCode == exitBefore, Label("both", "Environment.ExitCode is restored (finally)"),
+            Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
+    }
+
+    // ---- P10-39: the remaining late writes (Linux) and skills-lock through SkillLockTool.PathProblem (Linux, macOS) ----
+    // (1) generate-prototypes, generate-typology, plan-layouts and bcf-export with a valid input (absolute) and a relative
+    // output under a mode-000 working directory: GetFullPath accepts (Linux), the output rule accepts, the input is read and
+    // the result built, and the exclusive CreateNew write meets EACCES: the verb's typed output_io_error with detail
+    // UnauthorizedAccessException (bcf-export: bcf_export_output_io_error). Precondition per verb: the same input with an
+    // absolute output writes (exit 0, succeeded). Linux only (macOS refuses the relative output up front, P10-32).
+    // (2) skills-lock verify with one relative path (the skills directory, or the lock) under a mode-000 working directory
+    // or parent. Both paths pass SkillLockTool.PathProblem (shared with the MCP tool skills_lock_verify). Precondition: with
+    // the working directory searchable the relative call verifies. Linux: GetFullPath accepts and the engine reports the
+    // unreadable path (the P10-37 MCP report for skills; lock_missing for the lock). macOS: GetFullPath throws
+    // UnauthorizedAccessException, which PathProblem must refuse as skills_lock_path_invalid (detail "skills"|"lock"), never
+    // Program's generic catch. Unix only; counted SKIP on Windows and when a mode-000 directory stays listable (root).
+    // Exit 1, empty stderr, nothing written, the lock and pack bytes unchanged; modes, cwd and ExitCode restored.
+    static string? PrivilegeSkip(string scratch, string name)
+    {
+        if (OperatingSystem.IsWindows()) return "Unix permission bits (chmod 000) only";
+        var probe = Path.Combine(scratch, name);
+        Directory.CreateDirectory(probe);
+        bool denied;
+        Chmod(probe, UnixFileMode.None);
+        try { Directory.GetFileSystemEntries(probe); denied = false; }
+        catch (UnauthorizedAccessException) { denied = true; }
+        finally { Chmod(probe, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute); }
+        return denied ? null : "a mode-000 directory is still listable (privileged runner)";
+    }
+
+    static void LateWrites(string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        string Write(string name, string text) { var path = Path.Combine(scratch, name); File.WriteAllText(path, text, new UTF8Encoding(false)); return path; }
+        var prototypes = Write("p10-39-prototypes.json", "{\"typology\":1,\"lot\":{\"width_m\":7,\"depth_m\":12},\"alternatives\":2}");
+        var typology = Write("p10-39-typology.json", "{\"pack\":\"bim.typology.vivienda-unifamiliar\",\"family_size\":3,\"lot\":{\"width_m\":16,\"depth_m\":16},\"alternatives\":2,\"seed\":0,\"project_id\":\"00000000-0000-4000-8000-0000000007a7\"}");
+        var brief = Write("p10-39-brief.json", "{\"brief_version\":1,\"name\":\"Small studio\",\"constraints\":{\"site\":{\"width_m\":6,\"depth_m\":8},\"levels\":1},"
+            + "\"rooms\":[{\"id\":\"living\",\"name\":\"Living\",\"target_area_m2\":20,\"min_area_m2\":15},{\"id\":\"bath\",\"name\":\"Bath\",\"target_area_m2\":4,\"min_area_m2\":3}],"
+            + "\"adjacencies\":[{\"a\":\"living\",\"b\":\"bath\",\"kind\":\"required\"}]}");
+        var issues = Write("p10-39-issues.json", "{\"kind\":\"bcf-issues\",\"version\":1,\"project\":{\"id\":\"00000000-0000-4000-8000-000000000039\",\"name\":\"P10-39\",\"author\":\"tests\",\"timestamp\":\"2026-11-02T10:00:00Z\"},"
+            + "\"issues\":[{\"id\":\"00000000-0000-4000-8000-000000000391\",\"title\":\"late write\",\"severity\":\"info\"}]}");
+        const string IoError = """{"status":"failed","code":"output_io_error","detail":"UnauthorizedAccessException"}""";
+        // (verb, arguments for an output path, relative output name, the literal line)
+        var cases = new List<(string Verb, Func<string, string[]> Arguments, string Relative, string Expected)>
+        {
+            ("generate-prototypes", output => new[] { "generate-prototypes", prototypes, output }, RelativeOutput, IoError),
+            ("generate-typology", output => new[] { "generate-typology", typology, output }, RelativeOutput, IoError),
+            ("plan-layouts", output => new[] { "plan-layouts", brief, output, "--alternatives", "1" }, RelativeOutput, IoError),
+            ("bcf-export", output => new[] { "bcf-export", issues, output }, "relative-output.bcfzip", """{"status":"failed","code":"bcf_export_output_io_error","detail":"UnauthorizedAccessException"}"""),
+        };
+        string Label(string what) => "P10-39 late write, unsearchable cwd (Linux): " + what;
+        var why = !OperatingSystem.IsLinux() ? "Linux only: macOS GetFullPath refuses the relative output up front (P10-32), Windows has no Unix permission bits" : PrivilegeSkip(scratch, "p10-39-late-probe");
+        if (why is not null)
+        {
+            foreach (var c in cases) skip(Prefix + Label(c.Verb + " valid input, relative output"), why);
+            return;
+        }
+        Assembly? cli = null;
+        try { cli = Assembly.LoadFrom(cliDll); }
+        catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+        var entry = cli?.EntryPoint;
+        if (entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
+        var original = Environment.CurrentDirectory;
+        var exitBefore = Environment.ExitCode;
+        const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        foreach (var (verb, arguments, relative, expected) in cases)
+        {
+            var label = Label(verb + " valid input, relative output");
+            var refDirectory = Path.Combine(scratch, "p10-39-reference-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(refDirectory);
+            var refOutput = Path.Combine(refDirectory, relative);
+            var refRun = Invoke(entry, arguments(refOutput));
+            var refWrote = File.Exists(refOutput) && new FileInfo(refOutput).Length > 0;
+            Directory.Delete(refDirectory, true);
+            Check(refRun.Exit == 0 && refWrote && refRun.Error.Length == 0 && refRun.Line.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal),
+                label + ": precondition: the same input with an absolute output writes", "exit " + refRun.Exit.ToString(CultureInfo.InvariantCulture) + (refWrote ? " wrote " : " ")
+                + refRun.Line.Replace(scratch, "<scratch>", StringComparison.Ordinal) + (refRun.Error.Length > 0 ? " stderr " + refRun.Error : ""));
+
+            var parent = Path.Combine(scratch, "p10-39-late-" + Guid.NewGuid().ToString("N"));
+            var cwd = Path.Combine(parent, "cwd");
+            Directory.CreateDirectory(cwd);
+            var probe = "";
+            (int Exit, string Line, string Error) run;
+            try
+            {
+                run = Invoke(entry, arguments(relative), () =>
+                {
+                    Directory.SetCurrentDirectory(cwd);
+                    Chmod(cwd, UnixFileMode.None);
+                    try { Path.GetFullPath(relative); probe = "GetFullPath accepted"; }
+                    catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                });
+            }
+            finally
+            {
+                Chmod(cwd, Owner);
+                Directory.SetCurrentDirectory(original);
+            }
+            var line = run.Line.Replace(scratch, "<scratch>", StringComparison.Ordinal);
+            var measured = probe + "; exit " + run.Exit.ToString(CultureInfo.InvariantCulture) + " " + line + (run.Error.Length > 0 ? " stderr " + run.Error : "");
+            Check(probe == "GetFullPath accepted", label + ": precondition: Path.GetFullPath of the relative output is accepted (Linux)", measured);
+            Check(run.Exit == 1 && line == expected && run.Error.Length == 0, label + ": the late write is exactly " + expected + " (exit 1, empty stderr)", measured);
+            Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+            var written = Directory.GetFiles(cwd).Concat(Directory.GetFiles(parent)).ToArray();
+            Check(written.Length == 0, label + ": no output file is written", string.Join(",", written));
+            Directory.Delete(parent, true);
+        }
+        Check(Environment.ExitCode == exitBefore, Label("Environment.ExitCode is restored (finally)"),
+            Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
+    }
+
+    // The P10-37 MCP report (tests/mcp/DeletedCwdPathToolTests.cs LockedSkills37): the CLI verify line equals the MCP text.
+    const string LockedSkills39 = """{"status":"failed","code":"skills_invalid","mode":"verify","verified":false,"lock_version":1,"content_hash":"bim-skill-pack-sha256-v1","packs":[{"id":"bim.test.gamma","version":"1.0.0","content_sha256":"9adb9e8f6b09883bb1579edc8fd96f171301b897581b906020a7a5d4aa6b0000","state":"skill_lock_missing","detail":"pack directory not found under the skills root"}],"issues":[{"code":"skills_invalid","subject":".","detail":"root_missing: skills root directory not found"},{"code":"skill_lock_missing","subject":"bim.test.gamma","detail":"pack directory not found under the skills root"}]}""";
+    const string LockName39 = "skills.lock.json";
+    const string LockMissing39 = """{"status":"failed","code":"lock_missing","subject":"skills.lock.json","detail":"lock file not found","mode":"verify","verified":false,"packs":[],"issues":[{"code":"lock_missing","subject":"skills.lock.json","detail":"lock file not found"}]}""";
+
+    static void SkillsLockUnsearchable(string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        const string Pack = "bim.test.gamma";
+        var cases = new List<(string Mode, string Parameter)> { ("cwd", "skills"), ("cwd", "lock"), ("parent", "skills"), ("parent", "lock") };
+        string Label(string mode, string what) => "P10-39 skills-lock verify, unsearchable " + mode + ": " + what;
+        var why = PrivilegeSkip(scratch, "p10-39-lock-probe");
+        if (why is not null)
+        {
+            foreach (var (mode, parameter) in cases) skip(Prefix + Label(mode, "relative " + parameter), why);
+            return;
+        }
+        Assembly? cli = null;
+        try { cli = Assembly.LoadFrom(cliDll); }
+        catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, "the Release CLI assembly loads", error.Message); }
+        var entry = cli?.EntryPoint;
+        if (entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
+        var original = Environment.CurrentDirectory;
+        var exitBefore = Environment.ExitCode;
+        const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+        var manifest = new UTF8Encoding(false).GetBytes("{\"manifest_version\":1,\"id\":\"" + Pack + "\",\"version\":\"1.0.0\",\"kind\":\"qa\",\"description\":\"P10-37 lock pack\",\"priority\":10}\n");
+        foreach (var (mode, parameter) in cases)
+        {
+            var label = Label(mode, "relative " + parameter);
+            var parent = Path.Combine(scratch, "p10-39-lock-" + mode + "-" + Guid.NewGuid().ToString("N"));
+            var cwd = Path.Combine(parent, "cwd");
+            Directory.CreateDirectory(cwd);
+            // The relative entry lives in the working directory; the other one is absolute outside the locked tree.
+            var outside = Path.Combine(scratch, "p10-39-lock-outside-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(outside);
+            var skills = Path.Combine(parameter == "skills" ? cwd : outside, "skills");
+            Directory.CreateDirectory(Path.Combine(skills, Pack));
+            var packFile = Path.Combine(skills, Pack, "skill.json");
+            File.WriteAllBytes(packFile, manifest);
+            var lockFile = Path.Combine(parameter == "lock" ? cwd : outside, LockName39);
+            File.WriteAllBytes(lockFile, Bim.Core.SkillLockFile.Serialize(Bim.Core.SkillLocking.Pin(skills, new[] { Pack })));
+            var lockBytes = File.ReadAllBytes(lockFile);
+            string[] args = parameter == "skills" ? new[] { "skills-lock", "verify", "skills", lockFile } : new[] { "skills-lock", "verify", skills, LockName39 };
+            var relative = args[parameter == "skills" ? 2 : 3];
+            var locked = mode == "cwd" ? cwd : parent;
+            var entriesBefore = Directory.GetFileSystemEntries(cwd).Length;
+
+            (int Exit, string Line, string Error, string Probe) Call(bool lockIt)
+            {
+                var probe = "";
+                (int Exit, string Line, string Error) run;
+                try
+                {
+                    run = Invoke(entry, args, () =>
+                    {
+                        Directory.SetCurrentDirectory(cwd);
+                        if (lockIt) Chmod(locked, UnixFileMode.None);
+                        try { Path.GetFullPath(relative); probe = "GetFullPath accepted"; }
+                        catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                    });
+                }
+                finally
+                {
+                    Chmod(locked, Owner);
+                    Directory.SetCurrentDirectory(original);
+                }
+                return (run.Exit, run.Line.Replace(scratch, "<scratch>", StringComparison.Ordinal), run.Error, probe);
+            }
+            var reference = Call(false);
+            Check(reference.Exit == 0 && reference.Error.Length == 0 && reference.Line.StartsWith("{\"status\":\"succeeded\"", StringComparison.Ordinal) && reference.Line.Contains("\"verified\":true", StringComparison.Ordinal),
+                label + ": precondition: with the working directory searchable the relative " + parameter + " path verifies", "exit " + reference.Exit.ToString(CultureInfo.InvariantCulture) + " " + reference.Line + " " + reference.Error);
+            var locked1 = Call(true);
+            var measured = locked1.Probe + "; exit " + locked1.Exit.ToString(CultureInfo.InvariantCulture) + " " + locked1.Line + (locked1.Error.Length > 0 ? " stderr " + locked1.Error : "");
+            // macOS: GetFullPath throws, PathProblem refuses the path. Linux: GetFullPath accepts, the engine reports the path.
+            var macOS = OperatingSystem.IsMacOS();
+            var expectedProbe = macOS ? "GetFullPath threw System.UnauthorizedAccessException" : "GetFullPath accepted";
+            var expected = macOS ? JsonSerializer.Serialize(new { status = "failed", code = "skills_lock_path_invalid", detail = parameter })
+                : parameter == "skills" ? LockedSkills39 : LockMissing39;
+            Check(locked1.Probe == expectedProbe, label + ": precondition: " + expectedProbe + " (" + (macOS ? "macOS" : "Linux") + ")", measured);
+            Check(locked1.Exit == 1 && locked1.Line == expected && locked1.Error.Length == 0, label + ": exactly " + expected + " (exit 1, empty stderr)", measured);
+            Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+            Check(File.ReadAllBytes(lockFile).AsSpan().SequenceEqual(lockBytes) && File.ReadAllBytes(packFile).AsSpan().SequenceEqual(manifest)
+                && Directory.GetFileSystemEntries(cwd).Length == entriesBefore, label + ": the lock and the pack are unchanged and nothing is written", lockFile.Replace(scratch, "<scratch>", StringComparison.Ordinal));
+            Directory.Delete(parent, true);
+            Directory.Delete(outside, true);
         }
         Check(Environment.ExitCode == exitBefore, Label("both", "Environment.ExitCode is restored (finally)"),
             Environment.ExitCode.ToString(CultureInfo.InvariantCulture) + ", before " + exitBefore.ToString(CultureInfo.InvariantCulture));
