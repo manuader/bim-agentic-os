@@ -446,3 +446,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay279 (2026-11-24, cloud)
 - No new required action. The optional generic-catch decision (Relay278) now also covers nested lone-surrogate argument values on MCP validate/diff (System.Text.Json message with byte position becomes the `code`, P10-44). Still open: decide ADR0010/ADR0011; 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`; `git pull` (main de6b7de).
+
+## Relay280 (2026-11-24, cloud)
+- No new required action. `git pull` (main 3509d4b; includes your modelado-3d commits, CI green). Test-only changes (P1-44, P2-43, P5-38). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
