@@ -184,7 +184,7 @@ jobs:
           grep -q '"section":9' "$out"
           # P3-40: the PASS lines stay readable without the log: a notice per measured fact, the step summary, the artifact.
           echo "::notice title=mcp-section-9-macos::$(grep -c '^PASS ' "$out") PASS lines; $(tail -n 1 "$out")"
-          grep -E '^PASS (P3-40 measured pipe capacity|.*closed pipe.s write did not throw)' "$out" | cut -c1-900 | sed 's/^/::notice title=mcp-section-9-macos::/'
+          grep -E '^PASS .*(P3-40 measured pipe capacity|closed pipe.s write did not throw)' "$out" | cut -c1-900 | sed 's/^/::notice title=mcp-section-9-macos::/'
           { echo '### MCP generate_typology section 9 (macOS)'; echo '```'; grep '^PASS ' "$out"; tail -n 1 "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Keep the MCP section 9 output (macOS, P3-40)
         if: always() && runner.os == 'macOS' && steps.mcp-section-9.outcome != 'skipped'
