@@ -446,8 +446,8 @@ public sealed class McpServer
     // P5-37: a reply the output rejects (the write throws: a full device, a descriptor not open for writing) ends serving:
     // Run returns that exception (null when the input ends), reads and executes no later request, and nothing escapes;
     // interfaces/mcp/Program.cs then exits 1 with one stderr line. A pipe its reader closed is not seen here: the
-    // runtime's console stream drops EPIPE / ERROR_NO_DATA.
-    public static Exception? Run(TextReader input, TextWriter output) => Run(input, output, new McpServer());
+    // runtime's console stream drops EPIPE / ERROR_NO_DATA. The two-argument overload (tests) discards that result.
+    public static void Run(TextReader input, TextWriter output) => Run(input, output, new McpServer());
 
     public static Exception? Run(TextReader input, TextWriter output, McpServer server)
     {

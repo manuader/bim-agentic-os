@@ -15,8 +15,9 @@ using Bim.Mcp;
 //      McpServer.Handle bytes of each request in order (success and refusal bytes unchanged).
 //   b. Real Release Bim.Mcp.dll (Linux; SKIP on Windows: no /bin/sh): stdout >/dev/full (every write fails ENOSPC) or
 //      open read-only (1</dev/null, EBADF) while the first reply (jurisdiction_resolve or skill_list) is written: exit 1,
-//      nothing on the reader's stdout, and stderr exactly one line starting "mcp stdout failed: System.IO.IOException: "
-//      (no unhandled-exception crash).
+//      nothing on the reader's stdout, and stderr exactly one line "mcp stdout failed: <type>: <message>" (no
+//      unhandled-exception crash), the type as the runtime maps the errno (measured on Linux): ENOSPC is
+//      System.IO.IOException, EBADF System.UnauthorizedAccessException.
 //   c. Real process, every OS this suite runs on (Linux, Windows): a stdout pipe the reader closes right after start,
 //      before any request is sent: exit 0 and stderr empty after answering every request, because the runtime's console
 //      stream drops EPIPE / ERROR_NO_DATA, so the server never sees the failure (as P3-34 measured for stderr).
@@ -28,7 +29,6 @@ using Bim.Mcp;
 internal static class StdoutFailureToolTests
 {
     const string GetterMessage = "message getter P5-37 mcp";
-    const string FailurePrefix = "mcp stdout failed: System.IO.IOException: ";
 
     public static void Run(string root, string dotnet, string mcpDll, Action<bool, string> check)
     {
@@ -107,16 +107,17 @@ internal static class StdoutFailureToolTests
             Console.WriteLine("SKIP P5-37 mcp stdout: >/dev/full and 1</dev/null need /bin/sh (Linux); the closed pipe runs on Windows");
         else
         {
-            foreach (var redirect in new[] { ">/dev/full", "1</dev/null" })
+            foreach (var (redirect, type) in new[] { (">/dev/full", "System.IO.IOException"), ("1</dev/null", "System.UnauthorizedAccessException") })
             {
+                var failurePrefix = "mcp stdout failed: " + type + ": ";
                 if (redirect == ">/dev/full" && !File.Exists("/dev/full")) { Console.WriteLine("SKIP P5-37 mcp stdout: no /dev/full on " + os); continue; }
                 foreach (var (label, requests) in new (string, string[])[] { ("jurisdiction_resolve", [resolved, listing, Ping]), ("skill_list", [listing, resolved, Ping]) })
                 {
                     var run = Server(redirect, false, string.Join("\n", requests) + "\n");
                     var err = run.Err.TrimEnd('\r', '\n');
-                    Check(run.Exit == 1 && run.Out.Length == 0 && err.StartsWith(FailurePrefix, StringComparison.Ordinal) && !err.Contains('\n', StringComparison.Ordinal)
+                    Check(run.Exit == 1 && run.Out.Length == 0 && err.StartsWith(failurePrefix, StringComparison.Ordinal) && !err.Contains('\n', StringComparison.Ordinal)
                         && !run.Err.Contains("Unhandled exception", StringComparison.Ordinal),
-                        "real Bim.Mcp.dll with stdout " + redirect + " during the " + label + " reply (" + os + "): exit 1, one stderr line '" + FailurePrefix + "...', no unhandled exception | " + P(run));
+                        "real Bim.Mcp.dll with stdout " + redirect + " during the " + label + " reply (" + os + "): exit 1, one stderr line '" + failurePrefix + "...', no unhandled exception | " + P(run));
                 }
             }
         }
