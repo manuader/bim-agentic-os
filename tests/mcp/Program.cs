@@ -342,48 +342,28 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
 {
     var p123Source=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
     // The RevitCallAll body: from its signature to the brace matching the first '{' after it (no layout assumption).
-    var p123Start=p123Source.IndexOf("(string Text, bool IsError) RevitCallAll(",StringComparison.Ordinal);
-    var p123Open=p123Start<0 ? -1 : p123Source.IndexOf('{',p123Start);
-    var p123End=-1;
-    for(int p123At=Math.Max(p123Open,0),p123Depth=0;p123Open>=0 && p123At<p123Source.Length;p123At++) {
-        if(p123Source[p123At]=='{') p123Depth++;
-        else if(p123Source[p123At]=='}' && --p123Depth==0) { p123End=p123At+1; break; }
-    }
-    var p123Body=p123End<0 ? "" : p123Source[p123Start..p123End];
-    // Code only: line comments dropped, so prose cannot satisfy or trip the checks.
-    var p123Code=string.Join("\n",p123Body.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
+    // P1-44: found on the comment- and literal-stripped code by the shared MemberBody (tests/cli/DeadlineSourceScan.cs,
+    // linked), so a signature in a comment or a brace in a literal is not the member's ("" when there is no block body).
+    const string P123Signature="(string Text, bool IsError) RevitCallAll(";
+    string P123Body(string p123Text)=>DeadlineSourceScan.MemberBody(DeadlineSourceScan.StripCode(p123Text.ReplaceLineEndings("\n")),P123Signature) ?? "";
+    var p123Raw=p123Source.ReplaceLineEndings("\n");
+    var p123Stripped=DeadlineSourceScan.StripCode(p123Raw);
+    var p123Body=P123Body(p123Raw);
+    // Code only: comments blanked (literal text kept), so prose cannot satisfy or trip the checks; the body's lines
+    // (StripCode keeps the source's newlines, so the stripped body's lines are the source's lines).
+    var p123First=p123Body.Length==0 ? 0 : p123Stripped[..p123Stripped.IndexOf(P123Signature,StringComparison.Ordinal)].Count(p123Char=>p123Char=='\n');
+    var p123Code=p123Body.Length==0 ? "" : string.Join("\n",DeadlineSourceScan.CommentsBlanked(p123Raw).Split('\n').Skip(p123First).Take(p123Body.Count(p123Char=>p123Char=='\n')+1));
     // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
-    // Comments dropped, then each `new RevitDeadlineTransport(` argument list split at depth 0 and mapped onto the
-    // constructor's own parameters (reflection): positional by position (also after in-position named ones, as C#
-    // allows), named by name, whitespace removed; an empty, unknown, repeated or CS8323 argument is refused by name.
+    // P1-44: through the shared parser (tests/cli/DeadlineSourceScan.cs, linked; the one copy): comments and literals
+    // stripped first (a '//' inside a string is no comment), each `new RevitDeadlineTransport(` argument list split at
+    // depth 0 and mapped onto the constructor's own parameters (reflection): positional by position (also after
+    // in-position named ones, as C# allows), named by name, whitespace removed; `()` maps to no argument (checked before
+    // the loop); an empty, unknown, repeated or CS8323 argument is refused by name.
     var p142Parameters=typeof(Bim.Cli.RevitDeadlineTransport).GetConstructors().Single().GetParameters().Select(parameter=>parameter.Name!).ToArray();
     string P142Problems(string code) {
-        code=System.Text.RegularExpressions.Regex.Replace(code,@"/\*.*?\*/"," ",System.Text.RegularExpressions.RegexOptions.Singleline);
-        code=string.Join("\n",code.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
-        var built=System.Text.RegularExpressions.Regex.Matches(code,@"\bnew\s+(?:Bim\s*\.\s*Cli\s*\.\s*)?RevitDeadlineTransport\s*\(");
-        if(built.Count!=1) return built.Count+" RevitDeadlineTransport constructions, not one";
-        var p142Args=new List<string>();
-        var from=built[0].Index+built[0].Length;
-        var closed=false;
-        for(int at=from,depth=0;at<code.Length && !closed;at++) {
-            if(code[at] is '(' or '[' or '{') depth++;
-            else if(code[at] is ')' or ']' or '}') { if(depth--==0) { p142Args.Add(code[from..at].Trim()); closed=true; } }
-            else if(code[at]==',' && depth==0) { p142Args.Add(code[from..at].Trim()); from=at+1; }
-        }
-        if(!closed) return "the argument list is not closed";
-        var map=new Dictionary<string,string>(StringComparer.Ordinal);
-        string? outOfPosition=null;
-        for(var k=0;k<p142Args.Count && !(p142Args.Count==1 && p142Args[0].Length==0);k++) {
-            if(p142Args[k].Length==0) return "argument "+(k+1)+" is empty";
-            var name=System.Text.RegularExpressions.Regex.Match(p142Args[k],@"^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)");
-            string key;
-            if(name.Success) { key=name.Groups[1].Value; if(Array.IndexOf(p142Parameters,key)!=k) outOfPosition??=key; }
-            else if(outOfPosition is not null) return "positional argument "+(k+1)+" follows the out-of-position named argument '"+outOfPosition+"' (C# CS8323)";
-            else if(k>=p142Parameters.Length) return "positional argument "+(k+1)+" is past the "+p142Parameters.Length+" parameters";
-            else key=p142Parameters[k];
-            if(!p142Parameters.Contains(key)) return "no parameter named '"+key+"'";
-            if(!map.TryAdd(key,System.Text.RegularExpressions.Regex.Replace(name.Success ? p142Args[k][name.Length..] : p142Args[k],@"\s+",""))) return "parameter '"+key+"' given twice";
-        }
+        var p142Calls=DeadlineSourceScan.Calls(DeadlineSourceScan.StripCode(code.ReplaceLineEndings("\n")),p142Parameters);
+        if(p142Calls.Count!=1) return p142Calls.Count+" RevitDeadlineTransport constructions, not one";
+        if(p142Calls[0].Map is not {} map) return p142Calls[0].Reason;
         var wrong=new List<string>();
         foreach(var (parameter,expected) in new[]{("deadline","QueryAllDeadline"),("elapsed","RevitDeadlineTransport.ElapsedOn(QueryAllClock)"),("listing","RevitDeadlineTransport.McpListing"),("cutReads","realPipe")})
             if(!map.TryGetValue(parameter,out var actual) || actual!=expected) wrong.Add(parameter+" "+(actual ?? "absent")+", not "+expected);
@@ -397,7 +377,9 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
         ("one argument per line",P142Call.Replace(", ",",\n    ",StringComparison.Ordinal)),
         ("cutReads:realPipe without spaces",P142Call.Replace("cutReads: realPipe","cutReads:realPipe",StringComparison.Ordinal)),
         ("named deadline and elapsed, reordered","new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, cutReads: realPipe, elapsed: RevitDeadlineTransport.ElapsedOn( QueryAllClock ), deadline: QueryAllDeadline, listing: RevitDeadlineTransport.McpListing, probe: revitProbe)"),
-        ("a block comment inside the list",P142Call.Replace("cutReads: realPipe","/* real pipe: cut */ cutReads: realPipe",StringComparison.Ordinal))})
+        ("a block comment inside the list",P142Call.Replace("cutReads: realPipe","/* real pipe: cut */ cutReads: realPipe",StringComparison.Ordinal)),
+        // P1-44: string literals are stripped before '//' is read as a comment.
+        ("a '//' inside a string literal",P142Call.Replace("new RevitDeadlineTransport(pipeName,","new RevitDeadlineTransport(Pipe(\"//./pipe/x\"),",StringComparison.Ordinal))})
         Check(P142Problems("var transport = "+p142Code+";\n")=="","P1-42 MCP deadline pin self-test: "+p142Label+" passes | "+P142Problems("var transport = "+p142Code+";\n"));
     foreach(var (p142Label,p142Code) in new[]{
         ("cutReads false",P142Call.Replace("cutReads: realPipe","cutReads: false",StringComparison.Ordinal)),
@@ -407,6 +389,26 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
         ("the call only in a comment","Other();\n// "+P142Call.ReplaceLineEndings(" ")),
         ("two constructions",P142Call+"; var other = "+P142Call)})
         Check(P142Problems("var transport = "+p142Code+";\n")!="","P1-42 MCP deadline pin self-test: "+p142Label+" is flagged");
+    // P1-44: `()` is one empty top-level argument that maps to no argument before the loop (not "argument 1 is empty");
+    // an empty argument among others is still refused by name.
+    var p144Empty=DeadlineSourceScan.MapArguments(new[]{""},p142Parameters);
+    var p144Gap=DeadlineSourceScan.MapArguments(new[]{"pipeName",""},p142Parameters);
+    Check(p144Empty.Map is {Count:0} && p144Empty.Reason=="" && P142Problems("var transport = new RevitDeadlineTransport();\n").Contains("deadline absent",StringComparison.Ordinal)
+        && p144Gap.Map is null && p144Gap.Reason=="argument 2 is empty",
+        "P1-44 MCP deadline pin self-test: () maps to no argument before the loop, an empty second argument is refused | "+p144Empty.Reason+" ; "+p144Gap.Reason+" ; "+P142Problems("var transport = new RevitDeadlineTransport();\n"));
+    // P1-44: RevitCallAll's body is found on the stripped code (a signature in a comment, a brace in a literal are not
+    // the member's), so the deadline pin reads the construction inside RevitCallAll only. Mutation self-test.
+    string P144Member(string p144Inside)=>"    (string Text, bool IsError) RevitCallAll(JsonElement arguments)\n    {\n"+p144Inside+"        return (\"\", false);\n    }\n";
+    string P144Problems(string p144Text)=>P123Body(p144Text) is {Length:>0} p144Body ? P142Problems(p144Body) : "no RevitCallAll block";
+    const string P144Other="        var transport = new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport);\n";
+    foreach(var (p144Label,p144Source) in new[]{
+        ("today's member","sealed class S\n{\n"+P144Member("        var transport = "+P142Call+";\n")+"}\n"),
+        ("a '}' in a string before the construction","sealed class S\n{\n"+P144Member("        var close = \"}\";\n        var transport = "+P142Call+";\n")+"}\n")})
+        Check(P144Problems(p144Source)=="","P1-44 MCP RevitCallAll body self-test: "+p144Label+" passes | "+P144Problems(p144Source));
+    foreach(var (p144Label,p144Source) in new[]{
+        ("the signature and construction only in a comment","sealed class S\n{\n    // (string Text, bool IsError) RevitCallAll( { var transport = "+P142Call.ReplaceLineEndings(" ")+"; }\n"+P144Member(P144Other)+"}\n"),
+        ("a '{' in a string, the construction in the next member","sealed class S\n{\n"+P144Member("        var open = \"{\";\n"+P144Other)+"    void Other()\n    {\n        var transport = "+P142Call+";\n    }\n}\n")})
+        Check(P144Problems(p144Source)!="","P1-44 MCP RevitCallAll body self-test: "+p144Label+" is flagged");
     var p123Args=P142Problems(p123Body);
     Check(p123Args=="",
         "McpServer.RevitCallAll pages through new RevitDeadlineTransport(… QueryAllDeadline, ElapsedOn(QueryAllClock), McpListing, cutReads: realPipe …) | "+p123Args);
