@@ -832,6 +832,10 @@ internal static class RepeatedEnvelopeKeyTests
             const string OneHash = "C82909AA730F993429C007E3AC3D6816AE30C9E3FFAEBACD5584F8618F79C1D4";
             static string PlanText(string before, string after, string operations, string dirty) =>
                 "{\"ProjectId\":\"" + Guid1 + "\",\"ExpectedRevision\":0,\"BeforeHash\":\"" + before + "\",\"AfterHash\":\"" + after + "\",\"Operations\":[" + operations + "],\"DirtyIds\":[" + dirty + "]}";
+            // P10-44: the measured System.Text.Json 8 message for a member name it cannot read (a lone surrogate escape).
+            static string NotConverted(string type, string path, int position) =>
+                "{\"status\":\"failed\",\"code\":\"The JSON value could not be converted to Bim.Core." + type + ". Path: " + path + " | LineNumber: 0 | BytePositionInLine: "
+                + position.ToString(CultureInfo.InvariantCulture) + ".\"}";
             var createPlan = PlanText(EmptyHash, OneHash, "{\"Action\":\"create\",\"Element\":" + plain + "}", "\"" + Guid2 + "\"");
             var samePlan = PlanText(OneHash, OneHash, "", "");
             var emptyPlan = PlanText(EmptyHash, EmptyHash, "", "");
@@ -913,11 +917,14 @@ internal static class RepeatedEnvelopeKeyTests
                 ("R2 args member twice escaped", Revit("62", """{"category":"OST_Walls","\u0063ategory":"OST_Walls"}"""), ToolText("62", RevitFailure("args_invalid", "args.category", "duplicate member"), true), 0),
                 ("R3 document path twice", Revit("63", """{"category":"OST_Walls"}""", "{\"path\":" + absent + ",\"path\":" + absent + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"}"),
                     ToolText("63", RevitFailure("envelope_invalid", "document.path", "unexpected or duplicate member"), true), 0),
-                // ---- a lone-surrogate member name nested in an arguments value (P10-44) ----
-                ("L1 validate project lone-surrogate name", Validate("70", head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("70", "[]", false), 0),
-                ("L2 validate element lone-surrogate name", Validate("71", head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}"), ToolText("71", "[]", false), 0),
-                ("L3 diff after lone-surrogate name", Diff("72", empty, head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("72", emptyPlan, false), 0),
-                ("L4 revit args lone-surrogate name", Revit("73", """{"category":"OST_Walls","\ud800":1}"""), ToolText("73", RevitFailure("envelope_invalid", null, "probe"), true), 0),
+                // ---- a lone-surrogate member name nested in an arguments value (P10-44), pinned as measured: the deserializer
+                // cannot read the name, so its JsonException message becomes the failed code (McpServer generic catch);
+                // the Revit command envelope cannot be built or read with it, so RevitCall answers envelope_invalid with the reader message ----
+                ("L1 validate project lone-surrogate name", Validate("70", head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("70", NotConverted("Project", "$", 81), true), 0),
+                ("L2 validate element lone-surrogate name", Validate("71", head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}"), ToolText("71", NotConverted("Element", "$.Elements[0]", 227), true), 0),
+                ("L3 diff after lone-surrogate name", Diff("72", empty, head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("72", NotConverted("Project", "$", 81), true), 0),
+                ("L4 revit args lone-surrogate name", Revit("73", """{"category":"OST_Walls","\ud800":1}"""),
+                    ToolText("73", RevitFailure("envelope_invalid", null, "Cannot read incomplete UTF-16 JSON text as string with missing low surrogate."), true), 0),
             };
             forwarded = null;
             var argumentMeasured = new List<string>();
