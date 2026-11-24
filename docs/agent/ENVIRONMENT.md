@@ -14,6 +14,7 @@ Verification states describe evidence scope, not product completeness. Raw comma
 | Native primitive backend |actual create/patch/retry/rollback/save-close-reopen/readback | verified-in-revit; artifacts/native-checkpoint-result.json; level/walls only |
 | Autodesk license entitlement |not queried | manual-only; prior editable authoring/save succeeded, not a current license/account census. No credentials accessed |
 | IfcOpenShell |preceding census found it absent; now isolated0.9.0.post1/Python3.12.14 with16 pinned packages | integration-tested (ifc); four actual tests and real C# launcher/readback, artifacts/ifc-integration-result.json |
+| git |required on PATH by `tests/cli` section 2i (P1-40/P1-42): the PipeTransportWithReadTimeout caller scan reads `git ls-files`, its untracked-copy control runs `git init`/`git add` in a scratch repository under the temp folder, and `git check-ignore` pins that location | described; without git the 2i checks fail and their failure text names this dependency; CI runners provide git |
 | Linux/macOS local execution |not available on this Windows host | local execution blocked; Ubuntu IFC CI run39889181516 passed, macOS unexecuted |
 
 Commands used (run at repository root, with `$BimPython` set to the usable Python3.12 executable):
