@@ -65,7 +65,9 @@ internal static class PlanLayoutsTool
         try { Path.GetFullPath(path); }
         // P10-29 (the P10-28 rule): a relative path under a deleted working directory makes GetFullPath throw
         // FileNotFoundException on Linux/macOS (observed, run 44440575516); refused like any other unusable path.
-        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException) { return true; }
+        // P10-41 (the P10-39 SkillLockTool rule): on macOS a relative path under a mode-000 working directory or parent makes
+        // GetFullPath throw UnauthorizedAccessException (observed, run 45344442695: McpServer's generic failure), refused alike.
+        catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException or UnauthorizedAccessException) { return true; }
         return false;
     }
 
