@@ -468,14 +468,26 @@ public static class DxfReader
                         var insertion = new Point2(DxfValues.Number(ax), DxfValues.Number(ay));
                         var horizontal = r.First(72) is { } h72 ? DxfValues.Int(h72) : 0;
                         var vertical = r.First(74) is { } v74 ? DxfValues.Int(v74) : 0;
+                        var justified = false;
                         if ((horizontal is 1 or 2 or 4 || vertical != 0) && r.First(11) is { } jx && r.First(21) is { } jy)
+                        {
                             insertion = new Point2(DxfValues.Number(jx), DxfValues.Number(jy));
+                            justified = true;
+                        }
                         var height = r.First(40) is { } ah ? DxfValues.Number(ah) : 0;
                         var rotation = r.First(50) is { } ar ? DxfValues.Number(ar) : 0;
                         var flags = r.First(70) is { } af ? DxfValues.Int(af) : 0;
                         var value = r.First(1)?.Value ?? "";
-                        var attributeZ = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, 30)).Z;
-                        insertion = frame.Place(insertion, r, 30);
+                        // P6-40: the group 11 point of a justified ATTRIB/ATTDEF takes its z from group 31 (like ezdxf's
+                        // align_point), both for its world z and for placing it through a near +-Z OCS of its own. Group 31
+                        // was never read before, so (like the other P6-38 z groups) a non-finite value reads as 0.
+                        var attributeZ = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, justified ? 31 : 30)).Z;
+                        if (justified && !frame.Exact)
+                        {
+                            var world = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, 31));
+                            insertion = new Point2(world.X, world.Y);
+                        }
+                        else insertion = frame.Place(insertion, r, 30);
                         if (frame.Kind == OcsKind.Mirrored) rotation = 180 - rotation;
                         string plain;
                         // A multi-line attribute (embedded MTEXT after group 101) keeps MTEXT codes in its value.
