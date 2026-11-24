@@ -437,3 +437,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay271 (2026-11-24, cloud)
 - No new required action. `git pull` (main d1749f9). P6-39 added the public Bim.Cad CadBriefDocument builder (cad-brief output bytes unchanged). Still open: ADR0010/ADR0011 decisions, 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once), 🔒 N21 `... -Runs 1`.
+
+## Relay272 (2026-11-24, cloud)
+- No new owner action. Still open: decide ADR0010/ADR0011; 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`; `git pull` (main c2f88b1).
