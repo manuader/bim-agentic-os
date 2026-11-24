@@ -2190,7 +2190,7 @@ static class MirrorDriftLoopChecks
     const string MacKeptPrefix = "macos setup (P2-39)";
     const string MacSelfTestPrefix = "macos self-test (P2-39)";
     const string MacLoweredPrefix = "macos (P2-37)";
-    const string MacPreconditionPrefix = "macos precondition: ";
+    const string MacPreconditionPrefix = "macos precondition (P2-42: the P2-41 lever setup check gates it, so no lever clause here): ";
 
     // P2-42: the gate's check names after the lever setup check, in gate order, from the counts they report; the
     // self-tests compare red and not-run names against these in full.
@@ -2215,7 +2215,7 @@ static class MirrorDriftLoopChecks
     {
         LeversOk = raised.Calls == 1 && raised.Error.Length == 0 && lowered.Calls == 1 && lowered.Error.Length == 0,
         RaisedDefault = raised.Default, LoweredDefault = lowered.Default, Raised = raised.Set, Lowered = lowered.Set,
-        RequestedLowered = lowered.Default >= 0 ? (int)((long)lowered.Default * LoweredNumerator / LoweredDenominator) : -1,
+        RequestedLowered = lowered.Requested,
     };
 
     // P2-41: the macOS checks in order as (passed, name); checks skipped because a setup check is red are added to notRun
@@ -2236,12 +2236,14 @@ static class MirrorDriftLoopChecks
         // lowered-run checks below (its self-test and relation, which read the kept value) run only when it holds, so a
         // rounded lowered value is exactly one red, this one.
         // P2-40 probe red (run 45243506492) planted lowered - 1: this setup check was the only macOS red.
-        var loweredKept = c.LeversOk && c.Lowered == c.RequestedLowered;
+        // P2-42: no LeversOk clause here or in the precondition: a failed lever returns above (the P2-41 setup check), so
+        // every check below runs only with LeversOk true.
+        var loweredKept = c.Lowered == c.RequestedLowered;
         checks.Add((loweredKept, kept));
         // P2-40: no lowered % chunk clause: LoweredCounts requires handed == read + lowered and handed % chunk == 0, so with
         // read % chunk == 0 (checked here) a lowered value that is not a whole number of pieces already fails the lowered
         // relation. The lowered clauses apply to a kept value only (a rounded one is the setup red above).
-        var precondition = c.LeversOk && c.SendBuffer > 0 && c.RaisedDefault == c.SendBuffer && c.LoweredDefault == c.SendBuffer
+        var precondition = c.SendBuffer > 0 && c.RaisedDefault == c.SendBuffer && c.LoweredDefault == c.SendBuffer
             && c.Raised > c.SendBuffer && c.Raised % c.Chunk == 0 && c.InBuffer > c.Raised && c.Read % c.Chunk == 0
             && (!loweredKept || (c.Lowered > 0 && c.Lowered < c.SendBuffer && c.Lowered != c.Read));
         checks.Add((precondition, preconditionName));
@@ -2305,6 +2307,7 @@ static class MirrorDriftLoopChecks
         // P2-42: a planted lowered lever whose read-back equals the configured ratio of its default but not the value it
         // asked for: the kept check compares against LeverRecord.Requested, so it is the only red (a requested value
         // recomputed from the default would pass it).
+        // P2-42 red (run 45379428651, requested recomputed as 3/4 of the default): red=[] on Linux, Windows and macOS.
         var chunk = baseline.Chunk;
         var mismatchInput = WithLevers(baseline, Lever(1, s, 2 * s, 2 * s), Lever(1, s, lowered + chunk, lowered));
         var mismatch = Outcome(mismatchInput);
