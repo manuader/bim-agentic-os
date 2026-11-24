@@ -48,6 +48,8 @@ using Bim.Generative;
 //  15. P7-38: mutation self-tests of section 14's one-copy ForcedRun pin (a second SetOut, a copied helper), the Execute
 //      pin over every helper Execute reaches (a stdout write through a new private helper is rejected) and its tolerance of
 //      a whitespace / trailing-comma reformat that still rejects section 14's mutants (WritePinReachStage).
+//  16. P7-40: mutation self-tests of both section 14 pins through generic, qualified, method-group, delegate and
+//      cross-class calls, under a block-scoped namespace, and of the success-only trailing-comma reformat (WritePinScopeStage).
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -469,6 +471,7 @@ internal static class GeneratePrototypesTests
         PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => Cli(arguments));
         PartialWriterExecuteStage(root, check);
         WritePinReachStage(root, check);
+        WritePinScopeStage(root, check);
     }
 
     // ---- 7. P7-26: a non-refusal exception after GltfExporter.WriteNew succeeded leaves no output file ----
@@ -2935,7 +2938,7 @@ internal static class GeneratePrototypesTests
         // c. Reformat tolerance, with section 14's mutants still rejected on the reformatted source.
         static string OneLine(string code) => System.Text.RegularExpressions.Regex.Replace(code, @"\s+", " ");
         static string Spread(string code) => System.Text.RegularExpressions.Regex.Replace(code, @"\s*([(){};,])\s*", "\n    $1 ");
-        static string NoTrailingComma(string code) => System.Text.RegularExpressions.Regex.Replace(code, @",(\s*\})", "$1");
+        static string NoTrailingComma(string code) => SuccessTrailingCommaRemoved(code) ?? code;
         var reformats = new (string Label, string Write, string Command)[]
         {
             ("all on one line", OneLine(write), OneLine(command)),
@@ -2957,6 +2960,132 @@ internal static class GeneratePrototypesTests
             Check(mutated is not null && problems.Count > 0, "reformat self-test: " + label + " is still rejected on the spread source without the trailing comma",
                 (mutated is null ? "the anchor does not match once; " : "") + Problems(problems));
         }
+    }
+
+    // P7-40: section 15's trailing-comma reformat: GenerateWrite.cs with the success object's trailing comma (after sha256)
+    // removed and no other change; null unless that comma is found exactly once.
+    static string? SuccessTrailingCommaRemoved(string code) => System.Text.RegularExpressions.Regex.Replace(code, @",(\s*\})", "$1");
+
+    // ---- 16. P7-40: the section 14 write pins through generic, qualified, method-group, delegate and cross-class calls ----
+    //   a. ExecuteWriteProblems (section 14 c) rejects a stdout write hidden behind an explicit generic call Echo<string>(,
+    //      an inferred call of a generic helper with a where clause, a qualified GenerateCommand.Echo( and
+    //      Bim.Cli.GenerateCommand.Echo( call, a method group (bare or qualified) passed to List.ForEach or assigned to a
+    //      local delegate, a static method of a class nested in GenerateCommand or declared beside it, an instance method
+    //      and a constructor of a class declared beside it, and a call into a class whose source the pin does not read
+    //      (GltfExportCommand.Run, rejected as unresolved).
+    //   b. ForcedRunCopyProblems (section 14 b) rejects a copy of ForcedRun that section 13 reaches only through a delegate
+    //      field, through the lambda its caller passes as cli, through an explicit generic call, a qualified
+    //      GeneratePrototypesTests. call or a method group passed to Array.ForEach.
+    //   c. Type membership, not brace depth 1: both pins accept their sources inside a block-scoped namespace (members at
+    //      brace depth 2) and still reject a mutant there.
+    //   d. SuccessTrailingCommaRemoved (section 15's reformat) removes the success object's trailing comma only: another
+    //      trailing comma added to GenerateWrite.cs is kept.
+    static void WritePinScopeStage(string root, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
+        // Each edit's pattern must match exactly once; null when one does not.
+        static string? Mutate(string code, params (string Pattern, string Replacement)[] edits)
+        {
+            foreach (var (pattern, replacement) in edits)
+            {
+                var regex = new System.Text.RegularExpressions.Regex(pattern);
+                if (regex.Matches(code).Count != 1) return null;
+                code = regex.Replace(code, replacement.Replace("$", "$$", StringComparison.Ordinal), 1);
+            }
+            return code;
+        }
+        static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
+        static string Problems(List<string> problems) => "problems [" + string.Join("; ", problems) + "]";
+        var write = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateWrite.cs")));
+        var command = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "GenerateCommand.cs")));
+        var tests = ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "tests", "cli", "GeneratePrototypesTests.cs")));
+
+        // a. Execute's pin through generic, qualified, method-group, delegate and cross-class calls.
+        const string AfterOutput = @"var\s+output\s*=\s*args\s*\[\s*2\s*\]\s*;";
+        const string AfterParsed = @"var\s+parsed\s*=\s*generated\s*\.\s*Parsed\s*;";
+        const string AfterResult = @"var\s+result\s*=\s*generated\s*\.\s*Result\s*;";
+        const string BeforeFail = @"\bstatic\s+void\s+Fail\s*\(";
+        const string ClassHeader = @"\binternal\s+static\s+partial\s+class\s+GenerateCommand\b";
+        const string Echo = "static void Echo(string line) => Console.WriteLine(line); static void Fail(";
+        const string Parsed = "var parsed = generated.Parsed; ";
+        var executeMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        {
+            ("an explicit generic call Echo<string>(", new[] { (AfterParsed, Parsed + "Echo<string>(generated.Json);"), (BeforeFail, "static void Echo<T>(T line) => Console.WriteLine(line); static void Fail(") }),
+            ("an inferred call of a generic helper with a where clause", new[] { (AfterParsed, Parsed + "Echo(generated.Json);"),
+                (BeforeFail, "static void Echo<T>(T line) where T : class { Console.Out.Write(line); } static void Fail(") }),
+            ("a qualified GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }),
+            ("a namespace-qualified Bim.Cli.GenerateCommand.Echo( call", new[] { (AfterParsed, Parsed + "Bim.Cli.GenerateCommand.Echo(generated.Json);"), (BeforeFail, Echo) }),
+            ("a method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(Echo);"), (BeforeFail, Echo) }),
+            ("a qualified method group passed to List.ForEach", new[] { (AfterParsed, Parsed + "new List<string> { generated.Json }.ForEach(GenerateCommand.Echo);"), (BeforeFail, Echo) }),
+            ("a method group assigned to a local delegate", new[] { (AfterParsed, Parsed + "Action<string> say = Echo; say(generated.Json);"), (BeforeFail, Echo) }),
+            ("a static method of a class nested in GenerateCommand", new[] { (AfterParsed, Parsed + "Echoes.Line(generated.Json);"),
+                (BeforeFail, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } static void Fail(") }),
+            ("a static method of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "Echoes.Line(generated.Json);"),
+                (ClassHeader, "static class Echoes { internal static void Line(string line) => Console.WriteLine(line); } internal static partial class GenerateCommand") }),
+            ("an instance method of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "new Echoer().Say(generated.Json);"),
+                (ClassHeader, "sealed class Echoer { internal void Say(string line) => Console.Out.WriteLine(line); } internal static partial class GenerateCommand") }),
+            ("a constructor of a class declared beside GenerateCommand", new[] { (AfterParsed, Parsed + "_ = new Echoer(generated.Json);"),
+                (ClassHeader, "sealed class Echoer { internal Echoer(string line) { Console.Write(line); } } internal static partial class GenerateCommand") }),
+            ("a call into a class the pin does not read (GltfExportCommand.Run)", new[] { (AfterOutput, "var output = args[2]; GltfExportCommand.Run(args);") }),
+        };
+        foreach (var (label, edits) in executeMutants)
+        {
+            var mutated = Mutate(write, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(mutated, command);
+            Check(mutated is not null && problems.Count > 0, "Execute self-test: " + label + " is rejected", (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
+        const string ThirteenCall = @"var\s+r\s*=\s*ForcedRun\s*\(\s*runMethod\s*,\s*seams\s*,\s*stdout\s*,\s*null\s*,\s*null\s*,\s*stage\s*,\s*args\s*\)\s*;";
+        const string Thirteen = "var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);";
+        const string ClassMember = @"\bstatic\s+void\s+PartialWriterExecuteStage\s*\(";
+        const string ContractCall = @"\bPartialWriteContractStage\s*\(\s*root\s*,\s*scratch\s*,\s*cliDll\s*,\s*expected\s*,\s*check\s*,\s*arguments\s*=>\s*Cli\s*\(\s*arguments\s*\)\s*\)\s*;";
+        const string CopyBody = "{ var previous = Console.Out; try { Console.SetOut(stdout); run.Invoke(null, new object?[] { args }); } finally { Console.SetOut(previous); } }";
+        const string Copy = "static void ForcedRunCopy(System.Reflection.MethodInfo run, TextWriter stdout, string[] args) " + CopyBody + " static void PartialWriterExecuteStage(";
+        var copyMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        {
+            ("a copy in a delegate field section 13 calls", new[] { (ThirteenCall, "Runner(runMethod, stdout, args); " + Thirteen),
+                (ClassMember, "static readonly Action<System.Reflection.MethodInfo, TextWriter, string[]> Runner = (run, stdout, args) => " + CopyBody + "; static void PartialWriterExecuteStage(") }),
+            ("a copy in the lambda section 13's caller passes as cli", new[] { (ContractCall,
+                "PartialWriteContractStage(root, scratch, cliDll, expected, check, arguments => { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); return Cli(arguments); } finally { Console.SetOut(previous); } });") }),
+            ("a copy behind an explicit generic call", new[] { (ThirteenCall, "ForcedRunCopy<TextWriter>(runMethod, stdout, args); " + Thirteen),
+                (ClassMember, "static void ForcedRunCopy<T>(System.Reflection.MethodInfo run, T stdout, string[] args) where T : TextWriter " + CopyBody + " static void PartialWriterExecuteStage(") }),
+            ("a copy behind a qualified GeneratePrototypesTests. call", new[] { (ThirteenCall, "GeneratePrototypesTests.ForcedRunCopy(runMethod, stdout, args); " + Thirteen), (ClassMember, Copy) }),
+            ("a copy behind a method group passed to Array.ForEach", new[] { (ThirteenCall, "Array.ForEach(new[] { args }, ForcedRunEach); " + Thirteen),
+                (ClassMember, "static void ForcedRunEach(string[] args) { var previous = Console.Out; try { Console.SetOut(TextWriter.Null); } finally { Console.SetOut(previous); } } static void PartialWriterExecuteStage(") }),
+        };
+        foreach (var (label, edits) in copyMutants)
+        {
+            var mutated = Mutate(tests, edits);
+            var problems = mutated is null ? new List<string>() : ForcedRunCopyProblems(mutated);
+            Check(mutated is not null && problems.Count > 0, "one-copy self-test: " + label + " is rejected", (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // c. Type membership, not brace depth 1: a block-scoped namespace around the sources.
+        static string? Blocked(string code) => Count(code, @"\bnamespace\s+Bim\.Cli\s*;") == 1
+            ? System.Text.RegularExpressions.Regex.Replace(code, @"\bnamespace\s+Bim\.Cli\s*;", "namespace Bim.Cli {") + "\n}" : null;
+        var blockedWrite = Blocked(write);
+        var blockedCommand = Blocked(command);
+        var blockedReal = blockedWrite is null || blockedCommand is null ? new List<string> { "namespace Bim.Cli; not found once" } : ExecuteWriteProblems(blockedWrite, blockedCommand);
+        Check(blockedReal.Count == 0, "membership self-test: Execute pin accepts GenerateWrite.cs and GenerateCommand.cs in a block-scoped namespace", Problems(blockedReal));
+        var blockedMutant = blockedWrite is null ? null : Mutate(blockedWrite, executeMutants[0].Edits);
+        var blockedMutantProblems = blockedMutant is null || blockedCommand is null ? new List<string>() : ExecuteWriteProblems(blockedMutant, blockedCommand);
+        Check(blockedMutant is not null && blockedMutantProblems.Count > 0, "membership self-test: " + executeMutants[0].Label + " is still rejected in a block-scoped namespace", Problems(blockedMutantProblems));
+        var blockedTests = "namespace Bim.Cli.Tests.Blocked {\n" + tests + "\n}";
+        var blockedCopy = ForcedRunCopyProblems(blockedTests);
+        Check(blockedCopy.Count == 0, "membership self-test: one-copy pin accepts the tests file in a block-scoped namespace", Problems(blockedCopy));
+        var blockedCopyMutant = Mutate(blockedTests, copyMutants[0].Edits);
+        var blockedCopyProblems = blockedCopyMutant is null ? new List<string>() : ForcedRunCopyProblems(blockedCopyMutant);
+        Check(blockedCopyMutant is not null && blockedCopyProblems.Count > 0, "membership self-test: " + copyMutants[0].Label + " is still rejected in a block-scoped namespace", Problems(blockedCopyProblems));
+
+        // d. The trailing-comma reformat touches the success object only.
+        var removed = SuccessTrailingCommaRemoved(write);
+        Check(removed is not null && removed != write && Count(removed, @"\bsha256\s*,\s*\}") == 0 && Count(removed, @"\bsha256\s*\}\s*\)\s*\)\s*;") == 1
+            && removed.Length == write.Length - 1, "reformat self-test: SuccessTrailingCommaRemoved removes exactly the success object's trailing comma");
+        var spare = Mutate(write, (AfterResult, "var result = generated.Result; var spare = new[] { 1, 2, };"));
+        var spareRemoved = spare is null ? null : SuccessTrailingCommaRemoved(spare);
+        Check(spareRemoved is not null && Count(spareRemoved, @"\b2\s*,\s*\}") == 1 && Count(spareRemoved, @"\bsha256\s*,\s*\}") == 0,
+            "reformat self-test: SuccessTrailingCommaRemoved keeps another trailing comma (new[] { 1, 2, })", spareRemoved ?? "<null>");
     }
 
     // ---- P7-25: a non-refusal exception outside the guarded pipeline block on the CLI path is the typed internal error ----
