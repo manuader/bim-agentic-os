@@ -574,7 +574,7 @@ internal static class PackageLayoutPackTests
         static string? RemoveP1018Copy(string path, Action<string>? delete = null)
         {
             try { if (Directory.Exists(path)) (delete ?? (folder => Directory.Delete(folder, true)))(path); return null; }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return null; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return CleanupFailed + "P10-18 self-test copy " + path + ": " + error.GetType().Name + ": " + error.Message; }
         }
     }
 
