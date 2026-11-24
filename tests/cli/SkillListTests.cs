@@ -1325,7 +1325,7 @@ internal static class SkillListTests
         // P5-36 controls for the drifted-lock cases below: on the valid lock --code xx.p534b succeeds and an unclaimed code
         // is jurisdiction_unknown, so the drift line they print later can only come from the load, before any selection.
         const string OtherOverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534b\",\"pack\":\"xx.p534b.pack\",\"version\":\"1.2.3\",\"stub\":false}";
-        const string UnclaimedCode = "xx.p536.unclaimed";
+        const string UnclaimedCode = "xx.p536-unclaimed";
         Case("P5-36 control: code route success on the other overlapping pack", new[] { "--code", CodeB }, 0, OtherOverlapCodeSuccessLine);
         var unclaimed = first.Registry?.Select(new ProjectJurisdiction(UnclaimedCode));
         Check(unclaimed?.Refusal is { } unclaimedRefusal && unclaimedRefusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
@@ -1366,9 +1366,10 @@ internal static class SkillListTests
 
         // P5-36: two drifted packs. xx.p534b.pack's sidecar note is edited after pinning too; the refusal is the first lock
         // issue in (pack id, code, detail) order (xx.p534a.pack, the line above) with the further-issues suffix
-        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused).
+        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused). The printed line carries the
+        // '+' as the JSON escape \u002B (System.Text.Json's default encoder; observed by the P5-36 probe run 45316035463).
         File.WriteAllText(Path.Combine(skills, PackB, "jurisdiction.json"), Sidecar(CodeB, PackB, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        const string TwoDriftLine = "P536_PROBE_TWO_DRIFT";
+        const string TwoDriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it (\\u002B1 more lock issue(s))\"}";
         var twoDrifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(twoDrifted.Registry is null && twoDrifted.Refusal is { } twoDriftRefusal && Failed(twoDriftRefusal) == TwoDriftLine,
             "two drifted packs: the in-process LoadLocked refusal equals the pinned skill_lock_drift line with the further-issues suffix",

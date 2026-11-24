@@ -563,7 +563,7 @@ internal static class TwiceReadToolTests
         const string OverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534ma\",\"pack\":\"xx.p534ma.pack\",\"version\":\"1.2.3\",\"stub\":false}";
         // P5-36 controls for the drifted-lock phases: --code xx.p534mb succeeds and an unclaimed code is jurisdiction_unknown.
         const string OtherOverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534mb\",\"pack\":\"xx.p534mb.pack\",\"version\":\"1.2.3\",\"stub\":false}";
-        const string UnclaimedCode = "xx.p536m.unclaimed";
+        const string UnclaimedCode = "xx.p536m-unclaimed";
         {
             var unclaimed = JurisdictionRegistry.LoadLocked(skills, lockPath).Registry?.Select(new ProjectJurisdiction(UnclaimedCode));
             Check(unclaimed?.Refusal is { } refusal && refusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
@@ -600,7 +600,8 @@ internal static class TwiceReadToolTests
 
         // P5-36: two drifted packs. xx.p534mb.pack's sidecar note is edited after pinning too; the refusal is the first lock
         // issue in (pack id, code, detail) order (xx.p534ma.pack, the line above) with the further-issues suffix
-        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused).
+        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused). The text carries the '+' as
+        // the JSON escape \u002B (System.Text.Json's default encoder; observed by the P5-36 probe run 45316035463).
         File.WriteAllText(Path.Combine(skills, PackB, "jurisdiction.json"), Sidecar(CodeB, PackB, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
         const string TwoDriftLine = "P536_PROBE_TWO_DRIFT";
         Phase("two drifted packs", new (string, JsonObject, string[], string, bool)[]
