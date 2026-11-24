@@ -1853,6 +1853,51 @@ try {
                     Assert ($p741Command.Parameters.ContainsKey('Into') -and $p741Command.Parameters['Into'].ParameterType -eq [Collections.Generic.List[string]]) 'P7-41: Remove-PackageCaseDirectory takes -Into (a List[string], default the run-wide $packageCleanupWarnings)'
                 } catch { $failures.Add("P7-41 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
 
+                # P7-43 self-test: Get-P741CleanupPin returns an object; this script's one report call sits in the finally of
+                # the top-level try that removes $work (work 1, a report in another top-level try's finally reads work 0), and
+                # removing that CommandAst by its extent from a copy is caught (a reformatted call is found the same way).
+                # The -Into check runs everywhere through a stand-in Remove-Item (dynamic scope: as root a read-only folder is
+                # removed anyway), and this block reports its own probe leftover through -Into from its own finally.
+                $p743Leftovers = [Collections.Generic.List[string]]::new()
+                $p743Probe = Join-Path $p733Case 'p7-43 into probe'
+                try {
+                    $p743Own = [IO.File]::ReadAllText($PSCommandPath)
+                    $p743Pin = Get-P741CleanupPin $p743Own
+                    Assert ($p743Pin -is [Management.Automation.PSCustomObject] -and $null -eq $p743Pin.Error) "P7-43: Get-P741CleanupPin returns an object (no parse error): $p743Pin"
+                    Assert ($p743Pin.Header -ceq 'P7-39,P7-41,P7-43' -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists P7-39/P7-41/P7-43 and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header P7-39,P7-41,P7-43 outer 1 work 1)"
+                    if (@($p743Pin.WorkReports).Count -eq 1) {
+                        $p743Call = $p743Pin.WorkReports[0].Extent
+                        $p743Removed = Get-P741CleanupPin ($p743Own.Remove($p743Call.StartOffset, $p743Call.EndOffset - $p743Call.StartOffset))
+                        Assert ($p743Removed.Outer -eq 0 -and $p743Removed.Work -eq 0) "P7-43 self-test: removing the outer finally's report CommandAst by its extent from a copy is caught: $($p743Removed.Summary) (want outer 0 work 0)"
+                    }
+                    $p743Text = @('# P7-39: a', '# P7-41: b', '# P7-43: c', 'try {', '    $x = 1', '} finally {', '    Remove-Item -LiteralPath $work -Recurse',
+                        '    Write-PackageCleanupWarnings `', '        -Warnings   $packageCleanupWarnings', '}') -join "`n"
+                    $p743Synthetic = Get-P741CleanupPin $p743Text
+                    $p743Want = 'header P7-39,P7-41,P7-43 outer 1 work 1 loop 0 asserts 0 unlabelled 0 casefinally 0 wrapper 0'
+                    Assert ($p743Synthetic.Summary -ceq $p743Want) "P7-43 self-test: a reformatted report call is pinned: $($p743Synthetic.Summary) (want $p743Want)"
+                    if (@($p743Synthetic.WorkReports).Count -eq 1) {
+                        $p743Call = $p743Synthetic.WorkReports[0].Extent
+                        $p743Gone = Get-P741CleanupPin ($p743Text.Remove($p743Call.StartOffset, $p743Call.EndOffset - $p743Call.StartOffset))
+                        Assert ($p743Gone.Summary -ceq 'header P7-39,P7-41,P7-43 outer 0 work 0 loop 0 asserts 0 unlabelled 0 casefinally 0 wrapper 0') "P7-43 self-test: the reformatted call removed by its extent reads outer 0 work 0: $($p743Gone.Summary)"
+                    } else { $failures.Add("P7-43 self-test: the reformatted report call was not found as one CommandAst: $($p743Synthetic.Summary)") }
+                    $p743Other = Get-P741CleanupPin ("try { `$x = 1 } finally { Remove-Item -LiteralPath `$work }`ntry { `$y = 2 } finally { Write-PackageCleanupWarnings }")
+                    Assert ($p743Other.Outer -eq 1 -and $p743Other.Work -eq 0) "P7-43 self-test: a report in the finally of a top-level try that does not remove `$work reads work 0: $($p743Other.Summary)"
+                    $p743Bad = Get-P741CleanupPin 'try {'
+                    Assert ($null -ne $p743Bad.Error -and $p743Bad.Summary.StartsWith('unparsable: ')) "P7-43 self-test: unparsable text is an object with Error set: $($p743Bad.Summary)"
+
+                    New-Item -ItemType Directory -Force $p743Probe | Out-Null
+                    $p743Into = [Collections.Generic.List[string]]::new(); $p743Before = $packageCleanupWarnings.Count
+                    $p743Warning = & { function Remove-Item { }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
+                    Assert ($null -ne $p743Warning -and $p743Into.Count -eq 1 -and $p743Into[0] -ceq $p743Warning -and $p743Warning.StartsWith('P7-43: ') -and $p743Warning.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p743Before) "P7-43: Remove-PackageCaseDirectory -Into collects a leftover (stand-in remover, any user) into the passed list only (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new): $p743Warning"
+                    $p743Silent = & { function Remove-Item { }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
+                    Assert ($null -ne $p743Silent -and $p743Into.Count -eq 1 -and $packageCleanupWarnings.Count -eq $p743Before -and (Test-Path -LiteralPath $p743Probe)) "P7-43: -Silent with -Into returns the warning and collects it nowhere (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new)"
+                } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+                finally {
+                    # P7-43: this block's own leftover goes to its own list and is reported here, not in the run-wide report.
+                    [void](Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Leftovers)
+                    Write-PackageCleanupWarnings -Warnings $p743Leftovers
+                }
+
                 # (1) Infeasible document: packaged CLI sha256 pinned; batch and waiting MCP handshakes agree and return it.
                 $plain = New-P733Package (Join-Path $p733Case 'plain/pkg')
                 $plainCli = Join-Path $plain 'cli/Bim.Cli.dll'; $plainMcp = Join-Path $plain 'mcp/Bim.Mcp.dll'
