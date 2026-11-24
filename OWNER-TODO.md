@@ -443,3 +443,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay278 (2026-11-24, cloud)
 - No new required action. Optional decision: P10-43 recorded that the MCP and CLI generic catch put an unexpected exception message (e.g. `plan` with a missing store → absolute path) into the `code`; making it a typed `*_internal_error` would change CLI/MCP bytes and needs a proposed ADR — say yes/no in OWNER.md. Still open: decide ADR0010/ADR0011; 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`; `git pull` (main 7881bfb).
+
+## Relay279 (2026-11-24, cloud)
+- No new required action. The optional generic-catch decision (Relay278) now also covers nested lone-surrogate argument values on MCP validate/diff (System.Text.Json message with byte position becomes the `code`, P10-44). Still open: decide ADR0010/ADR0011; 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`; `git pull` (main de6b7de).
