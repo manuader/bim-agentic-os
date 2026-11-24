@@ -105,6 +105,10 @@ using Bim.Core;
 //      over the drifted lock); with xx.p534b.pack drifted too, the refusal is xx.p534a.pack's line with the literal
 //      " (+1 more lock issue(s))" suffix (in process and as a real process, twice each); the fixture builders are
 //      duplicated in tests/mcp/TwiceReadToolTests.cs on purpose (separate test executables), pinned there as equal text.
+//      P5-38: that pin compares whole builder bodies of this section (mutant self-test: a builder grown by a line fails
+//      it); an invalid code (xx.p538.bad: jurisdiction_invalid on the valid lock) prints the drift line over the drifted
+//      lock (drift before validation); the escaped '+' (\u002B, JsonSerializer's default encoder) of the two-drift line is
+//      pinned as the current encoder behaviour.
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1348,6 +1352,16 @@ internal static class SkillListTests
         Check(unclaimed?.Refusal is { } unclaimedRefusal && unclaimedRefusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
             "P5-36 control: on the valid lock the in-process Select of the unclaimed code " + UnclaimedCode + " is jurisdiction_unknown",
             unclaimed?.Refusal is { } shownUnclaimed ? Failed(shownUnclaimed) : "<no refusal>");
+        // P5-38: a code that is not a jurisdiction code (two labels after the country) is jurisdiction_invalid on the valid
+        // lock (JurisdictionRegistry.SelectAny, in process and on the CLI), so the drift line it prints over the drifted
+        // lock below can only come from the load: drift refuses before the code is validated.
+        const string InvalidCode = "xx.p538.bad";
+        const string InvalidCodeLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_invalid\",\"subject\":\"xx.p538.bad\",\"detail\":\"jurisdiction code such as ar.caba expected\"}";
+        var invalid = first.Registry?.Select(new ProjectJurisdiction(InvalidCode));
+        Check(invalid?.Refusal is { } invalidRefusal && Failed(invalidRefusal) == InvalidCodeLine && invalid.Claim is null,
+            "P5-38 control: on the valid lock the in-process Select of the invalid code " + InvalidCode + " is the pinned jurisdiction_invalid line",
+            invalid?.Refusal is { } shownInvalid ? Failed(shownInvalid) : "<no refusal>");
+        Case("P5-38 control: an invalid code on the valid lock", new[] { "--code", InvalidCode }, 1, InvalidCodeLine);
 
         // jurisdiction_conflict: the registry refuses a code with a mismatched country or municipality, but the verb's
         // parser refuses --code together with --country or --municipality as usage before any load, so the CLI never
@@ -1365,11 +1379,10 @@ internal static class SkillListTests
         // Drifted lock: xx.p534a.pack's sidecar note edited after pinning; the locked load refuses before any selection.
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
         // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited.
-        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs
-        // and tests/mcp/TwiceReadToolTests.cs): first pinned after the P5-34 red probe run 44911652955; both files' drift lines
-        // were re-observed byte for byte, as the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli
-        // on macOS in run 45316035463, tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they
-        // are the same on every OS.
+        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs and tests/mcp/TwiceReadToolTests.cs):
+        // first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as
+        // the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463,
+        // tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they are the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
@@ -1382,6 +1395,7 @@ internal static class SkillListTests
         Case("code selection over a drifted lock", new[] { "--code", DuplicateCode }, 1, DriftLine);
         Case("P5-36 control: a code that succeeded on the valid lock, over the drifted lock", new[] { "--code", CodeB }, 1, DriftLine);
         Case("P5-36 control: an unclaimed code over the drifted lock", new[] { "--code", UnclaimedCode }, 1, DriftLine);
+        Case("P5-38: an invalid code over the drifted lock (drift before validation)", new[] { "--code", InvalidCode }, 1, DriftLine);
 
         // P5-36: two drifted packs. xx.p534b.pack's sidecar note is edited after pinning too; the refusal is the first lock
         // issue in (pack id, code, detail) order (xx.p534a.pack, the line above) with the further-issues suffix
@@ -1395,6 +1409,16 @@ internal static class SkillListTests
             (twoDrifted.Refusal is { } shownTwoDrift ? Failed(shownTwoDrift) : "<no refusal>") + " | pinned " + TwoDriftLine);
         Case("two drifted packs: selection", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, TwoDriftLine);
         Case("two drifted packs: code selection", new[] { "--code", DuplicateCode }, 1, TwoDriftLine);
+        // P5-38: the escaped '+' is the current encoder behaviour, pinned (no encoder change without a product task): the
+        // detail holds a raw '+' and the verb serializes the envelope with JsonSerializer defaults (JavaScriptEncoder.Default
+        // escapes '+' as \u002B), so the printed line (pinned above, in process and as a real process, twice each) carries
+        // the six characters \u002B and no '+'.
+        const string Suffix = " (+1 more lock issue(s))";
+        Check(twoDrifted.Refusal is { } rawTwoDrift && rawTwoDrift.Detail.EndsWith(Suffix, StringComparison.Ordinal)
+            && JsonSerializer.Serialize(Suffix) == "\" (\\u002B1 more lock issue(s))\"" && JsonSerializer.Serialize("+") == "\"\\u002B\""
+            && TwoDriftLine.Contains("(\\u002B1 more", StringComparison.Ordinal) && !TwoDriftLine.Contains('+'),
+            "P5-38: the two-drift detail holds a raw '+' and JsonSerializer's default encoder prints it as \\u002B (the pinned line has no '+')",
+            twoDrifted.Refusal?.ToString() ?? "<no refusal>");
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
