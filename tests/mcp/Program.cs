@@ -342,14 +342,17 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
 {
     var p123Source=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
     // The RevitCallAll body: from its signature to the brace matching the first '{' after it (no layout assumption).
-    var p123Start=p123Source.IndexOf("(string Text, bool IsError) RevitCallAll(",StringComparison.Ordinal);
-    var p123Open=p123Start<0 ? -1 : p123Source.IndexOf('{',p123Start);
-    var p123End=-1;
-    for(int p123At=Math.Max(p123Open,0),p123Depth=0;p123Open>=0 && p123At<p123Source.Length;p123At++) {
-        if(p123Source[p123At]=='{') p123Depth++;
-        else if(p123Source[p123At]=='}' && --p123Depth==0) { p123End=p123At+1; break; }
+    string P123Body(string p123Text) {
+        var p123Start=p123Text.IndexOf("(string Text, bool IsError) RevitCallAll(",StringComparison.Ordinal);
+        var p123Open=p123Start<0 ? -1 : p123Text.IndexOf('{',p123Start);
+        var p123End=-1;
+        for(int p123At=Math.Max(p123Open,0),p123Depth=0;p123Open>=0 && p123At<p123Text.Length;p123At++) {
+            if(p123Text[p123At]=='{') p123Depth++;
+            else if(p123Text[p123At]=='}' && --p123Depth==0) { p123End=p123At+1; break; }
+        }
+        return p123End<0 ? "" : p123Text[p123Start..p123End];
     }
-    var p123Body=p123End<0 ? "" : p123Source[p123Start..p123End];
+    var p123Body=P123Body(p123Source);
     // Code only: line comments dropped, so prose cannot satisfy or trip the checks.
     var p123Code=string.Join("\n",p123Body.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
     // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
@@ -397,7 +400,9 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
         ("one argument per line",P142Call.Replace(", ",",\n    ",StringComparison.Ordinal)),
         ("cutReads:realPipe without spaces",P142Call.Replace("cutReads: realPipe","cutReads:realPipe",StringComparison.Ordinal)),
         ("named deadline and elapsed, reordered","new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, cutReads: realPipe, elapsed: RevitDeadlineTransport.ElapsedOn( QueryAllClock ), deadline: QueryAllDeadline, listing: RevitDeadlineTransport.McpListing, probe: revitProbe)"),
-        ("a block comment inside the list",P142Call.Replace("cutReads: realPipe","/* real pipe: cut */ cutReads: realPipe",StringComparison.Ordinal))})
+        ("a block comment inside the list",P142Call.Replace("cutReads: realPipe","/* real pipe: cut */ cutReads: realPipe",StringComparison.Ordinal)),
+        // P1-44: string literals are stripped before '//' is read as a comment.
+        ("a '//' inside a string literal",P142Call.Replace("new RevitDeadlineTransport(pipeName,","new RevitDeadlineTransport(Pipe(\"//./pipe/x\"),",StringComparison.Ordinal))})
         Check(P142Problems("var transport = "+p142Code+";\n")=="","P1-42 MCP deadline pin self-test: "+p142Label+" passes | "+P142Problems("var transport = "+p142Code+";\n"));
     foreach(var (p142Label,p142Code) in new[]{
         ("cutReads false",P142Call.Replace("cutReads: realPipe","cutReads: false",StringComparison.Ordinal)),
@@ -407,6 +412,19 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
         ("the call only in a comment","Other();\n// "+P142Call.ReplaceLineEndings(" ")),
         ("two constructions",P142Call+"; var other = "+P142Call)})
         Check(P142Problems("var transport = "+p142Code+";\n")!="","P1-42 MCP deadline pin self-test: "+p142Label+" is flagged");
+    // P1-44: RevitCallAll's body is found on the stripped code (a signature in a comment, a brace in a literal are not
+    // the member's), so the deadline pin reads the construction inside RevitCallAll only. Mutation self-test.
+    string P144Member(string p144Inside)=>"    (string Text, bool IsError) RevitCallAll(JsonElement arguments)\n    {\n"+p144Inside+"        return (\"\", false);\n    }\n";
+    string P144Problems(string p144Text)=>P123Body(p144Text) is {Length:>0} p144Body ? P142Problems(p144Body) : "no RevitCallAll block";
+    const string P144Other="        var transport = new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport);\n";
+    foreach(var (p144Label,p144Source) in new[]{
+        ("today's member","sealed class S\n{\n"+P144Member("        var transport = "+P142Call+";\n")+"}\n"),
+        ("a '}' in a string before the construction","sealed class S\n{\n"+P144Member("        var close = \"}\";\n        var transport = "+P142Call+";\n")+"}\n")})
+        Check(P144Problems(p144Source)=="","P1-44 MCP RevitCallAll body self-test: "+p144Label+" passes | "+P144Problems(p144Source));
+    foreach(var (p144Label,p144Source) in new[]{
+        ("the signature and construction only in a comment","sealed class S\n{\n    // (string Text, bool IsError) RevitCallAll( { var transport = "+P142Call.ReplaceLineEndings(" ")+"; }\n"+P144Member(P144Other)+"}\n"),
+        ("a '{' in a string, the construction in the next member","sealed class S\n{\n"+P144Member("        var open = \"{\";\n"+P144Other)+"    void Other()\n    {\n        var transport = "+P142Call+";\n    }\n}\n")})
+        Check(P144Problems(p144Source)!="","P1-44 MCP RevitCallAll body self-test: "+p144Label+" is flagged");
     var p123Args=P142Problems(p123Body);
     Check(p123Args=="",
         "McpServer.RevitCallAll pages through new RevitDeadlineTransport(… QueryAllDeadline, ElapsedOn(QueryAllClock), McpListing, cutReads: realPipe …) | "+p123Args);

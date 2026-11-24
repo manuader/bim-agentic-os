@@ -1149,13 +1149,50 @@ internal static class RevitCommandDeadlineTests
             check(mutant != Clean && SeamProblems(mutant).Length > 0, "P1-36 mutation self-test: the seam check flags a " + label, string.Join("; ", SeamProblems(mutant)));
 
         // McpServer's deadline comment (before RevitCallAll's new RevitDeadlineTransport(), folded over comment lines.
-        var mcp = File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")).ReplaceLineEndings("\n");
+        var comment = McpDeadlineComment(File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")));
+        check(comment.Contains(MeasuredPhrase, StringComparison.Ordinal),
+            "P1-36 static: McpServer.RevitCallAll's deadline comment states the read is measured after the connect on every real-pipe page", comment);
+
+        // P1-44 self-test: the comment is read inside RevitCallAll's own body (signature and construction found on the
+        // stripped code), and a '//' line counts only when it is a comment, not text inside a literal.
+        static string CallAll(string inside) => "    (string Text, bool IsError) RevitCallAll(JsonElement arguments)\n    {\n" + inside + "        return (\"\", false);\n    }\n";
+        const string Built = "        var transport = new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, null, readTimeout, QueryAllDeadline, cutReads: realPipe);\n";
+        const string Said = "        // P1-36: the read is measured after the connect on every\n        // real-pipe page.\n";
+        const string Head = "sealed class S\n{\n", Tail = "}\n";
+        var commentCleans = new (string Label, string Source)[]
+        {
+            ("today's layout", Head + CallAll(Said + Built) + Tail),
+            ("CRLF line endings", (Head + CallAll(Said + Built) + Tail).Replace("\n", "\r\n", StringComparison.Ordinal)),
+            ("a construction named in a comment before the phrase", Head + CallAll("        // replaces P1-23's new RevitDeadlineTransport( call\n" + Said + Built) + Tail),
+            ("a '}' in a string before the phrase", Head + CallAll("        var close = \"}\";\n" + Said + Built) + Tail),
+        };
+        foreach (var (label, text) in commentCleans)
+            check(McpDeadlineComment(text).Contains(MeasuredPhrase, StringComparison.Ordinal), "P1-44 deadline comment self-test: " + label + " states the phrase", McpDeadlineComment(text));
+        var commentMutants = new (string Label, string Source)[]
+        {
+            ("phrase only above another member that names the signature in a comment",
+                Head + "    // see (string Text, bool IsError) RevitCallAll(\n    // " + MeasuredPhrase + "\n    void Other() { }\n" + CallAll(Built) + Tail),
+            ("phrase only in a raw string literal line", Head + CallAll("        var note = \"\"\"\n        // " + MeasuredPhrase + "\n        \"\"\";\n" + Built) + Tail),
+            ("phrase only in a verbatim string literal line", Head + CallAll("        var note = @\"\n        // " + MeasuredPhrase + "\n        \";\n" + Built) + Tail),
+            ("phrase only after the construction", Head + CallAll(Built + Said) + Tail),
+            ("no construction inside RevitCallAll (one in the next member)",
+                Head + CallAll(Said + "        var transport = new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport);\n") + "    void Other()\n    {\n" + Built + "    }\n" + Tail),
+        };
+        foreach (var (label, text) in commentMutants)
+            check(!McpDeadlineComment(text).Contains(MeasuredPhrase, StringComparison.Ordinal), "P1-44 deadline comment self-test: " + label + " is flagged", McpDeadlineComment(text));
+    }
+
+    const string MeasuredPhrase = "the read is measured after the connect on every real-pipe page";
+
+    // P1-44: McpServer.RevitCallAll's deadline comment: the whole-line // comments from its signature to its one
+    // RevitDeadlineTransport construction, folded into one line ("" without that body or construction).
+    static string McpDeadlineComment(string source)
+    {
+        var mcp = source.ReplaceLineEndings("\n");
         var allStart = mcp.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
         var built = allStart < 0 ? -1 : mcp.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
-        var comment = built < 0 ? "" : string.Join(" ", mcp[allStart..built].Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith("//", StringComparison.Ordinal))
+        return built < 0 ? "" : string.Join(" ", mcp[allStart..built].Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith("//", StringComparison.Ordinal))
             .Select(line => line.TrimStart('/').Trim()));
-        check(comment.Contains("the read is measured after the connect on every real-pipe page", StringComparison.Ordinal),
-            "P1-36 static: McpServer.RevitCallAll's deadline comment states the read is measured after the connect on every real-pipe page", comment);
     }
 
     // ---- 2h. P1-37: ReadReplyLine observes its abandoned read (static pin) ----
@@ -1385,11 +1422,14 @@ internal static class RevitCommandDeadlineTests
 
     // P1-42: runs git in dir (the 2i scan and its control need git on PATH, docs/agent/ENVIRONMENT.md); exit -1 with
     // the reason when git cannot start.
-    static (int Exit, string Out, string Error) GitRun(string dir, params string[] arguments)
+    static (int Exit, string Out, string Error) GitRun(string dir, params string[] arguments) => GitRunWith("git", dir, arguments);
+
+    // P1-44: GitRun with the git executable named (the 'git missing' self-test names one that does not exist).
+    static (int Exit, string Out, string Error) GitRunWith(string gitExecutable, string dir, string[] arguments)
     {
         try
         {
-            var start = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            var start = new ProcessStartInfo(gitExecutable) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             start.ArgumentList.Add("-C");
             start.ArgumentList.Add(dir);
             foreach (var argument in arguments) start.ArgumentList.Add(argument);
@@ -1408,12 +1448,103 @@ internal static class RevitCommandDeadlineTests
 
     // P1-42: why path is no safe place for the 2i scan control (empty: outside the repository root, or inside it only
     // under a gitignored folder, so a crash cannot leave a visible untracked file in the root).
-    static string ControlLocationProblem(string root, string path)
+    static string ControlLocationProblem(string root, string path, string gitExecutable = "git")
     {
         var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path)).Replace('\\', '/');
         if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return "";
-        var ignored = GitRun(root, "check-ignore", "-q", "--", relative);
+        var ignored = GitRunWith(gitExecutable, root, new[] { "check-ignore", "-q", "--", relative });
         return ignored.Exit == 0 ? "" : "inside the repository root and not gitignored: " + relative + " (git check-ignore exit " + N(ignored.Exit) + (ignored.Error.Length > 0 ? ", " + ignored.Error : "") + ")";
+    }
+
+    // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
+    // between the temp folder and the root (a path reached through a link to the root is inside it). Self-test in a
+    // scratch repository under the temp folder: real/repo (git init) and alias -> real.
+    static void ControlLocationSelfTest(string root, Action<bool, string, string> check)
+    {
+        var missing = ControlLocationProblem(root, Path.Combine(root, "p1-44-visible", "Copy.cs"), "git-p1-44-missing-" + Guid.NewGuid().ToString("N"));
+        check(missing.StartsWith("git missing", StringComparison.Ordinal) && !missing.Contains("not gitignored", StringComparison.Ordinal),
+            "P1-44 control location self-test: a missing git is named 'git missing', not 'not gitignored'", missing);
+        var visible = ControlLocationProblem(root, Path.Combine(root, "p1-44-visible", "Copy.cs"));
+        check(visible.Contains("not gitignored", StringComparison.Ordinal) && !visible.StartsWith("git missing", StringComparison.Ordinal),
+            "P1-44 control location self-test: a visible root folder is named 'not gitignored'", visible);
+
+        var scratch = Path.Combine(Path.GetTempPath(), "p1-44-link-" + Guid.NewGuid().ToString("N"));
+        var real = Path.Combine(scratch, "real");
+        var repo = Path.Combine(real, "repo");
+        var alias = Path.Combine(scratch, "alias");
+        bool linked;
+        string detail;
+        try
+        {
+            Directory.CreateDirectory(repo);
+            var init = GitRun(repo, "init", "-q");
+            Directory.CreateSymbolicLink(alias, real);
+            var aliasRoot = ControlLocationProblem(Path.Combine(alias, "repo"), Path.Combine(repo, "visible", "Copy.cs"));
+            var aliasPath = ControlLocationProblem(repo, Path.Combine(alias, "repo", "visible", "Copy.cs"));
+            var beside = ControlLocationProblem(Path.Combine(alias, "repo"), Path.Combine(real, "beside", "Copy.cs"));
+            linked = init.Exit == 0 && aliasRoot.Contains("not gitignored", StringComparison.Ordinal) && aliasPath.Contains("not gitignored", StringComparison.Ordinal) && beside.Length == 0;
+            detail = "git init exit " + N(init.Exit) + "; root via link: " + (aliasRoot.Length > 0 ? aliasRoot : "accepted") + "; path via link: " + (aliasPath.Length > 0 ? aliasPath : "accepted")
+                + "; beside via link: " + (beside.Length > 0 ? beside : "accepted");
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
+        {
+            // Windows may refuse a symbolic link without the privilege; the resolution is then not exercised there.
+            linked = OperatingSystem.IsWindows();
+            detail = "no symbolic link (" + error.GetType().Name + ": " + error.Message + ")" + (linked ? "; not exercised on this Windows runner" : "");
+        }
+        finally
+        {
+            try
+            {
+                if (Directory.Exists(alias) || File.Exists(alias))
+                {
+                    if (OperatingSystem.IsWindows()) Directory.Delete(alias);
+                    else File.Delete(alias);
+                }
+                if (Directory.Exists(scratch))
+                {
+                    foreach (var file in Directory.EnumerateFiles(scratch, "*", new EnumerationOptions { RecurseSubdirectories = true, AttributesToSkip = 0 }))
+                        File.SetAttributes(file, FileAttributes.Normal);
+                    Directory.Delete(scratch, recursive: true);
+                }
+            }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        check(linked, "P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)", detail);
+        check(!Directory.Exists(scratch), "P1-44 control location self-test: the scratch link folder is removed", scratch);
+    }
+
+    // P1-44: the argument-mapping parser (with StripCode and MemberBody) exists once, in tests/cli/DeadlineSourceScan.cs:
+    // Bim.Cli.Tests compiles it from its own folder (default items, nothing removed) and Bim.Mcp.Tests links it; neither
+    // test keeps a copy (no StripCodeInto or ArgumentsAt here, no depth-0 argument split in tests/mcp/Program.cs).
+    const string SharedScanFile = "tests/cli/DeadlineSourceScan.cs";
+    static void SharedParserPinned(string root, Action<bool, string, string> check)
+    {
+        var shared = Path.GetFullPath(Path.Combine(root, "tests", "cli", "DeadlineSourceScan.cs"));
+        bool Includes(string project, string attribute)
+        {
+            var dir = Path.GetDirectoryName(project)!;
+            return File.Exists(project) && System.Xml.Linq.XDocument.Load(project).Descendants().Where(element => element.Name.LocalName == "Compile")
+                .Select(element => (string?)element.Attribute(attribute)).Where(value => value is not null)
+                .Any(value => string.Equals(Path.GetFullPath(Path.Combine(dir, value!.Replace('\\', '/').Replace('/', Path.DirectorySeparatorChar))), shared,
+                    OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal));
+        }
+        var cliProject = Path.Combine(root, "tests", "cli", "Bim.Cli.Tests.csproj");
+        var mcpProject = Path.Combine(root, "tests", "mcp", "Bim.Mcp.Tests.csproj");
+        var cliText = File.Exists(cliProject) ? File.ReadAllText(cliProject) : "";
+        check(File.Exists(shared) && !cliText.Contains("EnableDefaultCompileItems", StringComparison.Ordinal) && !Includes(cliProject, "Remove") && Includes(mcpProject, "Include"),
+            "P1-44 the deadline argument parser exists once: " + SharedScanFile + " is compiled by Bim.Cli.Tests (default items) and linked by Bim.Mcp.Tests",
+            (File.Exists(shared) ? "present" : "missing") + "; mcp link " + Includes(mcpProject, "Include"));
+        var selfPath = Path.Combine(root, "tests", "cli", "RevitCommandDeadlineTests.cs");
+        var self = StripCode((File.Exists(selfPath) ? File.ReadAllText(selfPath) : "").ReplaceLineEndings("\n"));
+        var mcpTestPath = Path.Combine(root, "tests", "mcp", "Program.cs");
+        var mcpTest = StripCode((File.Exists(mcpTestPath) ? File.ReadAllText(mcpTestPath) : "").ReplaceLineEndings("\n"));
+        var copies = new List<string>();
+        if (System.Text.RegularExpressions.Regex.IsMatch(self, @"\bStripCodeInto\s*\(")) copies.Add("RevitCommandDeadlineTests.cs StripCodeInto");
+        if (System.Text.RegularExpressions.Regex.IsMatch(self, @"\bArgumentsAt\s*\(")) copies.Add("RevitCommandDeadlineTests.cs ArgumentsAt");
+        if (System.Text.RegularExpressions.Regex.IsMatch(mcpTest, @"\bdepth\s*==\s*0\b")) copies.Add("tests/mcp/Program.cs depth-0 argument split");
+        if (!mcpTest.Contains("DeadlineSourceScan.", StringComparison.Ordinal)) copies.Add("tests/mcp/Program.cs does not call DeadlineSourceScan");
+        check(copies.Count == 0, "P1-44 neither deadline test keeps its own copy of the strip or argument-map helpers", string.Join("; ", copies));
     }
 
     static List<string> ReadTimeoutHelperReferences(string root, IEnumerable<string> files)
@@ -1586,6 +1717,7 @@ internal static class RevitCommandDeadlineTests
         check(ControlLocationProblem(root, Path.Combine(root, "p1-42-visible", "Copy.cs")).Length > 0 && ControlLocationProblem(root, Path.Combine(root, ".bim", "p1-42", "Copy.cs")).Length == 0
             && ControlLocationProblem(root, Path.Combine(Path.GetDirectoryName(Path.GetFullPath(root))!, "p1-42-outside", "Copy.cs")).Length == 0,
             "P1-42 control location self-test: a visible root folder is refused, a gitignored .bim folder and a folder beside the root are accepted", "");
+        ControlLocationSelfTest(root, check);
 
         // P1-42: the parameter list the argument map uses is the constructor's own (one public constructor).
         var constructors = typeof(Bim.Cli.RevitDeadlineTransport).GetConstructors();
@@ -1593,6 +1725,7 @@ internal static class RevitCommandDeadlineTests
         check(constructorParameters.SequenceEqual(DeadlineTransportParameters),
             "P1-42 the parsed-argument pins map onto RevitDeadlineTransport's one public constructor's parameters, in order",
             N(constructors.Length) + " constructors; " + string.Join(", ", constructorParameters));
+        SharedParserPinned(root, check);
 
         // (b) The CLI passes no never-called transport (P1-40: on the parsed argument list, any formatting or naming).
         var program = StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
@@ -2027,6 +2160,10 @@ internal static class RevitCommandDeadlineTests
             ("a ConnectTimeout bound", InCallAll(McpCall.Replace("QueryAllDeadline,", "TimeSpan.FromMilliseconds(RevitCommandService.ConnectTimeoutMs),", StringComparison.Ordinal))),
             ("the call only in a comment", InCallAll("Other();\n    // " + McpCall.ReplaceLineEndings(" "))),
             ("two constructions", InCallAll(McpCall) + InCallAll(McpCall).Replace("RevitCallAll", "RevitCallOther", StringComparison.Ordinal)),
+            // P1-44: only a construction inside RevitCallAll is the call; one in another member is not counted as it.
+            ("P1-44 the construction only in another member", InCallAll("new RevitServiceTransport(pipeName, RevitCommandPolicy.None, revitTransport)")
+                + InCallAll(McpCall).Replace("RevitCallAll", "RevitCallOther", StringComparison.Ordinal)),
+            ("P1-44 no RevitCallAll block (the construction in a field)", "static readonly object Transport = " + McpCall + ";\n"),
         };
         foreach (var (label, code) in mcpMutants)
             check(McpTransportProblems(code).Length > 0, "P1-42 MCP transport pin self-test: " + label + " is flagged", "no problem flagged");
