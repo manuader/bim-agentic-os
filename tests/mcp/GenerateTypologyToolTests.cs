@@ -478,6 +478,11 @@ internal static class GenerateTypologyToolTests
     // whole in the pipe buffer before the close and that case pins only the reader-side prefix, exit 0 and the one
     // diagnostic, not that the server met the cut. Server's Kill also contains Win32Exception (the process may exit or
     // be denied between the timeout and the kill).
+    // P3-40. The 64 KiB bound is measured (Capacity: an unread stdout pipe of a hooked Bim.Mcp.dll filled in 1 KiB and
+    // 1 MiB writes, counted after the blocked writer is killed) and cited (Linux pipe(7), xnu sys/pipe.h); the
+    // before-any-byte case closes stdout before the request is written (the server cannot have written first); every kill
+    // in this file, the CLI helper's included, contains InvalidOperationException and Win32Exception (pinned); the macOS
+    // step uploads its output and posts a notice and builds interfaces/mcp and tests/mcp once each (checked here).
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -612,7 +617,7 @@ internal static class GenerateTypologyToolTests
                     StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
                 start.ArgumentList.Add(mcpDll);
                 start.Environment.Remove("DOTNET_STARTUP_HOOKS");
-                foreach (var name in new[] { StartupHook.SeamVariable, StartupHook.StderrVariable, StartupHook.LogVariable, StartupHook.SectionVariable }) start.Environment.Remove(name);
+                foreach (var name in StartupHook.Variables) start.Environment.Remove(name);
                 if (hook is { } h)
                 {
                     start.Environment["DOTNET_STARTUP_HOOKS"] = hookAssembly;
@@ -626,6 +631,13 @@ internal static class GenerateTypologyToolTests
                 else stderr = process.StandardError.ReadToEndAsync();
                 Task<string> stdout;
                 if (take is not { } k) stdout = process.StandardOutput.ReadToEndAsync();
+                else if (k == 0)
+                {
+                    // P3-40: closed before any byte, enforced: the reader's end closes here, before the request is written,
+                    // and the server writes nothing before it has read a request, so the close cannot follow a write.
+                    process.StandardOutput.Close();
+                    stdout = Task.FromResult("");
+                }
                 else
                 {
                     var raw = process.StandardOutput.BaseStream;
@@ -720,7 +732,7 @@ internal static class GenerateTypologyToolTests
                 ("unguarded", "pipe"), false, () => Half("typed-unguarded"), r => r.InTime && r.Exit == 0 && Length("typed-unguarded") is > 0 and < PipeBufferBound
                     && Prefix("typed-unguarded", r.Out, Half("typed-unguarded")) && r.Err == diagnostic + nl
                     && r.Log.SequenceEqual(Log("hook:unguarded:pipe", attempt))));
-            cases.Add(("closed-stdout", "P3-36 partial stdout: the real process, Document's catch-all forced (stderr forwarded), stdout closed by the reader before any byte: exit 0, the diagnostic attempted once and written once",
+            cases.Add(("closed-stdout", "P3-36 partial stdout: the real process, Document's catch-all forced (stderr forwarded), stdout closed by the reader before any byte (P3-40: closed before the request is written): exit 0, the diagnostic attempted once and written once",
                 ("unguarded", "pipe"), false, () => 0, r => r.InTime && r.Exit == 0 && r.Out.Length == 0 && r.Err == diagnostic + nl && r.Log.SequenceEqual(Log("hook:unguarded:pipe", attempt))));
 
             Check(cases.Count == CaseCount && cases.Select(c => c.Key).Distinct(StringComparer.Ordinal).Count() == CaseCount,
@@ -738,6 +750,87 @@ internal static class GenerateTypologyToolTests
                 "P3-36 every process case ran through the launch helper within its limit and the total deadline | runs " + runs.ToString(CultureInfo.InvariantCulture)
                 + " late [" + string.Join(", ", late) + "] elapsed " + clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms on " + os);
 
+            // ---- P3-40: the pipe capacity behind PipeBufferBound, measured ----
+            // A hooked Bim.Mcp.dll (FillVariable: the hook writes FillLimit bytes to stdout in chunk-sized writes before Main,
+            // logging before each write) runs with nobody reading its stdout; once the log has stood still for SettleMs the
+            // writer is blocked on a full pipe, it is killed, and only then the reader counts every byte that reached the
+            // pipe (the buffered bytes, then EOF). Two chunk sizes: 1 KiB (the server's AutoFlush writes are small) and
+            // 1 MiB (a large write is what grows the macOS pipe to its 64 KiB maximum). Documented capacities: Linux pipe(7),
+            // 16 pages = 65536 bytes by default; macOS (xnu sys/pipe.h) PIPE_SIZE 16384 growing to BIG_PIPE_SIZE 65536;
+            // Windows .NET Process pipes use the default (smaller) buffer. The bound holds if every measurement is at most
+            // PipeBufferBound and the success cut leaves more than that unread.
+            const int SettleMs = 1500;
+            const int FillMs = 30000;
+            (long Bytes, bool Settled, string Log) Capacity(int chunk)
+            {
+                var fillLog = Path.Combine(scratch, "fill-" + chunk.ToString(CultureInfo.InvariantCulture) + ".log");
+                var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+                start.ArgumentList.Add(mcpDll);
+                start.Environment.Remove("DOTNET_STARTUP_HOOKS");
+                foreach (var name in StartupHook.Variables) start.Environment.Remove(name);
+                start.Environment["DOTNET_STARTUP_HOOKS"] = hookAssembly;
+                start.Environment[StartupHook.FillVariable] = fillLog;
+                start.Environment[StartupHook.FillChunkVariable] = chunk.ToString(CultureInfo.InvariantCulture);
+                using var process = Process.Start(start) ?? throw new Exception("fill process did not start: " + dotnet);
+                try { process.StandardInput.Close(); } catch (IOException) { }
+                var stderr = process.StandardError.ReadToEndAsync();
+                var watch = Stopwatch.StartNew();
+                var still = Stopwatch.StartNew();
+                long seen = -1;
+                var settled = false;
+                while (watch.ElapsedMilliseconds < FillMs && !process.HasExited)
+                {
+                    var length = File.Exists(fillLog) ? new FileInfo(fillLog).Length : -1;
+                    if (length != seen) { seen = length; still.Restart(); }
+                    else if (length > 0 && still.ElapsedMilliseconds >= SettleMs) { settled = true; break; }
+                    Thread.Sleep(50);
+                }
+                var blocked = settled && !process.HasExited;
+                try { process.Kill(true); }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                process.WaitForExit(PerCaseMs);
+                var raw = process.StandardOutput.BaseStream;
+                var count = Task.Run(() =>
+                {
+                    var buffer = new byte[65536];
+                    long total = 0;
+                    int n;
+                    while ((n = raw.Read(buffer, 0, buffer.Length)) > 0) total += n;
+                    return total;
+                });
+                var counted = count.Wait(PerCaseMs);
+                var lines = File.Exists(fillLog) ? File.ReadAllLines(fillLog) : Array.Empty<string>();
+                return (counted ? count.Result : -1, blocked && counted, lines.Length.ToString(CultureInfo.InvariantCulture) + " log lines, last " + (lines.LastOrDefault() ?? "<none>"));
+            }
+            var small = Capacity(1024);
+            var large = Capacity(1 << 20);
+            var measured = Math.Max(small.Bytes, large.Bytes);
+            Check(small.Settled && large.Settled && small.Bytes > 0 && large.Bytes > 0 && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
+                "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + small.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 KiB writes and "
+                + large.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 MiB writes before the writer blocked, at most PipeBufferBound " + PipeBufferBound.ToString(CultureInfo.InvariantCulture)
+                + ", and the success cut leaves " + (Length("success") - CutBytes).ToString(CultureInfo.InvariantCulture) + " bytes unread | settled " + small.Settled + "/" + large.Settled
+                + " logs [" + small.Log + "] [" + large.Log + "]");
+
+            // ---- P3-40: every process kill in this file is contained (the CLI helper's as Server's) ----
+            // The process may exit, or the kill be denied, between the timeout and the kill: InvalidOperationException or
+            // Win32Exception must not replace the case's own report. Pinned over this source: each kill call sits alone in a
+            // try whose catch filters exactly those two; mutation self-tests below.
+            var kill = "." + "Kill" + "(";
+            const string Contained = "try { process" + "." + "Kill(true); }";
+            const string Filter = "catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }";
+            static int Count(string text, string part) { var n = 0; for (var i = text.IndexOf(part, StringComparison.Ordinal); i >= 0; i = text.IndexOf(part, i + part.Length, StringComparison.Ordinal)) n++; return n; }
+            int Uncontained(string text) => Count(text, kill) - Regex.Matches(text, Regex.Escape(Contained) + @"\s*" + Regex.Escape(Filter)).Count;
+            var source = File.ReadAllText(Path.Combine(root, "tests", "mcp", "GenerateTypologyToolTests.cs"));
+            var sample = "if (late) { " + Contained + "\n    " + Filter + " }";
+            Check(Count(source, kill) >= 3 && Uncontained(source) == 0
+                && Uncontained(sample) == 0
+                && Uncontained("if (late) { process" + kill + "true); throw new Exception(\"late\"); }") == 1
+                && Uncontained(sample.Replace(" or System.ComponentModel.Win32Exception", "", StringComparison.Ordinal)) == 1
+                && Uncontained(sample.Replace("InvalidOperationException or ", "", StringComparison.Ordinal)) == 1
+                && Uncontained(sample + " process" + kill + "true);") == 1,
+                "P3-40 every process kill in tests/mcp/GenerateTypologyToolTests.cs (the CLI helper's, Server's and the capacity writer's) contains InvalidOperationException and Win32Exception; an uncontained kill, or one missing either type, is rejected | "
+                + Count(source, kill).ToString(CultureInfo.InvariantCulture) + " kills, " + Uncontained(source).ToString(CultureInfo.InvariantCulture) + " uncontained");
+
             // P3-36 / P3-38: the contract records the P3-34 and P3-36 (relay270) runs, the closed-pipe fact measured on all
             // three OSes in one unsplit sentence, the partial stdout result split by size and the launch helper's bounds
             // (docs/contracts/module-contracts.md, the P3-34 paragraph).
@@ -753,6 +846,25 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("one launch helper: " + CaseCount.ToString(CultureInfo.InvariantCulture) + " cases, " + (PerCaseMs / 1000).ToString(CultureInfo.InvariantCulture) + " s each, "
                     + (TotalMs / 1000).ToString(CultureInfo.InvariantCulture) + " s in total", StringComparison.Ordinal),
                 "P3-38 docs/contracts P3-34 paragraph: P3-34 and relay270 runs, closed pipe measured on Linux, Windows and macOS (one sentence), partial stdout split by size, launch helper bounds | " + Short(paragraph));
+            // P3-40: the paragraph states the measured capacity with its documented sources, the enforced close order, the
+            // contained kills and the macOS evidence; the macOS step keeps its PASS lines (artifact + notice).
+            Check(paragraph.Contains("an unread stdout pipe takes at most 64 KiB in 1 KiB and in 1 MiB writes before its writer blocks", StringComparison.Ordinal)
+                && paragraph.Contains("Linux pipe(7) 65536 bytes by default, macOS 16 KiB growing to 64 KiB", StringComparison.Ordinal)
+                && paragraph.Contains("the before-any-byte reader closes stdout before the request is written", StringComparison.Ordinal)
+                && paragraph.Contains("as in the CLI helper and the capacity writer (every kill in the file is pinned)", StringComparison.Ordinal)
+                && paragraph.Contains("the `mcp-section-9-macos` artifact", StringComparison.Ordinal)
+                && paragraph.Contains("builds `interfaces/mcp` and `tests/mcp` once each", StringComparison.Ordinal),
+                "P3-40 docs/contracts P3-34 paragraph: measured pipe capacity with sources, close-before-request order, contained kills, macOS artifact and single builds | " + Short(paragraph));
+            var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
+            var macStep = workflow.IndexOf("- name: MCP generate_typology stdio section 9 alone (macOS, P3-38)", StringComparison.Ordinal);
+            var macTail = macStep < 0 ? "" : workflow[macStep..];
+            var nextJob = macTail.IndexOf("\n  native-build:", StringComparison.Ordinal);
+            if (nextJob > 0) macTail = macTail[..nextJob];
+            Check(macStep >= 0 && Count(macTail, "dotnet build interfaces/mcp ") == 1 && Count(macTail, "dotnet build tests/mcp ") == 1
+                && macTail.Contains("::notice title=mcp-section-9-macos::", StringComparison.Ordinal)
+                && macTail.Contains("uses: actions/upload-artifact@v4", StringComparison.Ordinal) && macTail.Contains("name: mcp-section-9-macos", StringComparison.Ordinal)
+                && macTail.Contains("if: always() && runner.os == 'macOS' && steps.mcp-section-9.outcome != 'skipped'", StringComparison.Ordinal),
+                "P3-40 .github/workflows/ci.yml macOS section 9: interfaces/mcp and tests/mcp built once each, the summary posted as a notice, the output uploaded as mcp-section-9-macos even on failure | step found " + (macStep >= 0));
         }
         finally
         {
@@ -820,11 +932,20 @@ internal static class StartupHook
     public const string FailureMessage = "boom generate_typology P3-34 stdio original";
     public const string StderrMessage = "p3-34 stderr rejects the diagnostic";
     public const string SectionVariable = "BIM_TEST_P3_38_SECTION";
+    public const string FillVariable = "BIM_TEST_P3_40_FILL";
+    public const string FillChunkVariable = "BIM_TEST_P3_40_CHUNK";
+    public const long FillLimit = 16L << 20;
+    // Every variable a child must not inherit from the test process (Server and the capacity writer remove them first).
+    public static readonly string[] Variables = { SeamVariable, StderrVariable, LogVariable, SectionVariable, FillVariable, FillChunkVariable };
 
     public static void Initialize()
     {
         // P3-38: the macOS CI job's section-9-only entry (GenerateTypologyToolTests.SectionNineOnly); never set in a child.
         if (Environment.GetEnvironmentVariable(SectionVariable) == "9") Environment.Exit(GenerateTypologyToolTests.SectionNineOnly());
+        // P3-40: the pipe-capacity writer (section 9's Capacity): FillLimit bytes to stdout in chunk-sized writes, a log
+        // line before each write, then exit before Main. Its reader reads nothing until the writer is blocked and killed.
+        var fill = Environment.GetEnvironmentVariable(FillVariable);
+        if (!string.IsNullOrEmpty(fill)) Environment.Exit(Fill(fill, int.Parse(Environment.GetEnvironmentVariable(FillChunkVariable) ?? "1024", System.Globalization.CultureInfo.InvariantCulture)));
         var log = Environment.GetEnvironmentVariable(LogVariable);
         if (string.IsNullOrEmpty(log)) return;
         var seam = Environment.GetEnvironmentVariable(SeamVariable) ?? "none";
@@ -845,6 +966,20 @@ internal static class StartupHook
             _ => null,
         };
         if (replacement is not null) Console.SetError(replacement);
+    }
+
+    static int Fill(string log, int chunk)
+    {
+        var bytes = new byte[chunk];
+        Array.Fill(bytes, (byte)'x');
+        using var stdout = Console.OpenStandardOutput();
+        for (long total = 0; total < FillLimit; total += chunk)
+        {
+            File.AppendAllText(log, "write:" + total.ToString(System.Globalization.CultureInfo.InvariantCulture) + "\n");
+            stdout.Write(bytes, 0, chunk);
+        }
+        File.AppendAllText(log, "done\n");
+        return 0;
     }
 
     static StringWriter Disposed()
