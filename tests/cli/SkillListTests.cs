@@ -100,7 +100,11 @@ using Bim.Core;
 //      JurisdictionRegistry.Select (code with a mismatched country or municipality) and its CLI unreachability as the
 //      jurisdiction_resolve_usage line (--code with --country or --municipality is a usage refusal, exit 1); then the
 //      xx.p534a.pack sidecar's note is edited after pinning and both a metadata and a code selection over that drifted
-//      lock print the literal skill_lock_drift line on xx.p534a.pack.
+//      lock print the literal skill_lock_drift line on xx.p534a.pack. P5-36: drift refuses before selection (controls:
+//      --code xx.p534b succeeds and an unclaimed code is jurisdiction_unknown on the valid lock, both print the drift line
+//      over the drifted lock); with xx.p534b.pack drifted too, the refusal is xx.p534a.pack's line with the literal
+//      " (+1 more lock issue(s))" suffix (in process and as a real process, twice each); the fixture builders are
+//      duplicated in tests/mcp/TwiceReadToolTests.cs on purpose (separate test executables), pinned there as equal text.
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1202,6 +1206,10 @@ internal static class SkillListTests
         File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
         File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
         var skills = Path.Combine(package, "skills");
+        // P5-36: these two builders and the four-pack table are duplicated on purpose in tests/mcp/TwiceReadToolTests.cs
+        // (Ambiguity), not shared: Bim.Cli.Tests and Bim.Mcp.Tests are separate executables with no common fixture source
+        // (a shared file needs a Compile link in both csproj files), and the MCP copy uses its own pack ids (xx.p534m*) so
+        // its pinned lines differ. That file pins both builder texts as present verbatim here, so the copies cannot drift.
         static string Manifest(string id) =>
             "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n";
         static string Sidecar(string code, string pack, string municipality, string note) =>
@@ -1314,6 +1322,15 @@ internal static class SkillListTests
         Case("ambiguous by code (claim duplicate)", new[] { "--code", DuplicateCode }, 1, AmbiguousByCodeLine);
         Case("ambiguous by metadata (claim duplicate)", new[] { "--country", "Fixture Country", "--municipality", "Twin Town" }, 1, AmbiguousDuplicateByMetadataLine);
         Case("code route success on an overlapping pack", new[] { "--code", CodeA }, 0, OverlapCodeSuccessLine);
+        // P5-36 controls for the drifted-lock cases below: on the valid lock --code xx.p534b succeeds and an unclaimed code
+        // is jurisdiction_unknown, so the drift line they print later can only come from the load, before any selection.
+        const string OtherOverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534b\",\"pack\":\"xx.p534b.pack\",\"version\":\"1.2.3\",\"stub\":false}";
+        const string UnclaimedCode = "xx.p536-unclaimed";
+        Case("P5-36 control: code route success on the other overlapping pack", new[] { "--code", CodeB }, 0, OtherOverlapCodeSuccessLine);
+        var unclaimed = first.Registry?.Select(new ProjectJurisdiction(UnclaimedCode));
+        Check(unclaimed?.Refusal is { } unclaimedRefusal && unclaimedRefusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
+            "P5-36 control: on the valid lock the in-process Select of the unclaimed code " + UnclaimedCode + " is jurisdiction_unknown",
+            unclaimed?.Refusal is { } shownUnclaimed ? Failed(shownUnclaimed) : "<no refusal>");
 
         // jurisdiction_conflict: the registry refuses a code with a mismatched country or municipality, but the verb's
         // parser refuses --code together with --country or --municipality as usage before any load, so the CLI never
@@ -1330,14 +1347,37 @@ internal static class SkillListTests
 
         // Drifted lock: xx.p534a.pack's sidecar note edited after pinning; the locked load refuses before any selection.
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited (the line and the
-        // usage line confirmed by the P5-34 red probe run 44911652955 on macOS).
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited.
+        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs
+        // and tests/mcp/TwiceReadToolTests.cs): first pinned after the P5-34 red probe run 44911652955; both files' drift lines
+        // were re-observed byte for byte, as the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli
+        // on macOS in run 45316035463, tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they
+        // are the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
             "drifted lock: the in-process LoadLocked refusal equals the pinned skill_lock_drift line", (drifted.Refusal is { } shownDrift ? Failed(shownDrift) : "<no refusal>") + " | pinned " + DriftLine);
         Case("selection over a drifted lock", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, DriftLine);
+        // P5-36: drift refuses before selection. LoadLocked returns no registry for a drifted lock and the verb selects only
+        // from a registry, so the code selection prints the drift line, not the jurisdiction_ambiguous line it prints on the
+        // valid lock; the controls prove it: a code that succeeded on the valid lock (on a pack that did not drift) and a
+        // code no pack claims (jurisdiction_unknown on the valid lock) print the same drift line.
         Case("code selection over a drifted lock", new[] { "--code", DuplicateCode }, 1, DriftLine);
+        Case("P5-36 control: a code that succeeded on the valid lock, over the drifted lock", new[] { "--code", CodeB }, 1, DriftLine);
+        Case("P5-36 control: an unclaimed code over the drifted lock", new[] { "--code", UnclaimedCode }, 1, DriftLine);
+
+        // P5-36: two drifted packs. xx.p534b.pack's sidecar note is edited after pinning too; the refusal is the first lock
+        // issue in (pack id, code, detail) order (xx.p534a.pack, the line above) with the further-issues suffix
+        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused). The printed line carries the
+        // '+' as the JSON escape \u002B (System.Text.Json's default encoder; observed by the P5-36 probe runs 45316035463 and 45318167428).
+        File.WriteAllText(Path.Combine(skills, PackB, "jurisdiction.json"), Sidecar(CodeB, PackB, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
+        const string TwoDriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it (\\u002B1 more lock issue(s))\"}";
+        var twoDrifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
+        Check(twoDrifted.Registry is null && twoDrifted.Refusal is { } twoDriftRefusal && Failed(twoDriftRefusal) == TwoDriftLine,
+            "two drifted packs: the in-process LoadLocked refusal equals the pinned skill_lock_drift line with the further-issues suffix",
+            (twoDrifted.Refusal is { } shownTwoDrift ? Failed(shownTwoDrift) : "<no refusal>") + " | pinned " + TwoDriftLine);
+        Case("two drifted packs: selection", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, TwoDriftLine);
+        Case("two drifted packs: code selection", new[] { "--code", DuplicateCode }, 1, TwoDriftLine);
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
