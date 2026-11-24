@@ -1237,6 +1237,39 @@ internal static class RevitCommandDeadlineTests
         Directory.EnumerateFiles(root, "*.cs", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true })
             .Select(file => Path.GetRelativePath(root, file).Replace('\\', '/'));
 
+    // P1-42: runs git in dir (the 2i scan and its control need git on PATH, docs/agent/ENVIRONMENT.md); exit -1 with
+    // the reason when git cannot start.
+    static (int Exit, string Out, string Error) GitRun(string dir, params string[] arguments)
+    {
+        try
+        {
+            var start = new ProcessStartInfo("git") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            start.ArgumentList.Add("-C");
+            start.ArgumentList.Add(dir);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var git = Process.Start(start);
+            if (git is null) return (-1, "", "git did not start");
+            var stderr = git.StandardError.ReadToEndAsync();
+            var output = git.StandardOutput.ReadToEnd();
+            git.WaitForExit();
+            return (git.ExitCode, output, stderr.Result.Trim());
+        }
+        catch (Exception error) when (error is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            return (-1, "", "git not started: " + error.Message);
+        }
+    }
+
+    // P1-42: why path is no safe place for the 2i scan control (empty: outside the repository root, or inside it only
+    // under a gitignored folder, so a crash cannot leave a visible untracked file in the root).
+    static string ControlLocationProblem(string root, string path)
+    {
+        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path)).Replace('\\', '/');
+        if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return "";
+        var ignored = GitRun(root, "check-ignore", "-q", "--", relative);
+        return ignored.Exit == 0 ? "" : "inside the repository root and not gitignored: " + relative + " (git check-ignore exit " + N(ignored.Exit) + (ignored.Error.Length > 0 ? ", " + ignored.Error : "") + ")";
+    }
+
     static List<string> ReadTimeoutHelperReferences(string root, IEnumerable<string> files)
     {
         var found = new List<string>();
@@ -1321,6 +1354,18 @@ internal static class RevitCommandDeadlineTests
         return problems.ToArray();
     }
 
+    // P1-42 (section 3a): what is wrong with McpServer's deadline transport construction (empty: one construction,
+    // cutReads realPipe, no connect override).
+    static string[] McpTransportProblems(string source)
+    {
+        var allStart = source.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
+        var built = allStart < 0 ? -1 : source.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
+        var builtArgs = built < 0 ? "" : source[built..source.IndexOf(';', built)];
+        return builtArgs.Contains("cutReads: realPipe", StringComparison.Ordinal) && !builtArgs.Contains("connectTransport", StringComparison.Ordinal)
+            && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal)
+            && !builtArgs.Contains("connectThenRead", StringComparison.Ordinal) ? Array.Empty<string>() : new[] { builtArgs.ReplaceLineEndings(" ") };
+    }
+
     static void ConfiguredTransportTidy(string root, string wallsText, long[] model, Action<bool, string, string> check)
     {
         // (a) PipeTransportWithReadTimeout callers, over the tracked .cs files (P1-40).
@@ -1358,6 +1403,11 @@ internal static class RevitCommandDeadlineTests
             "walk " + (walkedReferences.Contains(untrackedCopy) ? "finds " : "misses ") + untrackedCopy + "; scan: "
             + (scannedReferences is null ? "no tracked-file list" : string.Join(", ", scannedReferences)));
         check(!Directory.Exists(Path.Combine(root, untrackedFolder)), "P1-40 control: the untracked copy's folder is removed", untrackedFolder);
+        var controlLocation = ControlLocationProblem(root, Path.Combine(root, untrackedFolder));
+        check(controlLocation.Length == 0, "P1-42 control: the untracked copy is written outside the repository root or under a gitignored folder (a crash cannot leave it in the root)", controlLocation);
+        check(ControlLocationProblem(root, Path.Combine(root, "p1-42-visible", "Copy.cs")).Length > 0 && ControlLocationProblem(root, Path.Combine(root, ".bim", "p1-42", "Copy.cs")).Length == 0
+            && ControlLocationProblem(root, Path.Combine(Path.GetDirectoryName(Path.GetFullPath(root))!, "p1-42-outside", "Copy.cs")).Length == 0,
+            "P1-42 control location self-test: a visible root folder is refused, a gitignored .bim folder and a folder beside the root are accepted", "");
 
         // (b) The CLI passes no never-called transport (P1-40: on the parsed argument list, any formatting or naming).
         var program = StripCode(File.ReadAllText(Path.Combine(root, "interfaces", "cli", "Program.cs")).ReplaceLineEndings("\n"));
@@ -1374,6 +1424,7 @@ internal static class RevitCommandDeadlineTests
             ("reordered named arguments", "var t = new RevitDeadlineTransport(pipeName: revitPipe!, deadline: revitDeadline, transport: null, policy: revitPolicy, readTimeout: revitOptions . ReadTimeout);\n"),
             ("qualified type and a space before '('", "var t = new Bim.Cli.RevitDeadlineTransport (revitPipe!, revitPolicy, null, revitOptions.ReadTimeout, revitDeadline);\n"),
             ("a comment inside the list", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, /* never called */ null, revitOptions.ReadTimeout, // read\n    revitDeadline);\n"),
+            ("P1-42 positional arguments after an in-position named one", "var t = new RevitDeadlineTransport(pipeName: revitPipe!, revitPolicy, null, revitOptions.ReadTimeout, revitDeadline);\n"),
         };
         foreach (var (label, code) in cliCleans)
         {
@@ -1389,9 +1440,16 @@ internal static class RevitCommandDeadlineTests
             ("a \"null\" string", "var t = new RevitDeadlineTransport(revitPipe!, revitPolicy, \"null\", revitOptions.ReadTimeout, revitDeadline);\n"),
             ("the call only in a comment", "// " + CliCall + "\nvar t = new RevitServiceTransport(revitPipe!, revitPolicy, revitOptions.Transport);\n"),
             ("two constructions", "var t = " + CliCall + ";\nvar u = " + CliCall + ";\n"),
+            ("P1-42 an empty argument", "var t = new RevitDeadlineTransport(revitPipe!, , null, revitOptions.ReadTimeout, revitDeadline);\n"),
         };
         foreach (var (label, code) in cliMutants)
             check(CliTransportProblems(StripCode(code)).Length > 0, "P1-40 CLI pin self-test: " + label + " is flagged", "no problem flagged");
+        var outOfPosition = CliTransportProblems(StripCode("var t = new RevitDeadlineTransport(policy: revitPolicy, revitPipe!, null, revitOptions.ReadTimeout, revitDeadline);\n"));
+        check(outOfPosition.Any(problem => problem.Contains("positional argument 2 follows the out-of-position named argument 'policy'", StringComparison.Ordinal)),
+            "P1-42 CLI pin self-test: a positional argument after an out-of-position named one is refused with its reason (C# CS8323)", string.Join("; ", outOfPosition));
+        var emptyArgument = CliTransportProblems(StripCode("var t = new RevitDeadlineTransport(revitPipe!, , null, revitOptions.ReadTimeout, revitDeadline);\n"));
+        check(emptyArgument.Any(problem => problem.Contains("argument 2 is empty", StringComparison.Ordinal)),
+            "P1-42 CLI pin self-test: an empty argument is refused with its reason", string.Join("; ", emptyArgument));
         const string TidyPipe = "bim-agentic-os-2025-3838";
         string? Paging(string pipe, string line) => PageReply(line, model);
         var waits = new List<(TimeSpan Connect, TimeSpan Read)>();
@@ -1752,15 +1810,38 @@ internal static class RevitCommandDeadlineTests
             "P1-30 PipeTransportWithTimeouts refuses a bad read timeout and accepts 5 s; the connect wait is the 5 s ConnectTimeoutMs", "");
 
         // Static: MCP all:true builds the shared RevitDeadlineTransport with the default connect transport (no override).
-        var mcpSource = File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs"));
-        var allStart = mcpSource.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
-        var built = allStart < 0 ? -1 : mcpSource.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
-        var builtArgs = built < 0 ? "" : mcpSource[built..mcpSource.IndexOf(';', built)];
-        check(builtArgs.Contains("cutReads: realPipe", StringComparison.Ordinal) && !builtArgs.Contains("connectTransport", StringComparison.Ordinal)
-            && !builtArgs.Contains("ConnectTimeout", StringComparison.Ordinal) && !builtArgs.Contains("cutTransport", StringComparison.Ordinal)
-            && !builtArgs.Contains("connectThenRead", StringComparison.Ordinal),
+        // P1-42: read from the parsed argument list (formatting and named arguments, self-test).
+        var mcpSource = File.ReadAllText(Path.Combine(root, "interfaces", "mcp", "McpServer.cs")).ReplaceLineEndings("\n");
+        var mcpProblems = McpTransportProblems(mcpSource);
+        check(mcpProblems.Length == 0,
             "P1-30/P1-32 static: McpServer.RevitCallAll builds RevitDeadlineTransport with cutReads: realPipe and the default (shared) connect bound and read after connect (no connectTransport, connectThenRead or cutTransport override)",
-            builtArgs.ReplaceLineEndings(" "));
+            string.Join("; ", mcpProblems));
+        const string McpCall = "new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, QueryAllDeadline,\n            RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe)";
+        static string InCallAll(string construction) => "(string Text, bool IsError) RevitCallAll(JsonObject arguments)\n{\n    var transport = " + construction + ";\n    return (\"\", false);\n}\n";
+        var mcpCleans = new (string Label, string Code)[]
+        {
+            ("today's call", InCallAll(McpCall)),
+            ("one argument per line", InCallAll(McpCall.Replace(", ", ",\n    ", StringComparison.Ordinal))),
+            ("cutReads:realPipe without spaces", InCallAll(McpCall.Replace("cutReads: realPipe", "cutReads:realPipe", StringComparison.Ordinal))),
+            ("reordered named arguments", InCallAll("new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, QueryAllDeadline, cutReads: realPipe, probe: revitProbe, listing: RevitDeadlineTransport.McpListing, elapsed: RevitDeadlineTransport.ElapsedOn(QueryAllClock))")),
+            ("a comment naming connectThenRead", InCallAll(McpCall.Replace("cutReads: realPipe", "/* no connectThenRead override */ cutReads : realPipe", StringComparison.Ordinal))),
+        };
+        foreach (var (label, code) in mcpCleans)
+        {
+            var problems = McpTransportProblems(code);
+            check(problems.Length == 0, "P1-42 MCP transport pin self-test: " + label + " passes", string.Join("; ", problems));
+        }
+        var mcpMutants = new (string Label, string Code)[]
+        {
+            ("cutReads false", InCallAll(McpCall.Replace("cutReads: realPipe", "cutReads: false", StringComparison.Ordinal))),
+            ("cutReads absent", InCallAll(McpCall.Replace(", cutReads: realPipe", "", StringComparison.Ordinal))),
+            ("a connectThenRead override", InCallAll(McpCall.Replace("probe: revitProbe", "probe: revitProbe, connectThenRead: Cut", StringComparison.Ordinal))),
+            ("a ConnectTimeout bound", InCallAll(McpCall.Replace("QueryAllDeadline,", "TimeSpan.FromMilliseconds(RevitCommandService.ConnectTimeoutMs),", StringComparison.Ordinal))),
+            ("the call only in a comment", InCallAll("Other();\n    // " + McpCall.ReplaceLineEndings(" "))),
+            ("two constructions", InCallAll(McpCall) + InCallAll(McpCall).Replace("RevitCallAll", "RevitCallOther", StringComparison.Ordinal)),
+        };
+        foreach (var (label, code) in mcpMutants)
+            check(McpTransportProblems(code).Length > 0, "P1-42 MCP transport pin self-test: " + label + " is flagged", "no problem flagged");
 
         // Static: no source under interfaces/cli or interfaces/mcp still says the connect is not cut. Comment markers and
         // line breaks are folded into single spaces first, so a phrase wrapped over two comment lines is still found.

@@ -352,10 +352,31 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
     var p123Body=p123End<0 ? "" : p123Source[p123Start..p123End];
     // Code only: line comments dropped, so prose cannot satisfy or trip the checks.
     var p123Code=string.Join("\n",p123Body.Split('\n').Select(line=>line.IndexOf("//",StringComparison.Ordinal) is var at && at>=0 ? line[..at] : line));
-    var p123Built=p123Code.IndexOf("new RevitDeadlineTransport(",StringComparison.Ordinal);
-    var p123Args=p123Built<0 ? "" : p123Code[p123Built..Math.Max(p123Built,p123Code.IndexOf(';',p123Built))];
-    Check(p123Args.Length>0 && p123Args.Contains("RevitDeadlineTransport.McpListing",StringComparison.Ordinal) && p123Args.Contains("cutReads: realPipe",StringComparison.Ordinal)
-        && p123Args.Contains("RevitDeadlineTransport.ElapsedOn(QueryAllClock)",StringComparison.Ordinal) && p123Args.Contains("QueryAllDeadline",StringComparison.Ordinal),
+    // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
+    string P142Problems(string code) {
+        var built=code.IndexOf("new RevitDeadlineTransport(",StringComparison.Ordinal);
+        var args=built<0 ? "" : code[built..Math.Max(built,code.IndexOf(';',built))];
+        return args.Length>0 && args.Contains("RevitDeadlineTransport.McpListing",StringComparison.Ordinal) && args.Contains("cutReads: realPipe",StringComparison.Ordinal)
+            && args.Contains("RevitDeadlineTransport.ElapsedOn(QueryAllClock)",StringComparison.Ordinal) && args.Contains("QueryAllDeadline",StringComparison.Ordinal) ? "" : "not matched: "+args;
+    }
+    const string P142Call="new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, QueryAllDeadline,\n    RevitDeadlineTransport.ElapsedOn(QueryAllClock), listing: RevitDeadlineTransport.McpListing, cutReads: realPipe, probe: revitProbe)";
+    foreach(var (p142Label,p142Code) in new[]{
+        ("today's call",P142Call),
+        ("one argument per line",P142Call.Replace(", ",",\n    ",StringComparison.Ordinal)),
+        ("cutReads:realPipe without spaces",P142Call.Replace("cutReads: realPipe","cutReads:realPipe",StringComparison.Ordinal)),
+        ("named deadline and elapsed, reordered","new RevitDeadlineTransport(pipeName, RevitCommandPolicy.None, realPipe ? null : revitTransport, readTimeout, cutReads: realPipe, elapsed: RevitDeadlineTransport.ElapsedOn( QueryAllClock ), deadline: QueryAllDeadline, listing: RevitDeadlineTransport.McpListing, probe: revitProbe)"),
+        ("a block comment inside the list",P142Call.Replace("cutReads: realPipe","/* real pipe: cut */ cutReads: realPipe",StringComparison.Ordinal))})
+        Check(P142Problems("var transport = "+p142Code+";\n")=="","P1-42 MCP deadline pin self-test: "+p142Label+" passes | "+P142Problems("var transport = "+p142Code+";\n"));
+    foreach(var (p142Label,p142Code) in new[]{
+        ("cutReads false",P142Call.Replace("cutReads: realPipe","cutReads: false",StringComparison.Ordinal)),
+        ("the CLI listing",P142Call.Replace("RevitDeadlineTransport.McpListing","RevitDeadlineTransport.CliListing",StringComparison.Ordinal)),
+        ("QueryAllDeadline only as the read timeout",P142Call.Replace("readTimeout, QueryAllDeadline","QueryAllDeadline, readTimeout",StringComparison.Ordinal)),
+        ("another clock",P142Call.Replace("ElapsedOn(QueryAllClock)","ElapsedOn(OtherClock)",StringComparison.Ordinal)+"; var unused = RevitDeadlineTransport.ElapsedOn(QueryAllClock)"),
+        ("the call only in a comment","Other();\n// "+P142Call.ReplaceLineEndings(" ")),
+        ("two constructions",P142Call+"; var other = "+P142Call)})
+        Check(P142Problems("var transport = "+p142Code+";\n")!="","P1-42 MCP deadline pin self-test: "+p142Label+" is flagged");
+    var p123Args=P142Problems(p123Code);
+    Check(p123Args=="",
         "McpServer.RevitCallAll pages through new RevitDeadlineTransport(… QueryAllDeadline, ElapsedOn(QueryAllClock), McpListing, cutReads: realPipe …) | "+p123Args);
     var p123Own=new[]{"QueryAllClock()","TimeSpan"," - "," < "," <= ","Exceeded","PipeReadTimeout","PipeTransportWithReadTimeout","TotalMilliseconds","took longer than","RevitCommandService.Run("}
         .Where(token=>p123Code.Contains(token,StringComparison.Ordinal)).ToArray();
