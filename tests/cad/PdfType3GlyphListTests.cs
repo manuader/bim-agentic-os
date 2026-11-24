@@ -665,39 +665,58 @@ internal static class PdfType3GlyphListTests
             // BT 8, Tf 9, Tm 10, Tj 11, ET 12 (overflow: /Matrix 1e60 under CTM 1e300; malformed: 5 entries).
             var root = Path.GetFullPath(Path.Combine(fixtures, "..", "..", ".."));
             var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
-            // P6-39: the expected document is built by the public Bim.Cad builder CadCommand calls (CadBriefDocument.Create,
+            // P6-39: the expected document is built by the public Bim.Cad builder CadCommand calls (P6-41: FromPdf / FromDxf,
             // then ToUtf8Bytes), so document members and serializer settings are no longer mirrored here. What stays outside
             // the builder is pinned against interfaces/cli/CadCommand.cs read without comments and literals (so a
             // commented-out copy of a pinned line does not count; self-tests below): the 32 MiB input cap, the one
-            // PdfReadOptions (MaxBytes only), the one builder call with the CLI's brief options, its bytes being what is
-            // written, and no direct BriefExtract/BriefSerializer use left in the CLI.
+            // PdfReadOptions (MaxBytes only), the one brief-options line and the two factory calls, the bytes written being
+            // the builder's, no direct BriefExtract/BriefSerializer use and no Create left in the CLI.
+            // P6-41 reason the reader options stay source-pinned: CadCommand reads the input once for cad-draft and
+            // cad-brief (and refuses a missing page with its own code before either), so the read is the CLI's, not the
+            // brief builder's; moving it into Bim.Cad would change refusal paths shared with cad-draft.
+            // P6-41 one hash: the builder hashes the input (CadBriefDocument.cs holds SHA256.HashData once); the CLI's
+            // one input hash is inside the cad-draft branch (for its project id and source), so cad-brief hashes once.
             const int cliMaxInputBytes = 32 * 1024 * 1024;
-            const string builderCall = "CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions })";
+            const string optionsLine = "var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };";
+            const string dxfCall = "CadBriefDocument.FromDxf(sourceFile, bytes, drawing, briefOptions)";
+            const string builderCall = "CadBriefDocument.FromPdf(sourceFile, bytes, pdf!, page!.Value, calibration, briefOptions)";
+            const string inputHash = "var sha = SHA256.HashData(bytes);";
             var cadCommandPins = new (string Line, int Count)[]
             {
                 ("public const int MaxInputBytes = 32 * 1024 * 1024;", 1),
                 ("new PdfReadOptions(", 1),
                 ("pdf = PdfReader.Parse(bytes, sourceFile, new PdfReadOptions(MaxBytes: MaxInputBytes));", 1),
-                ("CadBriefDocument.", 1),
+                ("CadBriefDocument.", 2),
+                (optionsLine, 1),
+                (dxfCall, 1),
                 (builderCall, 1),
+                ("CadBriefDocument.Create", 0),
                 ("new BriefExtractOptions", 1),
                 (".ToUtf8Bytes()", 1),
                 ("BriefExtract.", 0),
                 ("BriefSerializer", 0),
+                ("SHA256.HashData(bytes)", 1),
+                (inputHash, 1),
             };
             var cadCommandAnchors = new[] { "internal static class CadCommand", "static void Execute(bool draft", "static Options ParseOptions(", "static void Fail(" };
             static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins) =>
                 string.Join("; ", pins.Where(pin => Occurrences(source, pin.Line) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(source, pin.Line)) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+            // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code).
+            static string? HashPlace(string stripped)
+            {
+                int draftAt = stripped.IndexOf("if (draft)", StringComparison.Ordinal), hashAt = stripped.IndexOf(inputHash, StringComparison.Ordinal), briefAt = stripped.IndexOf(dxfCall, StringComparison.Ordinal);
+                return draftAt >= 0 && hashAt > draftAt && briefAt > hashAt ? null : "input hash at " + I(hashAt) + " not inside the cad-draft branch (if (draft) at " + I(draftAt) + ", FromDxf at " + I(briefAt) + ")";
+            }
             static string? CodeProblems(string source, IEnumerable<(string Line, int Count)> pins, IReadOnlyList<string> anchors)
             {
                 var stripped = StripCommentsAndLiterals(source);
-                var problems = string.Join("; ", new[] { SwallowGuard(stripped, anchors), PinProblems(stripped, pins) }.Where(p => p is not null));
+                var problems = string.Join("; ", new[] { SwallowGuard(stripped, anchors), PinProblems(stripped, pins), HashPlace(stripped) }.Where(p => p is not null));
                 return problems.Length > 0 ? problems : null;
             }
             var cadCommandPath = Path.Combine(root, "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
             C(cadCommand.Length > 0 && CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) is null,
-                "p6-39 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only and writes the one CadBriefDocument.Create call's ToUtf8Bytes",
+                "p6-41 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only, makes the one FromDxf/FromPdf call with one options line, writes its ToUtf8Bytes and hashes the input only for cad-draft",
                 cadCommandPath + " " + (CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) ?? "pins hold"));
             var drifted = cadCommand.Replace("new PdfReadOptions(MaxBytes: MaxInputBytes)", "new PdfReadOptions(MaxBytes: MaxInputBytes, MaxWarnings: 5)", StringComparison.Ordinal);
             C(cadCommand.Length > 0 && CodeProblems(drifted, cadCommandPins, cadCommandAnchors) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
@@ -705,7 +724,7 @@ internal static class PdfType3GlyphListTests
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
             // check names it as missing.
-            const string otherCall = "CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = true })";
+            const string otherCall = "CadBriefDocument.FromPdf(sourceFile, bytes, pdf!, page!.Value, null, briefOptions)";
             foreach (var (label, replacement) in new[] { ("a // comment", otherCall + "; // " + builderCall), ("a /* */ comment", otherCall + " /* " + builderCall + " */") })
             {
                 var commented = cadCommand.Replace(builderCall, replacement, StringComparison.Ordinal);
@@ -714,11 +733,68 @@ internal static class PdfType3GlyphListTests
                     "p6-39 cli pins self-test: a commented-out copy of the builder call in " + label + " is caught (the raw text still holds it once)",
                     "raw x" + I(Occurrences(commented, builderCall)) + " " + (CodeProblems(commented, cadCommandPins, cadCommandAnchors) ?? "not caught"));
             }
+            // P6-41 hash self-tests: the pre-P6-41 shared hash (before the try, so cad-brief would hash twice) is caught by
+            // count; the one hash moved out of the cad-draft branch to before the try is caught by place.
+            var hashedTwice = cadCommand.Replace("        object document;\n", "        var shared = SHA256.HashData(bytes);\n        object document;\n", StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && hashedTwice != cadCommand && CodeProblems(hashedTwice, cadCommandPins, cadCommandAnchors) is { } twice && twice.Contains("'SHA256.HashData(bytes)' x2", StringComparison.Ordinal),
+                "p6-41 hash self-test: a second input hash in CadCommand.cs is caught by count", hashedTwice == cadCommand ? "anchor 'object document;' not found" : CodeProblems(hashedTwice, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            var hashMoved = cadCommand.Replace(inputHash, "", StringComparison.Ordinal).Replace("        object document;\n", "        " + inputHash + "\n        object document;\n", StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && Occurrences(cadCommand, inputHash) == 1 && CodeProblems(hashMoved, cadCommandPins, cadCommandAnchors) is { } moved && moved.Contains("not inside the cad-draft branch", StringComparison.Ordinal),
+                "p6-41 hash self-test: the input hash moved before the try (shared by cad-brief) is caught by place", CodeProblems(hashMoved, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            // P6-41 builder: one input hash and one BriefExtract call per factory in adapters/cad/Bim.Cad/CadBriefDocument.cs
+            // (stripped code), and the public surface is the two factories, Result and ToUtf8Bytes (Create and Scale gone).
+            var builderPath = Path.Combine(root, "adapters", "cad", "Bim.Cad", "CadBriefDocument.cs");
+            var builderSource = File.Exists(builderPath) ? StripCommentsAndLiterals(File.ReadAllText(builderPath).Replace("\r\n", "\n", StringComparison.Ordinal)) : "";
+            var builderPins = new (string Line, int Count)[] { ("SHA256.HashData(", 1), ("SHA256.HashData(bytes)", 1), ("BriefExtract.FromDxf(drawing, options)", 1), ("BriefExtract.FromPdf(pdf, page, calibration, options)", 1), ("BriefExtract.", 2) };
+            var builderAnchors = new[] { "public sealed class CadBriefDocument", "public static CadBriefDocument FromDxf(", "public static CadBriefDocument FromPdf(", "static CadBriefDocument Build(", "public byte[] ToUtf8Bytes()" };
+            var builderProblems = builderSource.Length == 0 ? "missing " + builderPath
+                : string.Join("; ", new[] { SwallowGuard(builderSource, builderAnchors), PinProblems(builderSource, builderPins) }.Where(p => p is not null)) is { Length: > 0 } bp ? bp : null;
+            C(builderProblems is null, "p6-41 builder: CadBriefDocument.cs hashes the input once and calls BriefExtract once per factory", builderProblems ?? "pins hold");
+            var surface = string.Join(",", typeof(CadBriefDocument).GetMembers(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.DeclaredOnly)
+                .Select(m => m.MemberType + ":" + m.Name).Order(StringComparer.Ordinal));
+            C(surface == "Method:FromDxf,Method:FromPdf,Method:ToUtf8Bytes,Method:get_Result,Property:Result",
+                "p6-41 builder surface: FromDxf, FromPdf, Result and ToUtf8Bytes only (no Create, no Scale)", surface);
+            // P6-41 factories against the hand-built document (members and serializer as CadCommand wrote them before
+            // P6-39) for every scale branch: DXF insunits / metres-per-unit (tests/cad/fixtures/minsert-ocs.dxf has
+            // $INSUNITS), PDF none / metres-per-unit / known-dimension. This mirror is kept on purpose: it is the
+            // independent statement of the document layout the builder must not change.
+            var json = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
+            byte[] Mirror(string file, byte[] input, string format, int? page, string scale, BriefDraft result) => System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                kind = "cad-brief",
+                version = 1,
+                persisted = false,
+                source = new { file, format, bytes = input.LongLength, sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(input)), page, scale, metres_per_unit = result.MetresPerUnit },
+                brief = System.Text.Json.Nodes.JsonNode.Parse(Bim.Core.BriefSerializer.Serialize(result.Brief)),
+                rooms = result.Rooms,
+                uncertainties = result.Uncertainties,
+                issues = result.Issues,
+            }, json);
+            static string H16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
+            var dxfBytes = File.ReadAllBytes(Path.Combine(fixtures, "minsert-ocs.dxf"));
+            var dxf = DxfReader.Parse(dxfBytes, "minsert-ocs.dxf", new DxfReadOptions(cliMaxInputBytes));
+            foreach (var (label, metres, scale) in new[] { ("dxf insunits", (double?)null, "insunits"), ("dxf metres-per-unit", 0.001, "metres-per-unit") })
+            {
+                var briefOptions = new BriefExtractOptions { MetresPerUnit = metres };
+                var built = CadBriefDocument.FromDxf("minsert-ocs.dxf", dxfBytes, dxf, briefOptions).ToUtf8Bytes();
+                var mirror = Mirror("minsert-ocs.dxf", dxfBytes, "dxf", null, scale, BriefExtract.FromDxf(dxf, briefOptions));
+                C(dxf.MetresPerUnit is not null && built.AsSpan().SequenceEqual(mirror), "p6-41 factory " + label + ": FromDxf bytes equal the hand-built document",
+                    "insunits " + (dxf.MetresPerUnit?.ToString("R", CultureInfo.InvariantCulture) ?? "none") + " builder " + I(built.Length) + " " + H16(built) + " mirror " + I(mirror.Length) + " " + H16(mirror));
+            }
+            var pdfBytes = PdfToUnicodeTests.PageBytes("BT /F2 10 Tf 1 0 0 1 50 50 Tm (Sala 12 m2) Tj ET", Type1("[1 /g1]"), null);
+            var pdfDoc = PdfReader.Parse(pdfBytes, "plain.pdf", new PdfReadOptions(MaxBytes: cliMaxInputBytes));
+            foreach (var (label, metres, calibration, scale) in new[] { ("pdf none", (double?)null, (PdfCalibration?)null, "none"), ("pdf metres-per-unit", 0.01, null, "metres-per-unit"), ("pdf known-dimension", null, new PdfCalibration(10, PdfMatrix.Scaling(10)), "known-dimension") })
+            {
+                var briefOptions = new BriefExtractOptions { MetresPerUnit = metres };
+                var built = CadBriefDocument.FromPdf("plain.pdf", pdfBytes, pdfDoc, 1, calibration, briefOptions).ToUtf8Bytes();
+                var mirror = Mirror("plain.pdf", pdfBytes, "pdf", 1, scale, BriefExtract.FromPdf(pdfDoc, 1, calibration, briefOptions));
+                C(built.AsSpan().SequenceEqual(mirror), "p6-41 factory " + label + ": FromPdf bytes equal the hand-built document",
+                    "builder " + I(built.Length) + " " + H16(built) + " mirror " + I(mirror.Length) + " " + H16(mirror) + " " + Encoding.UTF8.GetString(built));
+            }
             C(File.Exists(cliDll), "p6-35 cli precondition: the Release Bim.Cli.dll exists (scripts/verify.ps1 builds interfaces/cli first)", cliDll);
             if (File.Exists(cliDll))
             {
                 var cliPage = "q " + string.Concat(Enumerable.Repeat(e60 + " 0 0 " + e60 + " 0 0 cm ", 5)) + "/X1 Do Q BT /F2 10 Tf 1 0 0 1 50 50 Tm (Sala 12 m2) Tj ET";
-                var json = new System.Text.Json.JsonSerializerOptions { Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() } };
                 var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
                 static string Hash16(byte[] bytes) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(bytes))[..16];
                 var scratch = Path.Combine(Path.GetTempPath(), "bim-cad-p635-" + I(Environment.ProcessId));
@@ -735,9 +811,9 @@ internal static class PdfType3GlyphListTests
                         var file = label + ".pdf";
                         var bytes = PdfToUnicodeTests.PageBytes(cliPage, Type1("[1 /g1]"), null, "/XObject << /X1 8 0 R >>", null, RawForm(" /Matrix [" + matrix + "]", "q Q"));
                         // The document CadCommand writes for a PDF cad-brief without a scale option, built through the same
-                        // entry point (P6-39): the reader options pinned above, then CadBriefDocument.Create and ToUtf8Bytes.
+                        // entry point (P6-39): the reader options pinned above, then CadBriefDocument.FromPdf (P6-41) and ToUtf8Bytes.
                         var pdf = PdfReader.Parse(bytes, file, new PdfReadOptions(MaxBytes: cliMaxInputBytes));
-                        var expected = CadBriefDocument.Create(file, bytes, null, pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false }).ToUtf8Bytes();
+                        var expected = CadBriefDocument.FromPdf(file, bytes, pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false }).ToUtf8Bytes();
                         // The P6-37 hand-mirrored document (members and serializer as CadCommand wrote them before P6-39) gives
                         // the same bytes: the builder moved the document without changing it.
                         var result = BriefExtract.FromPdf(pdf, 1, null, new BriefExtractOptions { MetresPerUnit = null, IncludeBlockRegions = false });
