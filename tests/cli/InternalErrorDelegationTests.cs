@@ -703,7 +703,11 @@ internal static class InternalErrorDelegationTests
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
     // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
     // block-bodied local function (an expression-bodied one already fails the statement-start test); P3-35: also one
-    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header);
+    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header; P3-37: also
+    // one inside a constructor, finalizer, init/add/remove accessor or switch-expression-arm lambda). Policy: the pinned
+    // read placed directly in an accessor, operator, constructor, finalizer or constrained method body (not inside a
+    // local function, lambda or anonymous method there) is clean: such a member runs its body when it is invoked, like a
+    // method, so the read is still the one seam read;
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -773,6 +777,10 @@ internal static class InternalErrorDelegationTests
     // generic method or local function); a property/indexer/event accessor (`[attributes] [modifiers] get|set|init|add|remove`)
     // and an operator (`... operator <token>(...)`, before any constraint) open method-like bodies too. A generic tuple
     // return type (`List<(int, int)> F()`, `(int A, int B) F()`) already matched (parenthesised header token).
+    // P3-37: a finalizer header `~C()` opens a method-like body too (an optional '~' before the name). Accessors of
+    // required/virtual/override/sealed or explicit interface members (`int I.P { get { ... } }`), init/add/remove
+    // accessors, `where T : struct`, constructors (static, or with a `: this(...)`/`: base(...)` initializer) and
+    // switch-expression-arm lambdas (`=> () => { ... }`) already matched.
     static bool MethodBody(string header)
     {
         var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
@@ -781,7 +789,7 @@ internal static class InternalErrorDelegationTests
         if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
         if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
-            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
+            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?~?\s*(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
         return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
             .Contains(match.Groups[1].Value, StringComparer.Ordinal);
     }
