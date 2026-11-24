@@ -554,9 +554,28 @@ internal static class PackageLayoutPackTests
                         "P10-18 self-test: a " + label + " " + name + " is the named failure " + expected + ", never an exception", shown);
                 }
             }
+            // P4-36: an IOException or UnauthorizedAccessException while removing this copy is a named cleanup failure with
+            // the shared CleanupFailed prefix (stand-in remover that throws and leaves the copy), never swallowed.
+            foreach (var planted in new Exception[] { new IOException("planted: the copy is in use"), new UnauthorizedAccessException("planted: access denied") })
+            {
+                var failure = RemoveP1018Copy(copy, _ => throw planted);
+                check(failure == CleanupFailed + "P10-18 self-test copy " + copy + ": " + planted.GetType().Name + ": " + planted.Message && Directory.Exists(copy),
+                    "P4-36: self-test: a planted " + planted.GetType().Name + " while removing the P10-18 self-test copy is a named failure with the shared prefix (not swallowed)", failure ?? "<swallowed>");
+            }
         }
         catch (Exception error) { Check32(false, "P10-18 self-tests run without an unhandled exception", error.GetType().Name + ": " + error.Message); }
-        finally { try { if (Directory.Exists(copy)) Directory.Delete(copy, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+        finally
+        {
+            var cleanup = RemoveP1018Copy(copy);
+            check(cleanup is null, "P4-36: the P10-18 self-test copy is removed (an IO or access error is a named failure with the shared prefix, not swallowed)", cleanup ?? "");
+        }
+
+        // P4-36: removes the P10-18 self-test copy (`delete` stands in for Directory.Delete(path, true) in the self-test).
+        static string? RemoveP1018Copy(string path, Action<string>? delete = null)
+        {
+            try { if (Directory.Exists(path)) (delete ?? (folder => Directory.Delete(folder, true)))(path); return null; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return CleanupFailed + "P10-18 self-test copy " + path + ": " + error.GetType().Name + ": " + error.Message; }
+        }
     }
 
     // P4-30: the package scripts/package.ps1 built ships no Bim.Gltf in mcp/ (P4-29 dropped the MCP reference): no
@@ -576,7 +595,8 @@ internal static class PackageLayoutPackTests
     // is caught like Bim.Gltf.dll (self-tested with planted lines and a planted asset).
     // P4-35: the one prefix of every package-pin cleanup failure, shared with tests/packaging/test-package.ps1
     // Add-P433CleanupFailure (its P4-35 self-test reads this literal and requires it to be the only cleanup-failed prefix here).
-    const string CleanupFailed = "P4-33: cleanup failed: ";
+    // P4-36: neutral wording (no task id), so P4-31/P4-34/P4-35/P10-18 failures do not read as P4-33's.
+    const string CleanupFailed = "package pin cleanup failed: ";
 
     // P4-35: a killed package.ps1 never reaches its finally: removes each build tree in `now` that is not in `before`
     // (`delete` stands in for Directory.Delete(path, true) in the self-test); an IOException/UnauthorizedAccessException is
