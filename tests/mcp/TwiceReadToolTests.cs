@@ -86,7 +86,8 @@ internal static class TwiceReadToolTests
             try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch (IOException) { }
             if (!process.WaitForExit(120000)) { process.Kill(true); throw new InvalidOperationException("packaged MCP server timed out"); }
             process.WaitForExit();
-            _ = stderr.Result;
+            // P5-36: the packaged server writes nothing on stderr for any exchange these sections compare.
+            Check(stderr.Result.Length == 0, "the packaged MCP server writes nothing on stderr | " + Short(stderr.Result));
             return stdout.Result;
         }
         var id = 3000;
@@ -197,7 +198,7 @@ internal static class TwiceReadToolTests
         Selection(work, dotnet, cliDll, mcpDll, call, check);
 
         // P5-34: jurisdiction_ambiguous, jurisdiction_conflict (as -32602) and a drifted lock under lock_path.
-        Ambiguity(work, dotnet, cliDll, mcpDll, call, check);
+        Ambiguity(root, work, dotnet, cliDll, mcpDll, call, check);
     }
 
     // P5-32: jurisdiction_resolve with the selection arguments (country, municipality) and allow_stub under lock_path, over a
@@ -269,7 +270,8 @@ internal static class TwiceReadToolTests
             try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch (IOException) { }
             if (!process.WaitForExit(120000)) { process.Kill(true); throw new InvalidOperationException("packaged MCP server timed out"); }
             process.WaitForExit();
-            _ = stderr.Result;
+            // P5-36: the packaged server writes nothing on stderr for any exchange these sections compare.
+            Check(stderr.Result.Length == 0, "the packaged MCP server writes nothing on stderr | " + Short(stderr.Result));
             return stdout.Result;
         }
         var id = 3500;
@@ -388,8 +390,12 @@ internal static class TwiceReadToolTests
     // mismatched municipality) is the verb's usage refusal, so the tool answers JSON-RPC -32602 with
     // JurisdictionResolveTool.UsageMessage (no result) and the CLI prints the jurisdiction_resolve_usage line, exit 1.
     // Then xx.p534ma.pack's sidecar note is edited after pinning: a metadata and a code selection are the literal
-    // skill_lock_drift line on xx.p534ma.pack.
-    static void Ambiguity(string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
+    // skill_lock_drift line on xx.p534ma.pack. P5-36: the packaged server's stderr is empty; drift refuses before
+    // selection (controls: --code xx.p534mb succeeds and an unclaimed code is jurisdiction_unknown on the valid lock, both
+    // are the drift line over the drifted lock); with xx.p534mb.pack drifted too the text is xx.p534ma.pack's line with the
+    // literal " (+1 more lock issue(s))" suffix (packaged CLI, in-process and packaged MCP, twice each); the fixture
+    // builders duplicate tests/cli/SkillListTests.cs section 16 on purpose and are pinned as the same text.
+    static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
         static string Short(string text) => text.Length > 700 ? text[..700] + "..." : text;
@@ -408,13 +414,31 @@ internal static class TwiceReadToolTests
         File.WriteAllText(Path.Combine(package, "VERSION"), "0.0.0-test\n");
         File.WriteAllText(Path.Combine(package, "manifest.json"), "{}\n");
         var skills = Path.Combine(package, "skills");
+        // P5-36: these builders duplicate tests/cli/SkillListTests.cs section 16 on purpose (separate test executables with
+        // no common fixture source; this copy uses its own pack ids); the check below pins both texts as present there.
+        static string Manifest(string id) =>
+            "{\"manifest_version\":1,\"id\":\"" + id + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n";
         static string Sidecar(string code, string pack, string municipality, string note) =>
             "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":false,\"note\":\"" + note + "\"}\n";
+        {
+            static string[] Builders(string source)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n').Select(line => line.Trim()).ToArray();
+                var found = new List<string>();
+                for (var at = 0; at + 1 < lines.Length; at++)
+                    if (lines[at] == "static string Manifest(string id) =>" || lines[at] == "static string Sidecar(string code, string pack, string municipality, string note) =>")
+                        found.Add(lines[at] + " " + lines[at + 1]);
+                return found.ToArray();
+            }
+            var here = Builders(File.ReadAllText(Path.Combine(root, "tests", "mcp", "TwiceReadToolTests.cs")));
+            var there = Builders(File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs")));
+            Check(here.Length == 2 && here.All(there.Contains),
+                "P5-36: the four-pack fixture's Manifest and Sidecar builders are the same text as in tests/cli/SkillListTests.cs section 16 (duplicated on purpose) | " + Short(string.Join(" / ", here)));
+        }
         foreach (var (packId, code, municipality) in new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") })
         {
             Directory.CreateDirectory(Path.Combine(skills, packId));
-            File.WriteAllText(Path.Combine(skills, packId, "skill.json"),
-                "{\"manifest_version\":1,\"id\":\"" + packId + "\",\"version\":\"1.2.3\",\"kind\":\"code\",\"description\":\"fictitious test fixture\",\"priority\":10,\"rules\":[]}\n", new UTF8Encoding(false));
+            File.WriteAllText(Path.Combine(skills, packId, "skill.json"), Manifest(packId), new UTF8Encoding(false));
             File.WriteAllText(Path.Combine(skills, packId, "jurisdiction.json"), Sidecar(code, packId, municipality, "fictitious test fixture"), new UTF8Encoding(false));
         }
         var lockPath = Path.Combine(work, "twice-read-mcp-p534", "p534m.skills.lock.json");
@@ -453,7 +477,8 @@ internal static class TwiceReadToolTests
             try { process.StandardInput.Write(stdin); process.StandardInput.Close(); } catch (IOException) { }
             if (!process.WaitForExit(120000)) { process.Kill(true); throw new InvalidOperationException("packaged MCP server timed out"); }
             process.WaitForExit();
-            _ = stderr.Result;
+            // P5-36: the packaged server writes nothing on stderr for any exchange these sections compare.
+            Check(stderr.Result.Length == 0, "the packaged MCP server writes nothing on stderr | " + Short(stderr.Result));
             return stdout.Result;
         }
         var id = 4000;
@@ -536,24 +561,52 @@ internal static class TwiceReadToolTests
         const string AmbiguousByCodeLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"xx.p534md\",\"detail\":\"claimed by xx.p534md.one, xx.p534md.two\"}";
         const string AmbiguousDuplicateByMetadataLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_ambiguous\",\"subject\":\"fixture country/twin town\",\"detail\":\"matches xx.p534md (xx.p534md.one), xx.p534md (xx.p534md.two)\"}";
         const string OverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534ma\",\"pack\":\"xx.p534ma.pack\",\"version\":\"1.2.3\",\"stub\":false}";
+        // P5-36 controls for the drifted-lock phases: --code xx.p534mb succeeds and an unclaimed code is jurisdiction_unknown.
+        const string OtherOverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534mb\",\"pack\":\"xx.p534mb.pack\",\"version\":\"1.2.3\",\"stub\":false}";
+        const string UnclaimedCode = "xx.p536m.unclaimed";
+        {
+            var unclaimed = JurisdictionRegistry.LoadLocked(skills, lockPath).Registry?.Select(new ProjectJurisdiction(UnclaimedCode));
+            Check(unclaimed?.Refusal is { } refusal && refusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
+                "P5-36 control: on the valid lock the in-process Select of the unclaimed code " + UnclaimedCode + " is jurisdiction_unknown | " + (unclaimed?.Refusal?.ToString() ?? "<no refusal>"));
+        }
         Phase("valid lock", new (string, JsonObject, string[], string, bool)[]
         {
             ("ambiguous by metadata (alias overlap)", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], AmbiguousByMetadataLine, false),
             ("ambiguous by code (claim duplicate)", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], AmbiguousByCodeLine, false),
             ("ambiguous by metadata (claim duplicate)", Args(("country", "Fixture Country"), ("municipality", "Twin Town")), ["--country", "Fixture Country", "--municipality", "Twin Town", "--lock", lockPath], AmbiguousDuplicateByMetadataLine, false),
             ("code route success on an overlapping pack", Args(("code", CodeA)), ["--code", CodeA, "--lock", lockPath], OverlapCodeSuccessLine, false),
+            ("P5-36 control: code route success on the other overlapping pack", Args(("code", CodeB)), ["--code", CodeB, "--lock", lockPath], OtherOverlapCodeSuccessLine, false),
             ("conflict: code with a mismatched country", Args(("code", CodeA), ("country", "Other Country")), ["--code", CodeA, "--country", "Other Country", "--lock", lockPath], UsageLine, true),
             ("conflict: code with a mismatched municipality", Args(("code", CodeA), ("country", "Fixture Country"), ("municipality", "Other Town")), ["--code", CodeA, "--country", "Fixture Country", "--municipality", "Other Town", "--lock", lockPath], UsageLine, true),
         });
 
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited (confirmed by the
-        // P5-34 red probe run 44911652955 on Linux and Windows).
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited. Provenance
+        // (P5-36, the same text in tests/cli/SkillListTests.cs): pinned after the P5-34 red probe run 44911652955;
+        // observed as the prefix of the two-drift line by the P5-36 probe run P536_RUN on Linux (ubuntu-latest, the one CI
+        // OS where tests/cli and tests/mcp both run); bytes-only, so the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
         Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
         {
             ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], DriftLine, false),
+            // P5-36: drift refuses before selection. LoadLocked returns no registry for a drifted lock and the tool selects
+            // only from a registry, so this code (jurisdiction_ambiguous on the valid lock) is the drift line; the controls
+            // prove it: a code that succeeded on the valid lock (on a pack that did not drift) and a code no pack claims
+            // (jurisdiction_unknown on the valid lock) are the same drift line.
             ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], DriftLine, false),
+            ("P5-36 control: a code that succeeded on the valid lock", Args(("code", CodeB)), ["--code", CodeB, "--lock", lockPath], DriftLine, false),
+            ("P5-36 control: an unclaimed code", Args(("code", UnclaimedCode)), ["--code", UnclaimedCode, "--lock", lockPath], DriftLine, false),
+        });
+
+        // P5-36: two drifted packs. xx.p534mb.pack's sidecar note is edited after pinning too; the refusal is the first lock
+        // issue in (pack id, code, detail) order (xx.p534ma.pack, the line above) with the further-issues suffix
+        // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused).
+        File.WriteAllText(Path.Combine(skills, PackB, "jurisdiction.json"), Sidecar(CodeB, PackB, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
+        const string TwoDriftLine = "P536_PROBE_TWO_DRIFT";
+        Phase("two drifted packs", new (string, JsonObject, string[], string, bool)[]
+        {
+            ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], TwoDriftLine, false),
+            ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], TwoDriftLine, false),
         });
     }
 
