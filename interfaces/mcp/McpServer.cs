@@ -443,9 +443,13 @@ public sealed class McpServer
     }
 
     // Reads newline-delimited messages with a bounded buffer; writes only JSON-RPC responses.
-    public static void Run(TextReader input, TextWriter output) => Run(input, output, new McpServer());
+    // P5-37: a reply the output rejects (the write throws: a full device, a descriptor not open for writing) ends serving:
+    // Run returns that exception (null when the input ends), reads and executes no later request, and nothing escapes;
+    // interfaces/mcp/Program.cs then exits 1 with one stderr line. A pipe its reader closed is not seen here: the
+    // runtime's console stream drops EPIPE / ERROR_NO_DATA.
+    public static Exception? Run(TextReader input, TextWriter output) => Run(input, output, new McpServer());
 
-    public static void Run(TextReader input, TextWriter output, McpServer server)
+    public static Exception? Run(TextReader input, TextWriter output, McpServer server)
     {
         var line = new StringBuilder();
         var oversized = false;
@@ -454,7 +458,7 @@ public sealed class McpServer
             var next = input.Read();
             if (next == -1 || next == '\n')
             {
-                if (oversized) Emit(output, Error(null, InvalidRequest, "request_too_large"));
+                if (oversized) { if (Emit(output, Error(null, InvalidRequest, "request_too_large")) is { } rejected) return rejected; }
                 else
                 {
                     if (line.Length > 0 && line[line.Length - 1] == '\r') line.Length--;
@@ -462,12 +466,12 @@ public sealed class McpServer
                     if (!string.IsNullOrWhiteSpace(text))
                     {
                         var response = server.Handle(text);
-                        if (response != null) Emit(output, response);
+                        if (response != null && Emit(output, response) is { } rejected) return rejected;
                     }
                 }
                 line.Clear();
                 oversized = false;
-                if (next == -1) return;
+                if (next == -1) return null;
                 continue;
             }
             if (oversized) continue;
@@ -480,11 +484,17 @@ public sealed class McpServer
         }
     }
 
-    static void Emit(TextWriter output, string response)
+    // The reply and its newline, flushed; null when written, else the exception the output threw (P5-37).
+    static Exception? Emit(TextWriter output, string response)
     {
-        output.Write(response);
-        output.Write('\n');
-        output.Flush();
+        try
+        {
+            output.Write(response);
+            output.Write('\n');
+            output.Flush();
+            return null;
+        }
+        catch (Exception error) { return error; }
     }
 
     string? Dispatch(JsonElement root)

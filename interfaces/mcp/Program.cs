@@ -8,4 +8,9 @@ var utf8=new UTF8Encoding(false);
 using var input=new StreamReader(Console.OpenStandardInput(),utf8);
 using var output=new StreamWriter(Console.OpenStandardOutput(),utf8){AutoFlush=true};
 Console.SetOut(Console.Error);
-McpServer.Run(input,output,new McpServer{ReadTimeout=readTimeout});
+// P5-37: a reply stdout rejects ends serving (McpServer.Run returns the write's exception): exit 1 and one stderr line
+// "mcp stdout failed: <type>: <message>", never an unhandled exception; a stderr that throws too is ignored.
+if(McpServer.Run(input,output,new McpServer{ReadTimeout=readTimeout}) is {} stdoutFailure) {
+    Environment.ExitCode=1;
+    try { Console.Error.WriteLine("mcp stdout failed: "+stdoutFailure.GetType().FullName+": "+stdoutFailure.Message); } catch(Exception) { }
+}

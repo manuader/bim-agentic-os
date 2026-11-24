@@ -9,7 +9,8 @@ using Bim.Mcp;
 //   a. In process: McpServer.Run over a stdin of three requests (the first a jurisdiction_resolve success, a
 //      jurisdiction_unknown refusal or a skill_list listing, then the other tools and a ping) with an output whose every
 //      write throws (the shared RejectingWriter: IOException, ObjectDisposedException, InvalidOperationException): nothing
-//      escapes Run, exactly one write attempt (the first reply), and serving stops there: the rest of stdin is left
+//      escapes Run, which returns that very exception (null at the end of input), exactly one write attempt (the first
+//      reply), and serving stops there: the rest of stdin is left
 //      unread, byte for byte, so no later request is executed. Control: with a working writer the replies are the
 //      McpServer.Handle bytes of each request in order (success and refusal bytes unchanged).
 //   b. Real Release Bim.Mcp.dll (Linux; SKIP on Windows: no /bin/sh): stdout >/dev/full (every write fails ENOSPC) or
@@ -59,23 +60,25 @@ internal static class StdoutFailureToolTests
             var stdin = string.Join("\n", requests) + "\n";
             var working = new StringWriter(CultureInfo.InvariantCulture);
             var escapedWorking = "";
-            try { McpServer.Run(new StringReader(stdin), working, new McpServer()); }
+            Exception? returnedWorking = null;
+            try { returnedWorking = McpServer.Run(new StringReader(stdin), working, new McpServer()); }
             catch (Exception error) { escapedWorking = error.GetType().FullName + ": " + error.Message; }
             var expected = string.Concat(requests.Select(request => new McpServer().Handle(request) + "\n"));
             var first = JsonNode.Parse(new McpServer().Handle(requests[0]) ?? "null")?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
-            Check(escapedWorking.Length == 0 && working.ToString() == expected && first.StartsWith("{\"status\":", StringComparison.Ordinal),
-                "control (" + label + "): a working stdout gets each request's McpServer.Handle bytes in order | " + Short(working.ToString()) + " " + escapedWorking);
+            Check(escapedWorking.Length == 0 && returnedWorking is null && working.ToString() == expected && first.StartsWith("{\"status\":", StringComparison.Ordinal),
+                "control (" + label + "): a working stdout gets each request's McpServer.Handle bytes in order and Run returns null at the end of input | " + Short(working.ToString()) + " " + escapedWorking);
             foreach (var rejection in new Exception[] { new IOException("stdout full P5-37"), new ObjectDisposedException("stdout P5-37"), new InvalidOperationException("stdout rejected P5-37") })
             {
                 var writer = new RejectingWriter(rejection);
                 var reader = new StringReader(stdin);
                 var escaped = "";
-                try { McpServer.Run(reader, writer, new McpServer()); }
+                Exception? returned = null;
+                try { returned = McpServer.Run(reader, writer, new McpServer()); }
                 catch (Exception error) { escaped = error.GetType().FullName + ": " + error.Message; }
                 var rest = reader.ReadToEnd();
                 var unread = string.Join("\n", requests.Skip(1)) + "\n";
-                Check(escaped.Length == 0 && writer.Attempts == 1 && rest == unread,
-                    "stdout throws " + rejection.GetType().Name + " on the first reply (" + label + "): nothing escapes McpServer.Run, one write attempt, serving stops (the rest of stdin unread) | escaped "
+                Check(escaped.Length == 0 && ReferenceEquals(returned, rejection) && writer.Attempts == 1 && rest == unread,
+                    "stdout throws " + rejection.GetType().Name + " on the first reply (" + label + "): nothing escapes McpServer.Run, which returns that exception, one write attempt, serving stops (the rest of stdin unread) | escaped "
                     + (escaped.Length == 0 ? "nothing" : escaped) + " attempts " + writer.Attempts.ToString(CultureInfo.InvariantCulture) + " rest " + JsonSerializer.Serialize(Short(rest)));
             }
         }
