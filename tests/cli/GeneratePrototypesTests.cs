@@ -3237,11 +3237,15 @@ internal static class GeneratePrototypesTests
             return found;
         }
 
-        // P7-44: whether a parameter or local named name is in scope at index (so name there is not a field): a parameter of
-        // an enclosing method or local function (Parameter), or a declaration after a type (AfterType; not after out / ref)
-        // followed by = ; , or in, directly in a block enclosing index inside the same member.
+        // P7-44: whether a parameter or local named name is in scope at index (so name there is not a field): the parameter
+        // declared at index itself, a parameter of an enclosing method or local function (Parameter), or a declaration after
+        // a type (AfterType; not after out / ref) followed by = ; , or in, directly in a block enclosing index inside the same
+        // member.
         public bool Shadowed(string name, int index)
         {
+            // A parameter's own declaration (inside parentheses, after a type, followed by , ) or =) is not the field.
+            if (parens[index] > parens[enclosing[index] + 1] && AfterType(Code, index)
+                && new System.Text.RegularExpressions.Regex(@"\G\s*(?:,|\)|=(?![=>]))").Match(Code, index + name.Length).Success) return true;
             var blocks = new HashSet<int>();
             for (var b = enclosing[index]; b >= 0 && !Types.ContainsKey(b); b = parent[b]) blocks.Add(b);
             if (blocks.Count == 0) return false;
@@ -3663,8 +3667,10 @@ internal static class GeneratePrototypesTests
                 (RequireRegular, "static bool Noisy(out int mode) => Stat(status => { Console.WriteLine(); return 0; }, out mode); static void RequireUnixRegular(") }, Through + "call"),
             ("a stdout write in GltfExporter.WriteNew", new[] { (@"try\s*\{\s*file\s*=\s*new\s+FileStream\s*\(", "Console.WriteLine(path); try { file = new FileStream(") },
                 Through + "GltfExporter.WriteNew"),
+            // The lambda's parameter is not named stream: a lambda stream => ... directly in a type body is also a declarator
+            // of the name stream, which WriteNew references, and would be reached (labelled stream) before wrap.
             ("a stdout write in the wrap lambda GltfExporter.WriteGltf passes to WriteNew", new[] {
-                (@"ExportGltf\s*\(\s*project\s*\)\s*\)\s*,\s*path\s*,\s*stream\s*=>\s*stream\s*\)", "ExportGltf(project)), path, stream => { Console.Out.Write(path); return stream; })") }, Through + "wrap"),
+                (@"ExportGltf\s*\(\s*project\s*\)\s*\)\s*,\s*path\s*,\s*stream\s*=>\s*stream\s*\)", "ExportGltf(project)), path, written => { Console.WriteLine(); return written; })") }, Through + "wrap"),
         };
         foreach (var (label, edits, reason) in parameterMutants)
         {
