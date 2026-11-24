@@ -479,15 +479,24 @@ public static class DxfReader
                         var flags = r.First(70) is { } af ? DxfValues.Int(af) : 0;
                         var value = r.First(1)?.Value ?? "";
                         // P6-40: the group 11 point of a justified ATTRIB/ATTDEF takes its z from group 31 (like ezdxf's
-                        // align_point), both for its world z and for placing it through a near +-Z OCS of its own. Group 31
-                        // was never read before, so (like the other P6-38 z groups) a non-finite value reads as 0.
-                        var attributeZ = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, justified ? 31 : 30)).Z;
+                        // align_point), both for its world z and for placing it through a near +-Z OCS of its own.
+                        // P6-42: in a near +-Z OCS that z moves XY, so group 31 (and group 30, which the unjustified
+                        // reading refuses through the same OCS) must be finite numbers, like every z group placed there
+                        // (bad-number otherwise). Under an exact +-Z OCS the z only feeds Elevation and, like the other
+                        // P6-38 z groups, a non-finite value reads as 0.
+                        double attributeZ;
                         if (justified && !frame.Exact)
                         {
-                            var world = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, 31));
+                            if (r.First(30) is { } az) _ = DxfValues.Number(az);
+                            var world = frame.ToWorld(insertion.X, insertion.Y, r.First(31) is { } aw ? DxfValues.Number(aw) : 0);
+                            attributeZ = world.Z;
                             insertion = new Point2(world.X, world.Y);
                         }
-                        else insertion = frame.Place(insertion, r, 30);
+                        else
+                        {
+                            attributeZ = frame.ToWorld(insertion.X, insertion.Y, DxfValues.OptionalZ(r, justified ? 31 : 30)).Z;
+                            insertion = frame.Place(insertion, r, 30);
+                        }
                         if (frame.Kind == OcsKind.Mirrored) rotation = 180 - rotation;
                         string plain;
                         // A multi-line attribute (embedded MTEXT after group 101) keeps MTEXT codes in its value.
@@ -663,9 +672,9 @@ internal static class DxfValues
         return value;
     }
 
-    // P6-38: a z group read only for DxfExploder's near +-Z shift (LINE 30/31, CIRCLE/ARC/TEXT/MTEXT/ATTRIB/ATTDEF 30).
-    // These were never read before P6-38, so a value that is not a finite number still does not fail the file: it
-    // reads as 0, like an absent group.
+    // P6-38: a z group read only for DxfExploder's near +-Z shift (LINE 30/31, CIRCLE/ARC/TEXT/MTEXT/ATTRIB/ATTDEF 30;
+    // P6-40: 31 of a justified ATTRIB/ATTDEF in an exact +-Z OCS). These were never read before P6-38, so a value that
+    // is not a finite number still does not fail the file: it reads as 0, like an absent group.
     public static double OptionalZ(DxfRecord r, int code) =>
         r.First(code) is { } pair && double.TryParse(pair.Value.AsSpan().Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var value) && double.IsFinite(value) ? value : 0;
 

@@ -47,8 +47,11 @@ public sealed record DxfLine(DxfProvenance Provenance, Point2 Start, Point2 End)
 
 // Arc counter-clockwise from StartAngleDegrees to EndAngleDegrees, both normalised to [0, 360).
 // P6-38: Elevation of an ARC, CIRCLE, TEXT/MTEXT or ATTRIB/ATTDEF is the world z of its centre or insertion point in
-// the coordinates it lives in (its OCS point taken to world z; MTEXT group 30 as is). Like DxfPolyline.Elevation it is
-// used only under an enclosing near +-Z insert, is 0 on every placed copy and is not serialized.
+// the coordinates it lives in (its OCS point taken to world z; MTEXT group 30 as is). For a justified ATTRIB/ATTDEF
+// (72 = 1/2/4 or 74 != 0 with 11/21) the insertion point is the group 11 point, so its z is group 31 (P6-40); otherwise,
+// and for TEXT (also aligned/fit, 72 = 3/5), it is the group 10 point with the z of group 30. Like
+// DxfPolyline.Elevation it is used only under an enclosing near +-Z insert, is 0 on every placed copy and is not
+// serialized.
 public sealed record DxfArc(DxfProvenance Provenance, Point2 Center, double Radius, double StartAngleDegrees, double EndAngleDegrees) : DxfEntity(Provenance)
 {
     public double Elevation { get; init; }
