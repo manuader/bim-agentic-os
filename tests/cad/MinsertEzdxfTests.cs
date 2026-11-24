@@ -280,6 +280,7 @@ internal static class MinsertEzdxfTests
         RunChain(C);
         RunZ(C);
         RunLeaf(C);
+        RunFollow(C);
         if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
@@ -1001,6 +1002,259 @@ internal static class MinsertEzdxfTests
         catch (Exception error)
         {
             c(false, "draft z unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-40: near-Z leaf z follow-ups: identity placements, justified text, MINSERT ATTRIBs ----------
+    //
+    // FollowDrawing() mirrors FOLLOW_* in tests/cad/tools/minsert_ezdxf_centres.py (section P6-40 follow_main), plus
+    // block IDB placed by IQ with an identity XY transform (insertion 0, base 0, no rotation or scale) and the
+    // model-space LINE FM, both checked here only (no ezdxf constant: an identity placement moves nothing).
+    // * Identity placement: IQ's copies (LINE z 500/-300, CIRCLE, ARC, TEXT, LWPOLYLINE 38, constant ATTDEF, ATTRIB) and
+    //   IN's LINE N1 (z 0 to 800 under a near +Z normal at the origin: only its end moves, 2.4e-4 in ezdxf) are placed
+    //   copies, so their z members are 0 like every other placed copy; FM (model space) is the object the reader made.
+    // * Justified TEXT (72 != 0): DxfReader keeps the group 10 point, which equals ezdxf's transformed insert. Justified
+    //   ATTRIB/ATTDEF (72 1/2/4 or 74 != 0): DxfReader keeps the group 11 point, which must take its z from group 31
+    //   (ezdxf's transformed align_point): JL/JN/JS have 31 != 30 and are 2.1e-4/5.7e-5..1.2e-4/1.5e-4 off when the z
+    //   of group 30 is used; JK/JM/JR have 31 = 30.
+    // * MINSERT ATTRIBs: every cell of MI (+Z, ATTRIB z 1900) and MJ (exact -Z, ATTRIB OCS z 700) inside MHOLD under M1
+    //   (near +Z, scale 1.1) and M2 (near -Z, Z scale -1.5) equals ezdxf's multi_insert() cells (2.1e-4..8.6e-4 move
+    //   when the ATTRIB z is dropped).
+    // * A non-finite INSERT group 43 is refused like a non-finite 41/42 (typed bad-number at the value's line).
+    // * CadToBimIr's candidate copies (Input.AddCandidate, private, reached by reflection) have z members 0.
+    private static string FollowDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 D0|8 0|2 IDB|70 0|10 0|20 0|30 0")
+        + G("0 LINE|5 I1|8 0|10 10|20 20|30 500|11 300|21 20|31 -300")
+        + G("0 CIRCLE|5 I2|8 0|10 100|20 100|30 200|40 50")
+        + G("0 ARC|5 I3|8 0|10 200|20 0|30 150|40 40|50 0|51 90")
+        + G("0 TEXT|5 I4|8 0|10 5|20 5|30 350|40 50|1 T")
+        + G("0 LWPOLYLINE|5 I5|8 0|90 2|70 0|38 250|10 0|20 300|10 400|20 300")
+        + G("0 ATTDEF|5 I6|8 0|10 30|20 40|30 400|40 50|1 K|3 K?|2 IK|70 2")
+        + G("0 ENDBLK|5 D1|8 0")
+        + G("0 BLOCK|5 N0|8 0|2 IDN|70 0|10 0|20 0|30 0|0 LINE|5 N1|8 0|10 0|20 0|30 0|11 1000|21 0|31 800|0 ENDBLK|5 N2|8 0")
+        + G("0 BLOCK|5 J0|8 0|2 JZ|70 0|10 40|20 -30|30 0")
+        + G("0 TEXT|5 JT|8 0|10 50|20 60|30 1300|11 150|21 60|31 1300|40 100|72 1|1 JT")
+        + G("0 TEXT|5 JU|8 0|10 120|20 -80|30 400|11 220|21 -80|31 400|40 100|72 2|1 JU|210 0|220 0|230 -1")
+        + G("0 ATTDEF|5 JK|8 0|10 400|20 100|30 2100|11 460|21 100|31 2100|40 100|1 X|3 JK?|2 JK|70 2|72 1")
+        + G("0 ATTDEF|5 JL|8 0|10 300|20 300|30 1000|11 350|21 320|31 1700|40 100|1 X|3 JL?|2 JL|70 2|72 4")
+        + G("0 ATTDEF|5 JM|8 0|10 -150|20 250|30 800|11 -90|21 250|31 800|40 100|1 X|3 JM?|2 JM|70 2|72 2|74 1|210 0|220 0|230 -1")
+        + G("0 ATTDEF|5 JN|8 0|10 250|20 -150|30 500|11 300|21 -120|31 900|40 100|1 X|3 JN?|2 JN|70 2|74 2|210 1e-7|220 -1e-7|230 -1")
+        + G("0 ENDBLK|5 J1|8 0")
+        + G("0 BLOCK|5 T0|8 0|2 TAG|70 0|10 0|20 0|30 0|0 LINE|5 T1|8 0|10 0|20 0|11 500|21 0|0 ENDBLK|5 T2|8 0")
+        + G("0 BLOCK|5 H0|8 0|2 JHOLD|70 0|10 10|20 20|30 0")
+        + G("0 INSERT|5 JI|8 0|2 TAG|66 1|10 2000|20 1000|30 1200|50 20")
+        + G("0 ATTRIB|5 JR|8 0|10 2100|20 1050|30 1900|11 2160|21 1050|31 1900|40 150|1 JR|2 R|70 0|72 1")
+        + G("0 ATTRIB|5 JS|8 0|10 2000|20 900|30 1900|11 2050|21 950|31 1400|40 150|1 JS|2 S|70 0|74 2|0 SEQEND|5 JQ|8 0")
+        + G("0 ENDBLK|5 H1|8 0")
+        + G("0 BLOCK|5 K0|8 0|2 MHOLD|70 0|10 0|20 0|30 0")
+        + G("0 INSERT|5 MI|8 0|2 TAG|66 1|10 1000|20 500|30 1200|50 30|70 2|71 3|44 3000|45 2000")
+        + G("0 ATTRIB|5 MA|8 0|10 1100|20 550|30 1900|40 120|1 MA|2 ROOM|70 0|0 SEQEND|5 MS|8 0")
+        + G("0 INSERT|5 MJ|8 0|2 TAG|66 1|10 -2000|20 800|30 600|50 15|70 3|71 2|44 2500|45 -1500|210 0|220 0|230 -1")
+        + G("0 ATTRIB|5 MB|8 0|10 -1900|20 850|30 700|40 120|1 MB|2 ROOM|70 0|210 0|220 0|230 -1|0 SEQEND|5 MT|8 0")
+        + G("0 ENDBLK|5 K1|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 IQ|8 ROOMS|2 IDB|66 1|10 0|20 0|30 0")
+        + G("0 ATTRIB|5 IA|8 0|10 50|20 50|30 600|40 50|1 v|2 IA|70 0|0 SEQEND|5 IS|8 0")
+        + G("0 INSERT|5 IN|8 ROOMS|2 IDN|10 0|20 0|30 0|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 J1|8 ROOMS|2 JZ|10 50000|20 20000|30 700|41 1.2|42 1.2|50 25|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 J2|8 ROOMS|2 JZ|10 -40000|20 30000|30 -300|41 0.9|42 0.9|43 -1.5|50 -40|210 -2e-7|220 1e-7|230 -1")
+        + G("0 INSERT|5 J3|8 ROOMS|2 JHOLD|10 20000|20 -50000|30 0|50 10|210 2e-7|220 3e-7|230 -1")
+        + G("0 INSERT|5 M1|8 ROOMS|2 MHOLD|10 70000|20 10000|30 400|41 1.1|42 1.1|50 35|210 -3e-7|220 2e-7|230 1")
+        + G("0 INSERT|5 M2|8 ROOMS|2 MHOLD|10 -70000|20 -10000|30 0|43 -1.5|50 -20|210 2e-7|220 -3e-7|230 -1")
+        + G("0 LINE|5 FM|8 0|10 0|20 0|30 75|11 10|21 0|31 -25")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 WCS points (generator section P6-40 follow_main): (insert path, leaf handle, x, y). N1 is the LINE end;
+    // the others are insertion points (TEXT group 10, ATTRIB/ATTDEF group 11 when justified, else group 10).
+    private static readonly (string Path, string Handle, double X, double Y)[] FollowPoints =
+    {
+        ("IN", "N1", 1000.000239999955, -0.0001599999999999896),
+        ("J1", "JT", 49965.23352117541, 20102.95226014045),
+        ("J1", "JU", 49851.34609059236, 19864.478766523192),
+        ("J1", "JK", 50390.851515833885, 20354.383058694628),
+        ("J1", "JL", 50159.64754684552, 20537.862783922526),
+        ("J1", "JM", 49912.378701276306, 20329.87653214835),
+        ("J1", "JN", 49675.86927868, 19729.69049597098),
+        ("J2", "JT", 39941.040253627114, 30056.264286405312),
+        ("J2", "JU", 40139.23578224482, 30058.089445854363),
+        ("J2", "JK", 39635.2297401675, 29846.653138383263),
+        ("J2", "JL", 39583.79607331835, 30061.96597147979),
+        ("J2", "JM", 39803.54534241844, 30164.117847229943),
+        ("J2", "JN", 40286.475175995, 30134.643399555905),
+        ("J3>JI", "JR", -21938.478665975952, -48612.30386241135),
+        ("J3>JI", "JS", -21847.514730911298, -48729.88608725592),
+        ("M1>MI[0,0]", "MA", 70644.1595395948, 11189.614934779383),
+        ("M1>MI[0,1]", "MA", 72038.79980333922, 14180.430632000269),
+        ("M1>MI[1,0]", "MA", 68650.2824081143, 12119.375110608904),
+        ("M1>MI[1,1]", "MA", 70044.92267185873, 15110.19080782979),
+        ("M1>MI[2,0]", "MA", 66656.40527663383, 13049.135286438424),
+        ("M1>MI[2,1]", "MA", 68051.04554037825, 16039.95098365931),
+        ("M1>MJ[0,0]", "MB", 71175.73389457329, 11964.681853383656),
+        ("M1>MJ[0,1]", "MB", 68591.57918741209, 11024.126459238087),
+        ("M1>MJ[0,2]", "MB", 66007.4244802509, 10083.571065092516),
+        ("M1>MJ[1,0]", "MB", 71740.06713106052, 10414.189029086938),
+        ("M1>MJ[1,1]", "MB", 69155.91242389934, 9473.633634941367),
+        ("M1>MJ[1,2]", "MB", 66571.75771673814, 8533.078240795798),
+        ("M2>MI[0,0]", "MA", 68778.22646830442, -9859.390361225544),
+        ("M2>MI[0,1]", "MA", 65823.80320926789, -9338.445828224776),
+        ("M2>MI[1,0]", "MA", 69125.5228236384, -7889.774855201214),
+        ("M2>MI[1,1]", "MA", 66171.09956460186, -7368.830322200449),
+        ("M2>MI[2,0]", "MA", 69472.81917897236, -5920.159349176888),
+        ("M2>MI[2,1]", "MA", 66518.39591993584, -5399.21481617612),
+        ("M2>MJ[0,0]", "MB", 67923.86710867801, -9851.099859650307),
+        ("M2>MJ[0,1]", "MB", 69971.74721940054, -8417.158768772755),
+        ("M2>MJ[0,2]", "MB", 72019.62733012307, -6983.217677895203),
+        ("M2>MJ[1,0]", "MB", 68784.23176320449, -11079.827926083739),
+        ("M2>MJ[1,1]", "MB", 70832.11187392702, -9645.886835206187),
+        ("M2>MJ[1,2]", "MB", 72879.99198464955, -8211.945744328637),
+    };
+
+    private static string ZMembers(DxfEntity e) => e switch
+    {
+        DxfLine l => "StartZ=" + F(l.StartZ) + " EndZ=" + F(l.EndZ),
+        _ => Member(e, "Elevation") is { } z ? "Elevation=" + F(z) : "none",
+    };
+
+    private static bool ZeroZ(DxfEntity e) => e is DxfLine l ? l.StartZ == 0 && l.EndZ == 0 : Member(e, "Elevation") is null or 0.0;
+
+    private static void RunFollow(Action<bool, string, string> c)
+    {
+        try
+        {
+            var text = FollowDrawing();
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "follow-ezdxf.dxf");
+            var x = drawing.Explode();
+            c(drawing.Warnings.Count == 0 && drawing.Unsupported.Count == 0 && x.Warnings.Count == 0,
+                "follow: no reader or explode warning and nothing unsupported",
+                "reader " + string.Join(",", drawing.Warnings.Select(w => w.Code + "@" + w.Line.ToString(CultureInfo.InvariantCulture))) + " explode " + string.Join(",", x.Warnings.Select(w => w.Code)));
+
+            // Identity placement: the same XY as read, z members 0 like every other placed copy.
+            var idb = drawing.Blocks.Single(b => b.Name == "IDB").Entities.ToDictionary(e => e.Provenance.Handle!, StringComparer.Ordinal);
+            var iq = x.Entities.Where(e => e.Provenance.InsertPath.SequenceEqual(new[] { "IQ" })).ToList();
+            var iqHandles = string.Join(",", iq.Select(e => e.Provenance.Handle).OrderBy(h => h, StringComparer.Ordinal));
+            var sameXY = iq.Where(e => idb.ContainsKey(e.Provenance.Handle!) && e is not DxfAttribute).All(e =>
+            {
+                var a = LeafPointsOf(e);
+                var b = LeafPointsOf(idb[e.Provenance.Handle!]);
+                return a.Count == b.Count && a.All(kv => b.TryGetValue(kv.Key, out var q) && q == kv.Value);
+            });
+            var readZ = string.Join(" ", idb.Values.Select(e => e.Provenance.Handle + ":" + ZMembers(e)));
+            c(iqHandles == "I1,I2,I3,I4,I5,I6,IA" && sameXY && idb.Values.Where(e => e is not DxfAttribute).All(e => !ZeroZ(e)),
+                "follow: IQ is an identity placement: its copies of I1..I5 keep the read XY exactly (the read ones have z)",
+                "placed " + iqHandles + " same XY " + sameXY + " read " + readZ);
+            c(iq.Count == 7 && iq.All(ZeroZ),
+                "follow: an identity placement zeroes the z members like every other placed copy (IQ: LINE, CIRCLE, ARC, TEXT, LWPOLYLINE, ATTDEF, ATTRIB)",
+                string.Join(" ", iq.Select(e => e.Provenance.Handle + ":" + ZMembers(e))));
+            var n1 = x.Entities.Where(e => e.Provenance.Handle == "N1").ToList();
+            c(n1.Count == 1 && n1[0] is DxfLine { StartZ: 0.0, EndZ: 0.0 } nl && nl.Start == new Point2(0, 0),
+                "follow: IN's LINE N1 (identity XY under a near +Z normal, z 0 to 800) is a placed copy with z members 0 and its start unmoved",
+                string.Join(";", n1.Select(e => ZMembers(e) + (e is DxfLine l ? " start " + P(l.Start) : ""))));
+            var fm = drawing.Entities.Single(e => e.Provenance.Handle == "FM");
+            var fmx = x.Entities.Where(e => e.Provenance.Handle == "FM").ToList();
+            c(fmx.Count == 1 && ReferenceEquals(fmx[0], fm) && fm is DxfLine { StartZ: 75.0, EndZ: -25.0 },
+                "follow: the model-space LINE FM passes through the explode as the reader's own object, z 75/-25 kept",
+                string.Join(";", fmx.Select(e => ZMembers(e) + " same object " + ReferenceEquals(e, fm))));
+
+            // Every ezdxf point within 1e-6 (N1: the LINE end; the others: the insertion point).
+            foreach (var (path, handle, ex, ey) in FollowPoints)
+            {
+                var found = x.Entities.Where(e => e.Provenance.Handle == handle && string.Join(">", e.Provenance.InsertPath) == path).ToList();
+                var name = "follow: " + path + " " + handle + " (" + (found.Count == 1 ? found[0].Provenance.EntityType : "?") + ")";
+                if (found.Count != 1)
+                {
+                    c(false, name + " equals ezdxf 1.4.2 within 1e-6", "found " + found.Count.ToString(CultureInfo.InvariantCulture) + " entities; paths "
+                        + string.Join(",", x.Entities.Where(e => e.Provenance.Handle == handle).Select(e => string.Join(">", e.Provenance.InsertPath))));
+                    continue;
+                }
+                var got = LeafPointsOf(found[0]);
+                var label = handle == "N1" ? "end" : "insert";
+                var ok = got.TryGetValue(label, out var point);
+                var error = ok ? Distance(point, ex, ey) : double.PositiveInfinity;
+                c(error <= Eps && ZeroZ(found[0]), name + " " + label + " equals ezdxf 1.4.2 within 1e-6 and the copy's z members are 0",
+                    (ok ? P(point) : "no " + label) + " expected (" + F(ex) + "," + F(ey) + ") error " + F(error) + " " + ZMembers(found[0]));
+            }
+            var cells = x.Entities.Count(e => e.Provenance.Handle is "MA" or "MB");
+            c(cells == 24, "follow: 24 MINSERT ATTRIB copies (MI 2x3 and MJ 3x2 under M1 and M2)", cells.ToString(CultureInfo.InvariantCulture));
+
+            // What the reader keeps for a justified ATTRIB/ATTDEF: the group 11 point with the z of group 31.
+            var jz = drawing.Blocks.Single(b => b.Name == "JZ").Entities.ToDictionary(e => e.Provenance.Handle!, StringComparer.Ordinal);
+            var js = drawing.Blocks.Single(b => b.Name == "JHOLD").Entities.OfType<DxfInsert>().Single().Attributes.ToDictionary(a => a.Provenance.Handle!, StringComparer.Ordinal);
+            var kept = new (string Name, DxfEntity Entity, double X, double Y, double Z, double Tolerance)[]
+            {
+                ("JT", jz["JT"], 50, 60, 1300, 0), ("JU", jz["JU"], -120, -80, -400, 0), ("JK", jz["JK"], 460, 100, 2100, 0),
+                ("JL", jz["JL"], 350, 320, 1700, 0), ("JM", jz["JM"], 90, 250, -800, 0), ("JN", jz["JN"], -299.99991, -120.00009, -900.000018, 1e-8),
+                ("JR", js["JR"], 2160, 1050, 1900, 0), ("JS", js["JS"], 2050, 950, 1400, 0),
+            };
+            foreach (var (name, entity, ex, ey, ez, tolerance) in kept)
+            {
+                var point = LeafPointsOf(entity)["insert"];
+                var z = Member(entity, "Elevation")!.Value;
+                c(Distance(point, ex, ey) <= Math.Max(tolerance, 1e-9) && Math.Abs(z - ez) <= Math.Max(tolerance, 1e-9),
+                    "follow: reader keeps " + name + " at (" + F(ex) + "," + F(ey) + ") z " + F(ez) + (entity is DxfText ? " (TEXT: group 10)" : " (justified: group 11, z of group 31)"),
+                    P(point) + " z " + F(z));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "follow unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // A non-finite group 43 is refused like a non-finite 41/42: the file fails with a typed bad-number at the value.
+        try
+        {
+            string Scaled(string group) => G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0|0 LINE|5 B1|8 0|10 0|20 0|11 100|21 0|0 ENDBLK|5 B2|8 0|0 ENDSEC")
+                + G("0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|10 0|20 0|" + group + "|0 ENDSEC|0 EOF");
+            foreach (var group in new[] { "43 NaN", "43 inf", "43 -Infinity", "43 1e999", "41 NaN", "42 1e999" })
+            {
+                var text = Scaled(group);
+                var expectedLine = Array.IndexOf(text.Split('\n'), group[3..]) + 1;
+                string outcome;
+                try
+                {
+                    var d = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "scale-nonfinite.dxf");
+                    outcome = "parsed: " + d.Entities.Count.ToString(CultureInfo.InvariantCulture) + " entities, warnings " + string.Join(",", d.Warnings.Select(w => w.Code));
+                }
+                catch (DxfFormatException e)
+                {
+                    outcome = e.Code + "@" + e.Line.ToString(CultureInfo.InvariantCulture) + ":" + e.Message;
+                }
+                c(outcome.StartsWith("bad-number@" + expectedLine.ToString(CultureInfo.InvariantCulture) + ":group " + group[..2] + " value is not a finite number", StringComparison.Ordinal),
+                    "follow: INSERT group " + group + " is refused bad-number at line " + expectedLine.ToString(CultureInfo.InvariantCulture) + " (non-finite 43 like 41/42)", outcome);
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "follow nonfinite unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // CadToBimIr's candidate copies, directly: Input.AddCandidate scales a LINE and an LWPOLYLINE that carry z and
+        // the copies it keeps have z members 0 (the drop is pinned, not only its effect on draft bytes).
+        try
+        {
+            const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic;
+            var inputType = typeof(CadToBimIr).GetNestedType("Input", System.Reflection.BindingFlags.NonPublic) ?? throw new InvalidOperationException("CadToBimIr.Input not found");
+            var budgetType = typeof(CadToBimIr).GetNestedType("Budget", System.Reflection.BindingFlags.NonPublic) ?? throw new InvalidOperationException("CadToBimIr.Budget not found");
+            var add = inputType.GetMethod("AddCandidate", Any) ?? throw new InvalidOperationException("Input.AddCandidate not found");
+            var provenance = new DxfProvenance("cand.dxf", "W1", "WALLS", "LINE", 3);
+            var line = new DxfLine(provenance, new Point2(1, 2), new Point2(5, 2)) { StartZ = 500, EndZ = -300 };
+            var polyline = new DxfPolyline(provenance with { Handle = "W2", EntityType = "LWPOLYLINE" }, new[] { new DxfVertex(new Point2(0, 3), 0), new DxfVertex(new Point2(4, 3), 0) }, false) { Elevation = 250 };
+            foreach (var factor in new[] { 1.0, 1000.0 })
+            {
+                var budget = Activator.CreateInstance(budgetType, Any, null, new object[] { 1_000_000L }, CultureInfo.InvariantCulture);
+                var input = Activator.CreateInstance(inputType, Any, null, new object?[] { "cand.dxf", "dxf", factor, 1000, budget }, CultureInfo.InvariantCulture);
+                add.Invoke(input, new object?[] { line, factor, 0, null });
+                add.Invoke(input, new object?[] { polyline, factor, 0, null });
+                var candidates = (List<DxfEntity>)(inputType.GetProperty("Candidates", Any)?.GetValue(input) ?? throw new InvalidOperationException("Input.Candidates not found"));
+                var ok = candidates.Count == 2 && candidates[0] is DxfLine { StartZ: 0.0, EndZ: 0.0 } l && l.Start == new Point2(factor, 2 * factor) && l.End == new Point2(5 * factor, 2 * factor)
+                    && candidates[1] is DxfPolyline { Elevation: 0.0 } p && p.Vertices[1].Point == new Point2(4 * factor, 3 * factor);
+                c(ok, "follow: draft: limit pinned directly: CadToBimIr's candidate copies scaled by " + F(factor) + " drop the z members (LINE 500/-300, LWPOLYLINE 250 -> 0)",
+                    string.Join(" ", candidates.Select(e => e.Provenance.Handle + ":" + ZMembers(e) + " " + string.Join(";", LeafPointsOf(e).Values.Select(P)))));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "follow draft candidates unexpected exception", (error.InnerException ?? error).GetType().Name + ": " + (error.InnerException ?? error).Message);
         }
     }
 }

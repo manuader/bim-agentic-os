@@ -591,9 +591,176 @@ def leaf_main():
     print("// P6-38 model-space tilted LWPOLYLINE LP: world z of its plane", r(leaf_points("LWPOLYLINE", LEAF_Z[10][2], LEAF_Z[10][3])[0][1].z))
 
 
+# P6-40: near-Z leaf z follow-ups. Block IDN (base 0) holds LINE N1 from z 0 to z 800, placed by IN at the origin
+# under a near +Z normal: its XY placement is the identity (DxfExploder's Relabel path) and only the end moves, by
+# 800 times the normal's horizontal part. Block JZ (base (40, -30, 0)) holds justified leaves (72/74 non-zero, second
+# alignment point 11/21/31): TEXT JT (+Z) and JU (exact -Z), whose group 10 point DxfReader keeps (checked here as
+# ezdxf's transformed insert), and constant ATTDEFs JK (+Z, 31 = 30), JL (+Z, 31 = 1700 != 30 = 1000), JM (exact -Z,
+# 31 = 30) and JN (own near -Z OCS (1e-7,-1e-7,-1), 31 = 900 != 30 = 500), whose 11 point DxfReader keeps (checked as
+# ezdxf's transformed align_point). Block JHOLD (base (10, 20, 0)) holds INSERT JI of TAG at z 1200 with justified
+# ATTRIBs JR (31 = 30 = 1900) and JS (31 = 1400 != 30 = 1900). Block MHOLD (base 0) holds MINSERT MI of TAG (+Z,
+# elevation 1200, 2 columns x 3 rows, spacing 3000/2000, rotation 30) with ATTRIB MA at z 1900 and MINSERT MJ (exact
+# -Z OCS, elevation 600, 3 columns x 2 rows, spacing 2500/-1500, rotation 15) with ATTRIB MB at OCS z 700. Model space:
+# IN; J1 (JZ, near +Z, scale 1.2), J2 (JZ, near -Z, Z scale -1.5), J3 (JHOLD, near -Z), M1 (MHOLD, near +Z, scale
+# 1.1) and M2 (MHOLD, near -Z, Z scale -1.5). Expected WCS points: the composed Insert.matrix44() applied to the leaf
+# point taken to block WCS by the leaf's own OCS; MINSERT cells from Insert.multi_insert() on MI/MJ themselves
+# (row-major, ATTRIBs moved by ezdxf), each cell's ATTRIB composed with the top insert's matrix. Cross-checked within
+# 1e-9 against the leaf copied and transformed with its own transform(m) (insert or align_point).
+FOLLOW_BLOCK_BASE = (40.0, -30.0, 0.0)
+# name, kind, insert (10/20/30), align point (11/21/31), halign (72), valign (73 TEXT / 74 ATTDEF), extrusion
+FOLLOW_JUSTIFIED = [
+    ("JT", "TEXT", (50.0, 60.0, 1300.0), (150.0, 60.0, 1300.0), 1, 0, (0.0, 0.0, 1.0)),
+    ("JU", "TEXT", (120.0, -80.0, 400.0), (220.0, -80.0, 400.0), 2, 0, (0.0, 0.0, -1.0)),
+    ("JK", "ATTDEF", (400.0, 100.0, 2100.0), (460.0, 100.0, 2100.0), 1, 0, (0.0, 0.0, 1.0)),
+    ("JL", "ATTDEF", (300.0, 300.0, 1000.0), (350.0, 320.0, 1700.0), 4, 0, (0.0, 0.0, 1.0)),
+    ("JM", "ATTDEF", (-150.0, 250.0, 800.0), (-90.0, 250.0, 800.0), 2, 1, (0.0, 0.0, -1.0)),
+    ("JN", "ATTDEF", (250.0, -150.0, 500.0), (300.0, -120.0, 900.0), 0, 2, (1e-7, -1e-7, -1.0)),
+]
+FOLLOW_JI = ("JI", (2000.0, 1000.0, 1200.0), 20.0)
+FOLLOW_JATTRIBS = [
+    ("JR", "R", (2100.0, 1050.0, 1900.0), (2160.0, 1050.0, 1900.0), 1, 0),
+    ("JS", "S", (2000.0, 900.0, 1900.0), (2050.0, 950.0, 1400.0), 0, 2),
+]
+# name, insertion, rotation, columns, rows, column spacing, row spacing, extrusion, attrib handle, attrib OCS point
+FOLLOW_MINSERTS = [
+    ("MI", (1000.0, 500.0, 1200.0), 30.0, 2, 3, 3000.0, 2000.0, (0.0, 0.0, 1.0), "MA", (1100.0, 550.0, 1900.0)),
+    ("MJ", (-2000.0, 800.0, 600.0), 15.0, 3, 2, 2500.0, -1500.0, (0.0, 0.0, -1.0), "MB", (-1900.0, 850.0, 700.0)),
+]
+FOLLOW_CASES = [
+    ("IN", "IDN", (0.0, 0.0, 0.0), 0.0, 1.0, 1.0, 1.0, (3e-7, -2e-7, 1.0)),
+    ("J1", "JZ", (50000.0, 20000.0, 700.0), 25.0, 1.2, 1.2, 1.0, (3e-7, -2e-7, 1.0)),
+    ("J2", "JZ", (-40000.0, 30000.0, -300.0), -40.0, 0.9, 0.9, -1.5, (-2e-7, 1e-7, -1.0)),
+    ("J3", "JHOLD", (20000.0, -50000.0, 0.0), 10.0, 1.0, 1.0, 1.0, (2e-7, 3e-7, -1.0)),
+    ("M1", "MHOLD", (70000.0, 10000.0, 400.0), 35.0, 1.1, 1.1, 1.0, (-3e-7, 2e-7, 1.0)),
+    ("M2", "MHOLD", (-70000.0, -10000.0, 0.0), -20.0, 1.0, 1.0, -1.5, (2e-7, -3e-7, -1.0)),
+]
+
+
+def build_follow():
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    idn = doc.blocks.new("IDN", base_point=(0.0, 0.0, 0.0))
+    line = idn.add_line((0.0, 0.0, 0.0), (1000.0, 0.0, 800.0))
+    jz = doc.blocks.new("JZ", base_point=FOLLOW_BLOCK_BASE)
+    made = {}
+    for name, kind, ins, align, h, v, ext in FOLLOW_JUSTIFIED:
+        attribs = {"insert": ins, "align_point": align, "halign": h, "height": 100.0, "extrusion": ext}
+        if kind == "TEXT":
+            attribs["valign"] = v
+            e = jz.add_text(name, dxfattribs=attribs)
+        else:
+            attribs["valign"] = v
+            attribs["flags"] = 2
+            e = jz.add_attdef(name, ins, "X", dxfattribs=attribs)
+            e.dxf.align_point = Vec3(align)
+        made[name] = e
+    tag = doc.blocks.new("TAG", base_point=(0.0, 0.0, 0.0))
+    tag.add_line((0.0, 0.0), (500.0, 0.0))
+    hold = doc.blocks.new("JHOLD", base_point=(10.0, 20.0, 0.0))
+    ji = hold.add_blockref("TAG", FOLLOW_JI[1], dxfattribs={"rotation": FOLLOW_JI[2]})
+    for name, tagname, ins, align, h, v in FOLLOW_JATTRIBS:
+        a = ji.add_attrib(tagname, name, ins, dxfattribs={"height": 150.0, "halign": h, "valign": v})
+        a.dxf.insert = Vec3(ins)
+        a.dxf.align_point = Vec3(align)
+        made[name] = a
+    mhold = doc.blocks.new("MHOLD", base_point=(0.0, 0.0, 0.0))
+    minserts = {}
+    for name, ins, rot, cols, rows, csp, rsp, ext, aname, apt in FOLLOW_MINSERTS:
+        mi = mhold.add_blockref("TAG", ins, dxfattribs={"rotation": rot, "extrusion": ext})
+        mi.dxf.column_count = cols
+        mi.dxf.row_count = rows
+        mi.dxf.column_spacing = csp
+        mi.dxf.row_spacing = rsp
+        a = mi.add_attrib("ROOM", aname, apt, dxfattribs={"height": 120.0, "extrusion": ext})
+        a.dxf.insert = Vec3(apt)
+        minserts[name] = (mi, aname)
+    msp = doc.modelspace()
+    top = {}
+    for name, block, ins, rot, sx, sy, sz, ext in FOLLOW_CASES:
+        top[name] = msp.add_blockref(block, ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "zscale": sz, "extrusion": ext})
+    return line, made, minserts, top
+
+
+def follow_point(e, which):
+    # WCS of a text-like entity's insert or align point (its own OCS); a LINE's end.
+    if e.dxftype() == "LINE":
+        return Vec3(e.dxf.end)
+    return e.ocs().to_wcs(Vec3(getattr(e.dxf, which)))
+
+
+def follow_main():
+    print("// P6-40 follow-up points: (path, handle, label, x, y, xy change when z is dropped)")
+    line, made, minserts, top = build_follow()
+
+    def emit(path, handle, label, g, flat):
+        print('("' + path + '", "' + handle + '", "' + label + '", ' + r(g.x) + ", " + r(g.y) + "), // dropped " + r(max(abs(g.x - flat.x), abs(g.y - flat.y))))
+
+    def flat_of(p):
+        return Vec3(p.x, p.y, 0.0)
+
+    for name, block, *_ in FOLLOW_CASES:
+        m = top[name].matrix44()
+        if block == "IDN":
+            p = Vec3(line.dxf.end)
+            g = m.transform(p)
+            c = line.copy()
+            c.transform(m)
+            assert (Vec3(c.dxf.end) - g).magnitude <= 1e-9, (g, c.dxf.end)
+            emit(name, "N1", "end", g, m.transform(flat_of(p)))
+            s = m.transform(Vec3(line.dxf.start))
+            print("// " + name + " N1 start " + r(s.x) + ", " + r(s.y))
+        elif block == "JZ":
+            for handle, kind, *_ in FOLLOW_JUSTIFIED:
+                e = made[handle]
+                which = "insert" if kind == "TEXT" else "align_point"
+                p = follow_point(e, which)
+                g = m.transform(p)
+                c = e.copy()
+                c.transform(m)
+                assert (follow_point(c, which) - g).magnitude <= 1e-9, (name, handle, g, follow_point(c, which))
+                emit(name, handle, "insert", g, m.transform(flat_of(p)))
+                if kind != "TEXT":
+                    # The reading that takes the z of the group 10 point for the group 11 point.
+                    e10 = e.copy()
+                    a = Vec3(e.dxf.align_point)
+                    e10.dxf.align_point = Vec3(a.x, a.y, Vec3(e.dxf.insert).z)
+                    w = m.transform(follow_point(e10, "align_point"))
+                    print("//   " + name + " " + handle + " with the z of group 30: off by " + r(max(abs(g.x - w.x), abs(g.y - w.y))))
+        elif block == "JHOLD":
+            for handle, *_ in FOLLOW_JATTRIBS:
+                e = made[handle]
+                p = follow_point(e, "align_point")
+                g = m.transform(p)
+                c = e.copy()
+                c.transform(m)
+                assert (follow_point(c, "align_point") - g).magnitude <= 1e-9
+                virtual = [v for v in top[name].virtual_entities() if v.dxftype() == "INSERT"]
+                va = [a for a in virtual[0].attribs if a.dxf.text == handle][0]
+                assert (follow_point(va, "align_point") - g).magnitude <= 1e-9
+                emit(name, handle, "insert", g, m.transform(flat_of(p)))
+                e10 = e.copy()
+                a = Vec3(e.dxf.align_point)
+                e10.dxf.align_point = Vec3(a.x, a.y, Vec3(e.dxf.insert).z)
+                w = m.transform(follow_point(e10, "align_point"))
+                print("//   " + name + " " + handle + " with the z of group 30: off by " + r(max(abs(g.x - w.x), abs(g.y - w.y))))
+        else:
+            for mname, (mi, aname) in minserts.items():
+                cols, rows = mi.dxf.column_count, mi.dxf.row_count
+                for k, cell in enumerate(mi.multi_insert()):
+                    row, col = divmod(k, cols)
+                    (a,) = cell.attribs
+                    p = a.ocs().to_wcs(Vec3(a.dxf.insert))
+                    g = m.transform(p)
+                    c = a.copy()
+                    c.transform(m)
+                    assert (follow_point(c, "insert") - g).magnitude <= 1e-9
+                    emit(name + ">" + mname + "[" + str(row) + "," + str(col) + "]", aname, "insert", g, m.transform(flat_of(p)))
+
+
 if __name__ == "__main__":
     main()
     bulge_main()
     chain_main()
     z_main()
     leaf_main()
+    follow_main()

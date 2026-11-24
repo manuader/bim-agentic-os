@@ -21,7 +21,8 @@ namespace Bim.Cad;
 // like a nested insertion height; all are zero shifts when every level is exact +-Z. P6-38: so do the z of LINE end
 // points (StartZ/EndZ), of a CIRCLE/ARC centre and of a TEXT/MTEXT or ATTDEF insertion (Elevation) under the block's
 // z direction, and an INSERT's ATTRIBs (which live where the INSERT lives) under the enclosing z direction. The z
-// members are consumed here: every placed copy has them 0 (a model-space entity keeps what was read).
+// members are consumed here: every placed copy has them 0, also one placed by an identity transform (P6-40); a
+// model-space entity keeps what was read.
 public static class DxfExploder
 {
     public static DxfExplodedDrawing Explode(DxfDrawing drawing, DxfExplodeOptions options)
@@ -128,7 +129,7 @@ public static class DxfExploder
             // XY through the enclosing near +-Z normals; a LINE end moves by its own z below.
             var lifted = zToXY.X != 0 || zToXY.Y != 0;
             if (lifted && LeafZ(entity) is var z and not 0.0) transform = Affine.Translate(zToXY * z).Compose(transform);
-            var output = transform.IsIdentity ? Relabel(entity, provenance) : Transform(entity, transform, provenance);
+            var output = transform.IsIdentity ? Relabel(entity, provenance, path.Count > 0) : Transform(entity, transform, provenance);
             if (lifted && entity is DxfLine sourceLine && sourceLine.EndZ != sourceLine.StartZ && output is DxfLine placedLine)
                 output = placedLine with { End = placedLine.End + zToXY * (sourceLine.EndZ - sourceLine.StartZ) };
             Add(output);
@@ -195,7 +196,19 @@ public static class DxfExploder
             Output.Add(entity);
         }
 
-        private static DxfEntity Relabel(DxfEntity entity, DxfProvenance provenance) => ReferenceEquals(entity.Provenance, provenance) ? entity : entity with { Provenance = provenance };
+        // P6-40: a copy placed by an identity transform is still a placed copy, so its z members are consumed (0) like
+        // those of every other placed copy; only a model-space entity (not placed) keeps what was read.
+        private static DxfEntity Relabel(DxfEntity entity, DxfProvenance provenance, bool placed) => entity switch
+        {
+            _ when !placed => ReferenceEquals(entity.Provenance, provenance) ? entity : entity with { Provenance = provenance },
+            DxfLine line => line with { Provenance = provenance, StartZ = 0, EndZ = 0 },
+            DxfCircle circle => circle with { Provenance = provenance, Elevation = 0 },
+            DxfArc arc => arc with { Provenance = provenance, Elevation = 0 },
+            DxfPolyline polyline => polyline with { Provenance = provenance, Elevation = 0 },
+            DxfText text => text with { Provenance = provenance, Elevation = 0 },
+            DxfAttribute attribute => attribute with { Provenance = provenance, Elevation = 0 },
+            _ => entity with { Provenance = provenance },
+        };
 
         private DxfEntity? Transform(DxfEntity entity, Affine m, DxfProvenance p)
         {
