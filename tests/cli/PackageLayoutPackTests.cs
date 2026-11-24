@@ -188,10 +188,32 @@ internal static class PackageLayoutPackTests
             var stopwatch = Stopwatch.StartNew();
             var built = Exec(pwsh, ["-NoProfile", "-File", packager, "-OutputDirectory", package, "-Dotnet", dotnet], 900000);
             stopwatch.Stop();
-            // A killed package.ps1 never reaches its finally: best-effort removal of the build tree this run created.
+            // A killed package.ps1 never reaches its finally: removal of the build tree this run created. P4-35: an IO or
+            // access error is a named failure (RemoveBuildTrees), not swallowed.
             if (built.Exit == -1 && built.Out == "<timed out>")
-                foreach (var tree in BuildTrees().Except(treesBefore, StringComparer.Ordinal))
-                    try { Directory.Delete(tree, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
+            {
+                var treeFailures = RemoveBuildTrees(treesBefore, BuildTrees());
+                Check(treeFailures.Count == 0, "P4-35: the build trees of a timed-out scripts/package.ps1 are removed (an IO or access error is a named failure, not swallowed)", string.Join(" | ", treeFailures));
+            }
+            // P4-35 self-test: a planted IOException/UnauthorizedAccessException is the named failure for the new tree only (a
+            // tree that existed before is never touched); a real new tree is removed with no failure, an older one kept.
+            foreach (var planted in new Exception[] { new IOException("planted: the tree is in use"), new UnauthorizedAccessException("planted: access denied") })
+            {
+                var touched = new List<string>();
+                var plantedFailures = RemoveBuildTrees(["/p4-35/bim-package-src-old"], ["/p4-35/bim-package-src-old", "/p4-35/bim-package-src-new"], tree => { touched.Add(tree); throw planted; });
+                var wanted = CleanupFailed + "build tree /p4-35/bim-package-src-new: " + planted.GetType().Name + ": " + planted.Message;
+                Check(plantedFailures.SequenceEqual(new[] { wanted }, StringComparer.Ordinal) && touched.SequenceEqual(new[] { "/p4-35/bim-package-src-new" }, StringComparer.Ordinal),
+                    "P4-35: self-test: a planted " + planted.GetType().Name + " while removing a timed-out build tree is the named failure '" + wanted + "' (only the new tree touched)",
+                    "failures [" + string.Join(" | ", plantedFailures) + "] touched [" + string.Join(", ", touched) + "]");
+            }
+            var oldTree = Path.Combine(caseRoot, "p4-35-tree-old");
+            var newTree = Path.Combine(caseRoot, "p4-35-tree-new");
+            Directory.CreateDirectory(oldTree);
+            Directory.CreateDirectory(Path.Combine(newTree, "sub"));
+            File.WriteAllText(Path.Combine(newTree, "sub", "x.txt"), "x");
+            var realTreeFailures = RemoveBuildTrees([oldTree], [oldTree, newTree]);
+            Check(realTreeFailures.Count == 0 && !Directory.Exists(newTree) && Directory.Exists(oldTree),
+                "P4-35: self-test: a real new build tree is removed with no failure and an older one is kept", string.Join(" | ", realTreeFailures) + " new exists " + Directory.Exists(newTree) + " old exists " + Directory.Exists(oldTree));
             Console.WriteLine("package-layout-pack: scripts/package.ps1 took " + stopwatch.Elapsed.TotalSeconds.ToString("F1", CultureInfo.InvariantCulture) + " s");
             var buildTail = built.Out.Length > 1500 ? built.Out[^1500..] : built.Out;
             var packageDll = Path.Combine(package, "cli", Path.GetFileName(cliDll));
@@ -552,6 +574,22 @@ internal static class PackageLayoutPackTests
     // P4-32: a ".." that climbs above the package root is no longer clamped: such an sbom/manifest path is a named
     // escaping-path failure (and neither a leak nor a control line); an extensionless Bim.Gltf runtime asset in a deps.json
     // is caught like Bim.Gltf.dll (self-tested with planted lines and a planted asset).
+    // P4-35: the one prefix of every package-pin cleanup failure, shared with tests/packaging/test-package.ps1
+    // Add-P433CleanupFailure (its P4-35 self-test reads this literal and requires it to be the only cleanup-failed prefix here).
+    const string CleanupFailed = "P4-33: cleanup failed: ";
+
+    // P4-35: a killed package.ps1 never reaches its finally: removes each build tree in `now` that is not in `before`
+    // (`delete` stands in for Directory.Delete(path, true) in the self-test); an IOException/UnauthorizedAccessException is
+    // the named failure CleanupFailed + "build tree <path>: <type>: <message>" (never swallowed).
+    static List<string> RemoveBuildTrees(IEnumerable<string> before, IEnumerable<string> now, Action<string>? delete = null)
+    {
+        var failures = new List<string>();
+        foreach (var tree in now.Except(before, StringComparer.Ordinal))
+            try { (delete ?? (folder => Directory.Delete(folder, true)))(tree); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { failures.Add(CleanupFailed + "build tree " + tree + ": " + error.GetType().Name + ": " + error.Message); }
+        return failures;
+    }
+
     static void McpWithoutGltf(string package, string caseRoot, Action<bool, string, string> check, int depth = 0)
     {
         void Check(bool condition, string name, string detail) => check(condition, "P4-30: " + name, detail);
@@ -658,7 +696,7 @@ internal static class PackageLayoutPackTests
             return missing;
         }
         // Every Bim.Gltf name in a deps.json: libraries, targets entries, their dependencies and runtime (P4-34: native and
-        // resources too) assets; null when
+        // resources too; P4-35: runtimeTargets and compile) assets; null when
         // the file is missing or unreadable (no "libraries" object).
         static List<string>? GltfInDeps(string file)
         {
@@ -680,8 +718,8 @@ internal static class PackageLayoutPackTests
                             if (entry.Value.TryGetProperty("dependencies", out var dependencies) && dependencies.ValueKind == JsonValueKind.Object)
                                 foreach (var dependency in dependencies.EnumerateObject())
                                     if (IsGltf(dependency.Name)) found.Add("dependency " + entry.Name + " -> " + dependency.Name);
-                            // P4-34: native and resources assets too, each named by its kind.
-                            foreach (var kind in new[] { "runtime", "native", "resources" })
+                            // P4-34: native and resources assets too (P4-35: runtimeTargets and compile), each named by its kind.
+                            foreach (var kind in new[] { "runtime", "native", "resources", "runtimeTargets", "compile" })
                                 if (entry.Value.TryGetProperty(kind, out var assets) && assets.ValueKind == JsonValueKind.Object)
                                     foreach (var asset in assets.EnumerateObject())
                                     {
@@ -698,9 +736,11 @@ internal static class PackageLayoutPackTests
         // P4-33: every runtime asset name in a deps.json (any target entry) whose ".." climbs above the deps base (the folder
         // holding the deps.json, mcp/ for Bim.Mcp.deps.json: asset paths are relative to it), named as an escaping path
         // whatever its file name (an escaping Bim.Gltf asset is also a Bim.Gltf match); null when unreadable. P4-34: native
-        // and resources assets too ("<kind> <entry> escaping path <asset>").
+        // and resources assets too; P4-35: runtimeTargets and compile, and the item names the deps base
+        // ("<kind> <entry> escaping path <asset> above deps base mcp/").
         static List<string>? EscapingInDeps(string file)
         {
+            var depsBase = Path.GetFileName(Path.GetDirectoryName(file)) + "/";
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(file));
@@ -710,20 +750,20 @@ internal static class PackageLayoutPackTests
                 if (root.TryGetProperty("targets", out var targets) && targets.ValueKind == JsonValueKind.Object)
                     foreach (var target in targets.EnumerateObject().Where(target => target.Value.ValueKind == JsonValueKind.Object))
                         foreach (var entry in target.Value.EnumerateObject().Where(entry => entry.Value.ValueKind == JsonValueKind.Object))
-                            foreach (var kind in new[] { "runtime", "native", "resources" })
+                            foreach (var kind in new[] { "runtime", "native", "resources", "runtimeTargets", "compile" })
                                 if (entry.Value.TryGetProperty(kind, out var assets) && assets.ValueKind == JsonValueKind.Object)
-                                    escaping.AddRange(assets.EnumerateObject().Where(asset => Normal(asset.Name) is null).Select(asset => kind + " " + entry.Name + " escaping path " + asset.Name));
+                                    escaping.AddRange(assets.EnumerateObject().Where(asset => Normal(asset.Name) is null).Select(asset => kind + " " + entry.Name + " escaping path " + asset.Name + " above deps base " + depsBase));
                 return escaping;
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException or JsonException) { return null; }
         }
         // P4-34: removes a self-test layout copy (`delete` stands in for Directory.Delete(path, true) in the self-test); null
         // when it is removed or absent, else an IOException/UnauthorizedAccessException as the named failure
-        // "P4-34: cleanup failed: <path>: <type>: <message>" (never swallowed).
+        // CleanupFailed + "<path>: <type>: <message>" (never swallowed; P4-35: the prefix shared with the ps1).
         static string? RemoveCopy(string path, Action<string>? delete = null)
         {
             try { if (Directory.Exists(path)) (delete ?? (folder => Directory.Delete(folder, true)))(path); return null; }
-            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return "P4-34: cleanup failed: " + path + ": " + error.GetType().Name + ": " + error.Message; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return CleanupFailed + path + ": " + error.GetType().Name + ": " + error.Message; }
         }
         static List<string> Fingerprint(string layout)
         {
@@ -757,9 +797,9 @@ internal static class PackageLayoutPackTests
         var escapingPaths = Escaping(package);
         Check32(escapingPaths.Count == 0, "no sbom.json or manifest.json path of the package climbs above its root (an escaping .. is a named failure, not clamped)", Show(escapingPaths));
         var mcpDepsEscaping = EscapingInDeps(Path.Combine(package, "mcp", "Bim.Mcp.deps.json"));
-        check(mcpDepsEscaping is { Count: 0 }, "P4-33/P4-34: no runtime, native or resources asset of the packaged mcp/Bim.Mcp.deps.json climbs above its deps base mcp/", Missing(mcpDepsEscaping, "mcp/Bim.Mcp.deps.json"));
+        check(mcpDepsEscaping is { Count: 0 }, "P4-33..P4-35: no runtime, native, resources, runtimeTargets or compile asset of the packaged mcp/Bim.Mcp.deps.json climbs above its deps base mcp/", Missing(mcpDepsEscaping, "mcp/Bim.Mcp.deps.json"));
         var mcpDeps = GltfInDeps(Path.Combine(package, "mcp", "Bim.Mcp.deps.json"));
-        Check31(mcpDeps is { Count: 0 }, "the packaged mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime, native or resources asset", Missing(mcpDeps, "mcp/Bim.Mcp.deps.json"));
+        Check31(mcpDeps is { Count: 0 }, "the packaged mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime, native, resources, runtimeTargets or compile asset", Missing(mcpDeps, "mcp/Bim.Mcp.deps.json"));
         var cliDeps = GltfInDeps(Path.Combine(package, "cli", "Bim.Cli.deps.json"));
         Check31(cliDeps is not null && cliDeps.Any(item => item.StartsWith("library Bim.Gltf/", StringComparison.Ordinal)), "positive control: the packaged cli/Bim.Cli.deps.json names the Bim.Gltf library", Missing(cliDeps, "cli/Bim.Cli.deps.json"));
 
@@ -896,9 +936,9 @@ internal static class PackageLayoutPackTests
                     // that stays inside the root and a plain asset are not escaping.
                     foreach (var (asset, escapingExpected, gltfExpected) in new[]
                     {
-                        ("../BIM.GLTF", "runtime " + mcpTarget + " escaping path ../BIM.GLTF", "runtime " + mcpTarget + " ../BIM.GLTF"),
-                        ("lib/../../mcp/Bim.Gltf.dll", "runtime " + mcpTarget + " escaping path lib/../../mcp/Bim.Gltf.dll", "runtime " + mcpTarget + " lib/../../mcp/Bim.Gltf.dll"),
-                        ("..\\other\\Other.dll", "runtime " + mcpTarget + " escaping path ..\\other\\Other.dll", ""),
+                        ("../BIM.GLTF", "runtime " + mcpTarget + " escaping path ../BIM.GLTF above deps base mcp/", "runtime " + mcpTarget + " ../BIM.GLTF"),
+                        ("lib/../../mcp/Bim.Gltf.dll", "runtime " + mcpTarget + " escaping path lib/../../mcp/Bim.Gltf.dll above deps base mcp/", "runtime " + mcpTarget + " lib/../../mcp/Bim.Gltf.dll"),
+                        ("..\\other\\Other.dll", "runtime " + mcpTarget + " escaping path ..\\other\\Other.dll above deps base mcp/", ""),
                         ("lib/net8.0/../net8.0/Other.dll", "", ""),
                         ("lib/net8.0/Bim.Gltf", "", "runtime " + mcpTarget + " lib/net8.0/Bim.Gltf"),
                     })
@@ -916,10 +956,10 @@ internal static class PackageLayoutPackTests
                     // path and a Bim.Gltf one a Bim.Gltf match, each named by its kind; other names inside mcp/ are neither.
                     foreach (var (kind, asset, escapingExpected, gltfExpected) in new[]
                     {
-                        ("native", "../libother.so", "native " + mcpTarget + " escaping path ../libother.so", ""),
+                        ("native", "../libother.so", "native " + mcpTarget + " escaping path ../libother.so above deps base mcp/", ""),
                         ("native", "runtimes/any/native/Bim.Gltf.dll", "", "native " + mcpTarget + " runtimes/any/native/Bim.Gltf.dll"),
-                        ("native", "lib/../../BIM.GLTF", "native " + mcpTarget + " escaping path lib/../../BIM.GLTF", "native " + mcpTarget + " lib/../../BIM.GLTF"),
-                        ("resources", "../de/Bim.Gltf.resources.dll", "resources " + mcpTarget + " escaping path ../de/Bim.Gltf.resources.dll", "resources " + mcpTarget + " ../de/Bim.Gltf.resources.dll"),
+                        ("native", "lib/../../BIM.GLTF", "native " + mcpTarget + " escaping path lib/../../BIM.GLTF above deps base mcp/", "native " + mcpTarget + " lib/../../BIM.GLTF"),
+                        ("resources", "../de/Bim.Gltf.resources.dll", "resources " + mcpTarget + " escaping path ../de/Bim.Gltf.resources.dll above deps base mcp/", "resources " + mcpTarget + " ../de/Bim.Gltf.resources.dll"),
                         ("resources", "de/Bim.Gltf.resources.dll", "", "resources " + mcpTarget + " de/Bim.Gltf.resources.dll"),
                         ("resources", "de/Other.resources.dll", "", ""),
                     })
@@ -931,6 +971,27 @@ internal static class PackageLayoutPackTests
                         var gltfFound = GltfInDeps(depsCopy);
                         check(escapingFound is not null && string.Join("|", escapingFound) == escapingExpected && gltfFound is not null && string.Join("|", gltfFound) == gltfExpected,
                             "P4-34: self-test: a planted " + kind + " asset " + asset + " in mcp/Bim.Mcp.deps.json reads escaping '" + escapingExpected + "' and Bim.Gltf '" + gltfExpected + "'",
+                            "escaping " + Missing(escapingFound, "deps") + " Bim.Gltf " + Missing(gltfFound, "deps"));
+                    }
+                    // P4-35: runtimeTargets and compile assets are read like runtime assets (an escaping one names the deps base
+                    // mcp/, a Bim.Gltf one is a Bim.Gltf match, each named by its kind); other names inside mcp/ are neither.
+                    foreach (var (kind, asset, escapingExpected, gltfExpected) in new[]
+                    {
+                        ("runtimeTargets", "../runtimes/linux-x64/native/libother.so", "runtimeTargets " + mcpTarget + " escaping path ../runtimes/linux-x64/native/libother.so above deps base mcp/", ""),
+                        ("runtimeTargets", "runtimes/win/lib/net8.0/Bim.Gltf.dll", "", "runtimeTargets " + mcpTarget + " runtimes/win/lib/net8.0/Bim.Gltf.dll"),
+                        ("runtimeTargets", "runtimes/../../BIM.GLTF", "runtimeTargets " + mcpTarget + " escaping path runtimes/../../BIM.GLTF above deps base mcp/", "runtimeTargets " + mcpTarget + " runtimes/../../BIM.GLTF"),
+                        ("compile", "../ref/Other.dll", "compile " + mcpTarget + " escaping path ../ref/Other.dll above deps base mcp/", ""),
+                        ("compile", "ref/net8.0/Bim.Gltf.dll", "", "compile " + mcpTarget + " ref/net8.0/Bim.Gltf.dll"),
+                        ("compile", "lib/net8.0/Other.dll", "", ""),
+                    })
+                    {
+                        var edited = (JsonObject)depsNode!.DeepClone();
+                        Entry(edited)[kind] = new JsonObject { [asset] = kind == "runtimeTargets" ? new JsonObject { ["rid"] = "linux-x64", ["assetType"] = "native" } : new JsonObject() };
+                        File.WriteAllText(depsCopy, edited.ToJsonString(), new UTF8Encoding(false));
+                        var escapingFound = EscapingInDeps(depsCopy);
+                        var gltfFound = GltfInDeps(depsCopy);
+                        check(escapingFound is not null && string.Join("|", escapingFound) == escapingExpected && gltfFound is not null && string.Join("|", gltfFound) == gltfExpected,
+                            "P4-35: self-test: a planted " + kind + " asset " + asset + " in mcp/Bim.Mcp.deps.json reads escaping '" + escapingExpected + "' and Bim.Gltf '" + gltfExpected + "'",
                             "escaping " + Missing(escapingFound, "deps") + " Bim.Gltf " + Missing(gltfFound, "deps"));
                     }
                     File.WriteAllText(depsCopy, "{");
@@ -968,8 +1029,8 @@ internal static class PackageLayoutPackTests
                     foreach (var planted in new Exception[] { new IOException("planted: the folder is in use"), new UnauthorizedAccessException("planted: access denied") })
                     {
                         var failure = RemoveCopy(copy, _ => throw planted);
-                        check(failure == "P4-34: cleanup failed: " + copy + ": " + planted.GetType().Name + ": " + planted.Message && Directory.Exists(copy),
-                            "P4-34: self-test: a planted " + planted.GetType().Name + " while removing the layout copy is a named cleanup failure (not swallowed)", failure ?? "<swallowed>");
+                        check(failure == CleanupFailed + copy + ": " + planted.GetType().Name + ": " + planted.Message && Directory.Exists(copy),
+                            "P4-34/P4-35: self-test: a planted " + planted.GetType().Name + " while removing the layout copy is a named cleanup failure with the shared prefix '" + CleanupFailed + "' (not swallowed)", failure ?? "<swallowed>");
                     }
                     var absent = RemoveCopy(Path.Combine(caseRoot, "p4-34-absent-copy"), _ => throw new IOException("planted: never called"));
                     check(absent is null, "P4-34: self-test: an absent layout copy records no cleanup failure", absent ?? "");

@@ -1950,8 +1950,11 @@ try {
         # P4-33: every runtime asset name in a deps.json (any target entry) whose .. climbs above the deps base (the folder
         # holding the deps.json, mcp/ for Bim.Mcp.deps.json: asset paths are relative to it), as a named escaping path whatever
         # its file name (an escaping Bim.Gltf asset is also a Bim.Gltf match); $null when unreadable. P4-34: native and
-        # resources assets too ("<kind> <entry> escaping path <asset>").
+        # resources assets too; P4-35: runtimeTargets and compile, and the item names the deps base
+        # ("<kind> <entry> escaping path <asset> above deps base mcp/").
         function Get-P433DepsEscaping([string]$File) {
+            $depsBase = [IO.Path]::GetFileName([IO.Path]::GetDirectoryName($File)) + '/'
+
             try { $deps = [IO.File]::ReadAllText($File) | ConvertFrom-Json -NoEnumerate } catch { return $null }
             if (!(Test-P431Object $deps) -or $null -eq $deps.PSObject.Properties['libraries'] -or !(Test-P431Object $deps.libraries)) { return $null }
             $escaping = [Collections.Generic.List[string]]::new()
@@ -1960,10 +1963,10 @@ try {
                     if (!(Test-P431Object $target.Value)) { continue }
                     foreach ($entry in $target.Value.PSObject.Properties) {
                         if (!(Test-P431Object $entry.Value)) { continue }
-                        foreach ($kind in 'runtime', 'native', 'resources') {
+                        foreach ($kind in 'runtime', 'native', 'resources', 'runtimeTargets', 'compile') {
                             $assets = $entry.Value.PSObject.Properties[$kind]
                             if ($null -eq $assets -or !(Test-P431Object $assets.Value)) { continue }
-                            foreach ($asset in $assets.Value.PSObject.Properties) { if ($null -eq (ConvertTo-P431Path $asset.Name)) { $escaping.Add("$kind $($entry.Name) escaping path $($asset.Name)") } }
+                            foreach ($asset in $assets.Value.PSObject.Properties) { if ($null -eq (ConvertTo-P431Path $asset.Name)) { $escaping.Add("$kind $($entry.Name) escaping path $($asset.Name) above deps base $depsBase") } }
                         }
                     }
                 }
@@ -1981,6 +1984,33 @@ try {
         # "P4-33: cleanup failed: P4-31: ..." (not only a cleanup warning); $Remove stands in for the remover in the self-test.
         function Remove-P434LayoutCopy($Into, [string]$Path, [scriptblock]$Remove) {
             Add-P433CleanupFailure $Into 'P4-31' $Path $Remove
+        }
+        # P4-35: the C# cleanup-failed prefix parity: $CsText (tests/cli/PackageLayoutPackTests.cs) must declare
+        # const string CleanupFailed = "<prefix>"; equal to this script's prefix, and hold no other "...cleanup failed: " literal.
+        function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
+            $problems = [Collections.Generic.List[string]]::new()
+            $declared = @([regex]::Matches($CsText, 'const string CleanupFailed = "([^"]*)";'))
+            if ($declared.Count -ne 1) { $problems.Add("$($declared.Count) CleanupFailed declarations (want 1)") }
+            elseif ($declared[0].Groups[1].Value -cne $Prefix) { $problems.Add("C# CleanupFailed '$($declared[0].Groups[1].Value)' differs from the ps1 prefix '$Prefix'") }
+            foreach ($literal in [regex]::Matches($CsText, '"[^"\r\n]*cleanup failed: [^"\r\n]*"')) {
+                if ($literal.Value -cne ('"' + $Prefix + '"')) { $problems.Add("other cleanup-failed literal $($literal.Value)") }
+            }
+            return , $problems
+        }
+        # P4-35: the P4-31 layout copy finally pin on the PowerShell AST of script text (so reformatting, comments and string
+        # literals do not matter): "finally <n> bare <m>", n = finally blocks calling Remove-P434LayoutCopy with the
+        # variables failures and p431Copy, m = Remove-PackageCaseDirectory commands whose label is the constant P4-31.
+        function Get-P435FinallyPin([string]$Text) {
+            $parseErrors = $null
+            $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$parseErrors)
+            if ($parseErrors.Count) { return "unparsable: $($parseErrors[0].Message)" }
+            $isVariable = { param($Element, [string]$Name) $Element -is [Management.Automation.Language.VariableExpressionAst] -and $Element.VariablePath.UserPath -eq $Name }
+            $finallyCalls = 0
+            foreach ($try in $ast.FindAll({ param($n) $n -is [Management.Automation.Language.TryStatementAst] -and $null -ne $n.Finally }, $true)) {
+                $finallyCalls += @($try.Finally.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-P434LayoutCopy' -and $n.CommandElements.Count -eq 3 -and (& $isVariable $n.CommandElements[1] 'failures') -and (& $isVariable $n.CommandElements[2] 'p431Copy') }, $true)).Count
+            }
+            $bare = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-PackageCaseDirectory' -and $n.CommandElements.Count -ge 2 -and $n.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.CommandElements[1].Value -ceq 'P4-31' }, $true)).Count
+            return "finally $finallyCalls bare $bare"
         }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
@@ -2000,8 +2030,8 @@ try {
             }
             return , $missing
         }
-        # Every Bim.Gltf name in a deps.json (libraries, targets entries, their dependencies and runtime, native and resources
-        # assets); $null when the
+        # Every Bim.Gltf name in a deps.json (libraries, targets entries, their dependencies and runtime, native, resources,
+        # runtimeTargets and compile assets); $null when the
         # file is missing or unreadable (no libraries object).
         function Get-P431DepsGltf([string]$File) {
             try { $deps = [IO.File]::ReadAllText($File) | ConvertFrom-Json -NoEnumerate } catch { return $null }
@@ -2019,8 +2049,8 @@ try {
                         if ($null -ne $dependencies -and (Test-P431Object $dependencies.Value)) {
                             foreach ($dependency in $dependencies.Value.PSObject.Properties) { if (& $isGltf $dependency.Name) { $found.Add("dependency $($entry.Name) -> $($dependency.Name)") } }
                         }
-                        # P4-34: native and resources assets too, each named by its kind.
-                        foreach ($kind in 'runtime', 'native', 'resources') {
+                        # P4-34: native and resources assets too (P4-35: runtimeTargets and compile), each named by its kind.
+                        foreach ($kind in 'runtime', 'native', 'resources', 'runtimeTargets', 'compile') {
                             $assets = $entry.Value.PSObject.Properties[$kind]
                             if ($null -eq $assets -or !(Test-P431Object $assets.Value)) { continue }
                             foreach ($asset in $assets.Value.PSObject.Properties) {
@@ -2074,9 +2104,9 @@ try {
         $p432Escaping = Get-P432Escaping $outA
         Assert ($p432Escaping.Count -eq 0) "P4-32: no sbom.json or manifest.json path of release A climbs above its root (an escaping .. is a named failure, not clamped): $(Format-P431List $p432Escaping)"
         $p433McpEscaping = Get-P433DepsEscaping (Join-Path $outA 'mcp/Bim.Mcp.deps.json')
-        Assert ($null -ne $p433McpEscaping -and $p433McpEscaping.Count -eq 0) "P4-33/P4-34: no runtime, native or resources asset of release A's mcp/Bim.Mcp.deps.json climbs above its deps base mcp/: $(if ($null -eq $p433McpEscaping) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p433McpEscaping })"
+        Assert ($null -ne $p433McpEscaping -and $p433McpEscaping.Count -eq 0) "P4-33..P4-35: no runtime, native, resources, runtimeTargets or compile asset of release A's mcp/Bim.Mcp.deps.json climbs above its deps base mcp/: $(if ($null -eq $p433McpEscaping) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p433McpEscaping })"
         $p431McpDeps = Get-P431DepsGltf (Join-Path $outA 'mcp/Bim.Mcp.deps.json')
-        Assert ($null -ne $p431McpDeps -and $p431McpDeps.Count -eq 0) "P4-31: release A's mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime, native or resources asset: $(if ($null -eq $p431McpDeps) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p431McpDeps })"
+        Assert ($null -ne $p431McpDeps -and $p431McpDeps.Count -eq 0) "P4-31: release A's mcp/Bim.Mcp.deps.json names no Bim.Gltf library, target, dependency or runtime, native, resources, runtimeTargets or compile asset: $(if ($null -eq $p431McpDeps) { '<mcp/Bim.Mcp.deps.json missing or unreadable>' } else { Format-P431List $p431McpDeps })"
         $p431CliDeps = Get-P431DepsGltf (Join-Path $outA 'cli/Bim.Cli.deps.json')
         Assert ($null -ne $p431CliDeps -and @($p431CliDeps | Where-Object { $_.StartsWith('library Bim.Gltf/', [StringComparison]::Ordinal) }).Count -ge 1) "P4-31: positive control: release A's cli/Bim.Cli.deps.json names the Bim.Gltf library: $(if ($null -eq $p431CliDeps) { '<cli/Bim.Cli.deps.json missing or unreadable>' } else { Format-P431List $p431CliDeps })"
 
@@ -2115,7 +2145,7 @@ try {
             Assert ($p433Into.Count -eq 0) "P4-33 self-test: a removed or absent case folder records no failure: $(Format-P431List $p433Into)"
         } catch { $failures.Add("P4-33 cleanup self-test threw: $($_.Exception.Message)") }
         # P4-34 self-test: the P4-31 layout copy cleanup records a left-behind folder as the named P4-33 cleanup failure
-        # (stand-in remover); a removed one adds nothing; this script's P4-31 finally calls it (and no bare P4-31 remover).
+        # (stand-in remover); a removed one adds nothing (P4-35 pins that this script's P4-31 finally calls it, on the AST).
         try {
             $p434Into = [Collections.Generic.List[string]]::new()
             Remove-P434LayoutCopy $p434Into '/p4-34/left' { param($l, $p) "$($l): a case folder could not be removed and is left behind: $p" }
@@ -2123,11 +2153,30 @@ try {
             $p434Into.Clear()
             Remove-P434LayoutCopy $p434Into '/p4-34/gone' { param($l, $p) $null }
             Assert ($p434Into.Count -eq 0) "P4-34 self-test: a removed P4-31 layout copy records no failure: $(Format-P431List $p434Into)"
-            $p434Source = @([IO.File]::ReadAllLines($PSCommandPath))
-            $p434Finally = @($p434Source | Where-Object { $_ -cmatch '^\s*\} finally \{ Remove-P434LayoutCopy \$failures \$p431Copy \}\s*$' }).Count
-            $p434Bare = @($p434Source | Where-Object { $_ -cmatch "Remove-PackageCaseDirectory\s+'P4-31'" }).Count
-            Assert ($p434Finally -eq 1 -and $p434Bare -eq 0) "P4-34 self-test: the P4-31 layout copy finally goes through Remove-P434LayoutCopy (found $p434Finally) and no bare P4-31 Remove-PackageCaseDirectory call remains (found $p434Bare)"
         } catch { $failures.Add("P4-34 cleanup self-test threw: $($_.Exception.Message)") }
+        # P4-35 self-test: the C# McpWithoutGltf/build-tree cleanup failures share this script's prefix (a planted other
+        # prefix is caught); the finally pin finds a reformatted finally and a planted bare remover, and this script's own.
+        try {
+            $p435Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p435Into 'P4-35' '/p4-35/left' { param($l, $p) 'W' }
+            $p435Prefix = if ($p435Into.Count -eq 1 -and $p435Into[0].EndsWith('W')) { $p435Into[0].Substring(0, $p435Into[0].Length - 1) } else { '<none>' }
+            $p435CsPath = Join-Path $root 'tests/cli/PackageLayoutPackTests.cs'
+            $p435Cs = [IO.File]::ReadAllText($p435CsPath)
+            $p435Mismatch = Get-P435PrefixMismatch $p435Cs $p435Prefix
+            Assert ($p435Prefix -ceq 'P4-33: cleanup failed: ' -and $p435Mismatch.Count -eq 0) "P4-35: the C# cleanup failures (tests/cli/PackageLayoutPackTests.cs CleanupFailed) share this script's prefix '$p435Prefix': $(Format-P431List $p435Mismatch)"
+            $p435Planted = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-33: cleanup failed: "; return "P4-34: cleanup failed: " + path;') 'P4-33: cleanup failed: '
+            Assert (($p435Planted -join '|') -ceq 'other cleanup-failed literal "P4-34: cleanup failed: "') "P4-35 self-test: a planted other C# cleanup-failed prefix is caught: $(Format-P431List $p435Planted)"
+            $p435Other = Get-P435PrefixMismatch ('const string CleanupFailed = "P4-34: cleanup failed: ";') 'P4-33: cleanup failed: '
+            Assert ($p435Other.Count -ge 1 -and $p435Other[0].StartsWith("C# CleanupFailed 'P4-34: cleanup failed: ' differs")) "P4-35 self-test: a planted different C# CleanupFailed is caught: $(Format-P431List $p435Other)"
+            $p435Reformatted = @('try { Copy-P431Layout $outA $p431Copy }', 'finally', '{', '    Remove-P434LayoutCopy   $failures `', '        $p431Copy', '}') -join "`n"
+            $p435Pin = Get-P435FinallyPin $p435Reformatted
+            Assert ($p435Pin -ceq 'finally 1 bare 0') "P4-35 self-test: a reformatted P4-31 finally (own lines, extra spaces, line continuation) is still found: $p435Pin (want finally 1 bare 0)"
+            $p435Mutant = @('try { Copy-P431Layout $outA $p431Copy }', 'finally { Remove-PackageCaseDirectory ''P4-31'' $p431Copy }') -join "`n"
+            $p435MutantPin = Get-P435FinallyPin $p435Mutant
+            Assert ($p435MutantPin -ceq 'finally 0 bare 1') "P4-35 self-test: a planted bare P4-31 remover in the finally is caught: $p435MutantPin (want finally 0 bare 1)"
+            $p435Own = Get-P435FinallyPin ([IO.File]::ReadAllText($PSCommandPath))
+            Assert ($p435Own -ceq 'finally 1 bare 0') "P4-35: this script's P4-31 layout copy finally goes through Remove-P434LayoutCopy and no bare P4-31 remover remains: $p435Own (want finally 1 bare 0)"
+        } catch { $failures.Add("P4-35 cleanup prefix/finally pin self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
@@ -2211,9 +2260,9 @@ try {
                 # P4-33: an escaping runtime asset is a named escaping path (a Bim.Gltf one is also a Bim.Gltf match); a .. that
                 # stays inside the root and a plain asset are not escaping.
                 $p433Plants = @(
-                    @{ Asset = '../BIM.GLTF'; Escaping = "runtime $mcpTarget escaping path ../BIM.GLTF"; Gltf = "runtime $mcpTarget ../BIM.GLTF" },
-                    @{ Asset = 'lib/../../mcp/Bim.Gltf.dll'; Escaping = "runtime $mcpTarget escaping path lib/../../mcp/Bim.Gltf.dll"; Gltf = "runtime $mcpTarget lib/../../mcp/Bim.Gltf.dll" },
-                    @{ Asset = '..\other\Other.dll'; Escaping = "runtime $mcpTarget escaping path ..\other\Other.dll"; Gltf = '' },
+                    @{ Asset = '../BIM.GLTF'; Escaping = "runtime $mcpTarget escaping path ../BIM.GLTF above deps base mcp/"; Gltf = "runtime $mcpTarget ../BIM.GLTF" },
+                    @{ Asset = 'lib/../../mcp/Bim.Gltf.dll'; Escaping = "runtime $mcpTarget escaping path lib/../../mcp/Bim.Gltf.dll above deps base mcp/"; Gltf = "runtime $mcpTarget lib/../../mcp/Bim.Gltf.dll" },
+                    @{ Asset = '..\other\Other.dll'; Escaping = "runtime $mcpTarget escaping path ..\other\Other.dll above deps base mcp/"; Gltf = '' },
                     @{ Asset = 'lib/net8.0/../net8.0/Other.dll'; Escaping = ''; Gltf = '' },
                     @{ Asset = 'lib/net8.0/Bim.Gltf'; Escaping = ''; Gltf = "runtime $mcpTarget lib/net8.0/Bim.Gltf" }
                 )
@@ -2228,10 +2277,10 @@ try {
                 # P4-34: native and resources assets are read like runtime assets: an escaping one is a named escaping path and a
                 # Bim.Gltf one a Bim.Gltf match, each named by its kind; other names inside mcp/ are neither.
                 $p434Plants = @(
-                    @{ Kind = 'native'; Asset = '../libother.so'; Escaping = "native $mcpTarget escaping path ../libother.so"; Gltf = '' },
+                    @{ Kind = 'native'; Asset = '../libother.so'; Escaping = "native $mcpTarget escaping path ../libother.so above deps base mcp/"; Gltf = '' },
                     @{ Kind = 'native'; Asset = 'runtimes/any/native/Bim.Gltf.dll'; Escaping = ''; Gltf = "native $mcpTarget runtimes/any/native/Bim.Gltf.dll" },
-                    @{ Kind = 'native'; Asset = 'lib/../../BIM.GLTF'; Escaping = "native $mcpTarget escaping path lib/../../BIM.GLTF"; Gltf = "native $mcpTarget lib/../../BIM.GLTF" },
-                    @{ Kind = 'resources'; Asset = '../de/Bim.Gltf.resources.dll'; Escaping = "resources $mcpTarget escaping path ../de/Bim.Gltf.resources.dll"; Gltf = "resources $mcpTarget ../de/Bim.Gltf.resources.dll" },
+                    @{ Kind = 'native'; Asset = 'lib/../../BIM.GLTF'; Escaping = "native $mcpTarget escaping path lib/../../BIM.GLTF above deps base mcp/"; Gltf = "native $mcpTarget lib/../../BIM.GLTF" },
+                    @{ Kind = 'resources'; Asset = '../de/Bim.Gltf.resources.dll'; Escaping = "resources $mcpTarget escaping path ../de/Bim.Gltf.resources.dll above deps base mcp/"; Gltf = "resources $mcpTarget ../de/Bim.Gltf.resources.dll" },
                     @{ Kind = 'resources'; Asset = 'de/Bim.Gltf.resources.dll'; Escaping = ''; Gltf = "resources $mcpTarget de/Bim.Gltf.resources.dll" },
                     @{ Kind = 'resources'; Asset = 'de/Other.resources.dll'; Escaping = ''; Gltf = '' }
                 )
@@ -2242,6 +2291,25 @@ try {
                     Write-P431Json $depsCopy $edited
                     $escapingFound = Get-P433DepsEscaping $depsCopy; $gltfFound = Get-P431DepsGltf $depsCopy
                     Assert ($null -ne $escapingFound -and ($escapingFound -join '|') -ceq $p434Plant.Escaping -and $null -ne $gltfFound -and ($gltfFound -join '|') -ceq $p434Plant.Gltf) "P4-34 self-test: a planted $($p434Plant.Kind) asset $($p434Plant.Asset) in mcp/Bim.Mcp.deps.json reads escaping '$($p434Plant.Escaping)' and Bim.Gltf '$($p434Plant.Gltf)': escaping $(if ($null -eq $escapingFound) { '<unreadable>' } else { Format-P431List $escapingFound }) Bim.Gltf $(if ($null -eq $gltfFound) { '<unreadable>' } else { Format-P431List $gltfFound })"
+                }
+                # P4-35: runtimeTargets and compile assets are read like runtime assets (an escaping one names the deps base mcp/,
+                # a Bim.Gltf one is a Bim.Gltf match, each named by its kind); other names inside mcp/ are neither.
+                $p435Plants = @(
+                    @{ Kind = 'runtimeTargets'; Asset = '../runtimes/linux-x64/native/libother.so'; Escaping = "runtimeTargets $mcpTarget escaping path ../runtimes/linux-x64/native/libother.so above deps base mcp/"; Gltf = '' },
+                    @{ Kind = 'runtimeTargets'; Asset = 'runtimes/win/lib/net8.0/Bim.Gltf.dll'; Escaping = ''; Gltf = "runtimeTargets $mcpTarget runtimes/win/lib/net8.0/Bim.Gltf.dll" },
+                    @{ Kind = 'runtimeTargets'; Asset = 'runtimes/../../BIM.GLTF'; Escaping = "runtimeTargets $mcpTarget escaping path runtimes/../../BIM.GLTF above deps base mcp/"; Gltf = "runtimeTargets $mcpTarget runtimes/../../BIM.GLTF" },
+                    @{ Kind = 'compile'; Asset = '../ref/Other.dll'; Escaping = "compile $mcpTarget escaping path ../ref/Other.dll above deps base mcp/"; Gltf = '' },
+                    @{ Kind = 'compile'; Asset = 'ref/net8.0/Bim.Gltf.dll'; Escaping = ''; Gltf = "compile $mcpTarget ref/net8.0/Bim.Gltf.dll" },
+                    @{ Kind = 'compile'; Asset = 'lib/net8.0/Other.dll'; Escaping = ''; Gltf = '' }
+                )
+                foreach ($p435Plant in $p435Plants) {
+                    $edited = $depsText | ConvertFrom-Json -NoEnumerate
+                    $editedTarget = @($edited.targets.PSObject.Properties | Where-Object { Test-P431Object $_.Value }) | Select-Object -First 1
+                    $p435Value = if ($p435Plant.Kind -ceq 'runtimeTargets') { [pscustomobject]@{ rid = 'linux-x64'; assetType = 'native' } } else { [pscustomobject]@{} }
+                    $editedTarget.Value.$mcpTarget | Add-Member -NotePropertyName $p435Plant.Kind -NotePropertyValue ([pscustomobject]@{ $p435Plant.Asset = $p435Value }) -Force
+                    Write-P431Json $depsCopy $edited
+                    $escapingFound = Get-P433DepsEscaping $depsCopy; $gltfFound = Get-P431DepsGltf $depsCopy
+                    Assert ($null -ne $escapingFound -and ($escapingFound -join '|') -ceq $p435Plant.Escaping -and $null -ne $gltfFound -and ($gltfFound -join '|') -ceq $p435Plant.Gltf) "P4-35 self-test: a planted $($p435Plant.Kind) asset $($p435Plant.Asset) in mcp/Bim.Mcp.deps.json reads escaping '$($p435Plant.Escaping)' and Bim.Gltf '$($p435Plant.Gltf)': escaping $(if ($null -eq $escapingFound) { '<unreadable>' } else { Format-P431List $escapingFound }) Bim.Gltf $(if ($null -eq $gltfFound) { '<unreadable>' } else { Format-P431List $gltfFound })"
                 }
                 [IO.File]::WriteAllText($depsCopy, '{')
                 Assert ($null -eq (Get-P431DepsGltf $depsCopy)) 'P4-31 self-test: a malformed mcp/Bim.Mcp.deps.json is unreadable (a named failure, fail-closed)'
