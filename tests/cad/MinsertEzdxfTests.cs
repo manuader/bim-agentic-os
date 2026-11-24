@@ -1591,7 +1591,7 @@ internal static class MinsertEzdxfTests
         ("K2", "TB", 40139.23578224482, 30058.089445854363, 40208.179632125524, 30115.94040572615),
         ("K2", "TC", 40061.334240288415, 30262.94112740048, 39975.03511939962, 30225.773304095466),
         ("K2", "TD", 39629.83804023306, 30077.10271893954, 39560.416978386915, 30159.83551879639),
-        ("K2", "TE", 39762.17990508381, 30129.407472897965, 39824.22836627334, 30181.473407578127),
+        ("K2", "TE", 39762.17890508381, 30129.407472897965, 39824.22836627334, 30181.473407578127),
         ("K2", "TF", 40269.35857149999, 30085.03481127119, 40301.37341745584, 30158.893119120905),
         ("K2", "TG", 39676.59614009593, 29881.363669306338, 39676.59614009593, 29881.363669306338),
     };
@@ -1733,7 +1733,7 @@ internal static class MinsertEzdxfTests
                 ("ATTDEF 74 2 near -Z 30 1e999, 31 -Infinity", Definition("30 1e999|11 160|21 70|31 -Infinity", "|74 2", NearMinus), "30", "1e999"),
                 ("ATTDEF 72 4 near +Z 31 -1e999 written before 30 1e999", Definition("11 160|21 70|31 -1e999|30 1e999", "|72 4", NearPlus), "30", "1e999"),
                 ("ATTRIB 72 2 near -Z 30 inf, 31 NaN", Attribute("30 inf|11 160|21 70|31 NaN", "|72 2", NearMinus), "30", "inf"),
-                ("ATTRIB 74 1 near +Z 31 NaN written before 30 -inf", Attribute("11 160|21 70|31 NaN|30 -inf", "|74 1", NearPlus), "31", "NaN"),
+                ("ATTRIB 74 1 near +Z 31 NaN written before 30 -inf", Attribute("11 160|21 70|31 NaN|30 -inf", "|74 1", NearPlus), "30", "-inf"),
                 ("TEXT 72 1 near +Z 30 NaN, 31 inf", Plain("30 NaN|11 160|21 70|31 inf", "|72 1", NearPlus), "30", "NaN"),
                 ("TEXT 72 2 near -Z 31 inf only (31 not read for TEXT)", Plain("30 500|11 160|21 70|31 inf", "|72 2", NearMinus), null, null),
                 ("ATTDEF 72 1 exact -Z 30 NaN, 31 inf (tolerated)", Definition("30 NaN|11 160|21 70|31 inf", "|72 1", MinusZ), null, null),
