@@ -2199,8 +2199,14 @@ static class MirrorDriftLoopChecks
         public string[] All => new[] { Kept, Precondition, SelfTest, Raised, Lowered };
     }
 
+    // P2-43: the kept name says the requested value is the declared ratio of the default only when it is; otherwise it
+    // shows the requested value alone.
+    static string MacRequestedText(MacSendBufferCounts c) => c.RequestedLowered == (long)c.LoweredDefault * LoweredNumerator / LoweredDenominator
+        ? c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault
+        : c.RequestedLowered.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
     static MacCheckNames MacNames(MacSendBufferCounts c) => new(
-        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault + ")",
+        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + MacRequestedText(c) + ")",
         MacPreconditionPrefix + "each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + c.Chunk + "-byte piece, as are the " + c.Read + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer",
         MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + 2L * c.Read + ") with queued == lowered (" + c.Lowered + ")",
         "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue",
