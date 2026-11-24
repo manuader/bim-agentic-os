@@ -868,23 +868,25 @@ internal static class DeletedCwdPathTests
     static readonly string[] Tools41 = { "AuditVerifyTool", "DiffIntentTool", "DocRealizedTool", "DocUpdateTool", "GeneratePrototypesTool", "GenerateTypologyTool", "PlanLayoutsTool", "SkillLockTool" };
     static readonly string[] Filter41 = { "ArgumentException", "NotSupportedException", "PathTooLongException", "FileNotFoundException", "UnauthorizedAccessException" };
 
-    // Null when the source's PathProblem GetFullPath catch takes every Filter41 type, else what is wrong.
+    // Null when the source's PathProblem GetFullPath catch takes every Filter41 type, else what is wrong. P10-43: the reader
+    // does not depend on the layout: the try and the catch filter may be split over lines and indented any way (only
+    // whitespace and // comment lines may stand between the try and its catch); the filter must have the shape
+    // catch (Exception <v>) when (<v> is A or B or ...), checked by a reformat self-test in PathProblemFilters41.
+    static readonly System.Text.RegularExpressions.Regex Try41 = new(@"try\s*\{\s*Path\.GetFullPath\(\s*path\s*\)\s*;\s*\}", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    static readonly System.Text.RegularExpressions.Regex Catch41 = new(
+        @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     static string? FilterProblem41(string source)
     {
-        const string Try = "try { Path.GetFullPath(path); }";
-        var at = source.IndexOf(Try, StringComparison.Ordinal);
-        if (at < 0 || source.IndexOf(Try, at + Try.Length, StringComparison.Ordinal) >= 0) return "not exactly one '" + Try + "'";
+        var tries = Try41.Matches(source);
+        if (tries.Count != 1) return "not exactly one 'try { Path.GetFullPath(path); }' (any layout): " + tries.Count.ToString(CultureInfo.InvariantCulture);
+        var at = tries[0].Index;
         var method = source.LastIndexOf(" PathProblem(", at, StringComparison.Ordinal);
         if (method < 0 || source[method..at].Contains("\n    }", StringComparison.Ordinal)) return "the GetFullPath try is not inside PathProblem";
-        const string Catch = "catch (Exception error) when (error is ";
-        var catchAt = source.IndexOf(Catch, at, StringComparison.Ordinal);
-        if (catchAt < 0) return "no catch filter follows the GetFullPath try";
-        var between = source[(at + Try.Length)..catchAt].Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith("//", StringComparison.Ordinal)).ToArray();
-        if (between.Length > 0) return "code between the GetFullPath try and its catch: " + string.Join(" ", between);
-        var close = source.IndexOf(") {", catchAt, StringComparison.Ordinal);
-        var lineEnd = source.IndexOf('\n', catchAt);
-        if (close < 0 || (lineEnd >= 0 && close > lineEnd)) return "the catch filter is not on one line";
-        var types = source[(catchAt + Catch.Length)..close].Split(" or ", StringSplitOptions.TrimEntries);
+        var filter = Catch41.Match(source, at + tries[0].Length);
+        if (!filter.Success) return "no 'catch (Exception e) when (e is A or B ...)' filter directly follows the GetFullPath try (only whitespace and // comment lines may stand between)";
+        var types = System.Text.RegularExpressions.Regex.Split(filter.Groups["types"].Value, @"\s+or\s+");
         var missing = Filter41.Where(type => !types.Contains(type, StringComparer.Ordinal)).ToArray();
         return missing.Length == 0 ? null : "the filter (" + string.Join(" or ", types) + ") lacks " + string.Join(", ", missing);
     }
