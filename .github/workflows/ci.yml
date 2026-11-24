@@ -170,14 +170,29 @@ jobs:
           dotnet build tests/mirror-journal --configuration Release --warnaserror
           dotnet run --project tests/mirror-journal --configuration Release --no-build -- --write-progress-only
       - name: MCP generate_typology stdio section 9 alone (macOS, P3-38)
+        id: mcp-section-9
         if: runner.os == 'macOS'
         run: |
           set -o pipefail
+          # P3-40: each project builds once: tests/mcp links the server sources (no ProjectReference to interfaces/mcp),
+          # and section 9 launches the built interfaces/mcp Bim.Mcp.dll.
           dotnet build interfaces/mcp --configuration Release --warnaserror
           dotnet build tests/mcp --configuration Release --warnaserror
           tests_dll="$PWD/tests/mcp/bin/Release/net8.0/Bim.Mcp.Tests.dll"
-          BIM_TEST_P3_38_SECTION=9 DOTNET_STARTUP_HOOKS="$tests_dll" dotnet "$tests_dll" | tee "$RUNNER_TEMP/mcp-section-9.txt"
-          grep -q '"section":9' "$RUNNER_TEMP/mcp-section-9.txt"
+          out="$RUNNER_TEMP/mcp-section-9.txt"
+          BIM_TEST_P3_38_SECTION=9 DOTNET_STARTUP_HOOKS="$tests_dll" dotnet "$tests_dll" | tee "$out"
+          grep -q '"section":9' "$out"
+          # P3-40: the PASS lines stay readable without the log: a notice per measured fact, the step summary, the artifact.
+          echo "::notice title=mcp-section-9-macos::$(grep -c '^PASS ' "$out") PASS lines; $(tail -n 1 "$out")"
+          grep -E '^PASS .*(P3-40 measured pipe capacity|closed pipe.s write did not throw)' "$out" | cut -c1-900 | sed 's/^/::notice title=mcp-section-9-macos::/'
+          { echo '### MCP generate_typology section 9 (macOS)'; echo '```'; grep '^PASS ' "$out"; tail -n 1 "$out"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Keep the MCP section 9 output (macOS, P3-40)
+        if: always() && runner.os == 'macOS' && steps.mcp-section-9.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcp-section-9-macos
+          path: ${{ runner.temp }}/mcp-section-9.txt
+          if-no-files-found: error
   native-build:
     runs-on: windows-latest
     steps:
