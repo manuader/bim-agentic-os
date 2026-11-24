@@ -28,6 +28,9 @@ using Bim.Core;
 //   P1-43: Run ends with one summary line listing every FAIL name (::warning::, beyond the 10 error annotations a step
 //      shows); the Windows D2/B measured runtime is declared once and a different one is a named ::notice::; MemberBody
 //      reads its head at bracket depth 0 (a parameter list or attribute may hold ';', '=>', '{'); {x::} pinned as measured.
+//   P1-44: StripCode, MemberBody and the RevitDeadlineTransport argument parser live once in DeadlineSourceScan.cs
+//      (linked by tests/mcp); 2g's McpServer comment and 3a's construction are read inside RevitCallAll's own body; the
+//      2i control location names a missing git apart from 'not gitignored' and resolves symbolic links.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -954,164 +957,9 @@ internal static class RevitCommandDeadlineTests
     // connectThenRead( call. McpServer's deadline comment says the read is measured after the connect on every
     // real-pipe page. Mutation self-test: the same checker flags a source with any legacy seam put back, and ignores a
     // seam named only in a comment.
-    // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
-    // P1-37's StripCommentsAndLiterals). Comments are blanked and every literal is reduced to its quotes, newlines kept:
-    // regular, verbatim (@"..", @$, $@), raw ("""..""", any quote run and $ count) and char literals. The holes of an
-    // interpolated literal are code and are kept, with any nested literal, comment or brace read the same way, so a
-    // // or a quote inside a hole neither starts a comment nor ends the literal; a format text (':' at hole depth 0) is
-    // literal text. P1-41: '::' (the global:: alias qualifier) is code, never a format colon.
-    static string StripCode(string source)
-    {
-        var text = new StringBuilder(source.Length);
-        var i = 0;
-        StripCodeInto(source, ref i, text, 0);
-        return text.ToString();
-    }
-
-    // Copies code from s[i..] into text. holeBraces > 0: inside an interpolation hole, returns past the run of holeBraces
-    // '}' that closes it at depth 0 (the caller writes the hole's braces).
-    static void StripCodeInto(string s, ref int i, StringBuilder text, int holeBraces)
-    {
-        var depth = 0;
-        void Blank(int from, int to) { for (var k = from; k < to && k < s.Length; k++) if (s[k] == '\n') text.Append('\n'); }
-        void Hole(ref int pos, int braces)
-        {
-            text.Append('{');
-            StripCodeInto(s, ref pos, text, braces);
-            text.Append('}');
-        }
-        while (i < s.Length)
-        {
-            var c = s[i];
-            var next = i + 1 < s.Length ? s[i + 1] : '\0';
-            if (c == '/' && next == '/') { while (i < s.Length && s[i] != '\n') i++; continue; }
-            if (c == '/' && next == '*')
-            {
-                var end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                var stop = end < 0 ? s.Length : end + 2;
-                Blank(i, stop);
-                text.Append(' ');
-                i = stop;
-                continue;
-            }
-            if (c == '\'')
-            {
-                var p = i + 1;
-                while (p < s.Length && s[p] != '\'' && s[p] != '\n') p += s[p] == '\\' ? 2 : 1;
-                text.Append("''");
-                i = Math.Min(s.Length, p + 1);
-                continue;
-            }
-            var at = i;
-            var dollars = 0;
-            var verbatim = false;
-            while (at < s.Length && (s[at] == '$' || s[at] == '@')) { if (s[at] == '$') dollars++; else verbatim = true; at++; }
-            if (at < s.Length && s[at] == '"')
-            {
-                var quotes = 0;
-                while (!verbatim && at + quotes < s.Length && s[at + quotes] == '"') quotes++;
-                text.Append('"');
-                var p = at + 1;
-                if (quotes == 2) p = at + 2;
-                else if (quotes >= 3)
-                {
-                    p = at + quotes;
-                    while (p < s.Length)
-                    {
-                        if (s[p] == '"')
-                        {
-                            var run = 0;
-                            while (p + run < s.Length && s[p + run] == '"') run++;
-                            p += run;
-                            if (run >= quotes) break;
-                            continue;
-                        }
-                        if (dollars > 0 && s[p] == '{')
-                        {
-                            var run = 0;
-                            while (p + run < s.Length && s[p + run] == '{') run++;
-                            p += run;
-                            if (run >= dollars) Hole(ref p, dollars);
-                            continue;
-                        }
-                        if (s[p] == '\n') text.Append('\n');
-                        p++;
-                    }
-                }
-                else
-                {
-                    while (p < s.Length)
-                    {
-                        var d = s[p];
-                        var after = p + 1 < s.Length ? s[p + 1] : '\0';
-                        if (d == '"')
-                        {
-                            if (verbatim && after == '"') { p += 2; continue; }
-                            p++;
-                            break;
-                        }
-                        if (!verbatim && d == '\\') { p += 2; continue; }
-                        if (!verbatim && d == '\n') break;
-                        if (dollars > 0 && (d == '{' || d == '}') && after == d) { p += 2; continue; }
-                        if (dollars > 0 && d == '{') { p++; Hole(ref p, 1); continue; }
-                        if (d == '\n') text.Append('\n');
-                        p++;
-                    }
-                }
-                text.Append('"');
-                i = Math.Min(s.Length, p);
-                continue;
-            }
-            if (holeBraces > 0)
-            {
-                if (c is '(' or '[' or '{') depth++;
-                else if (c is ')' or ']') depth--;
-                else if (c == '}')
-                {
-                    if (depth == 0) { i = Math.Min(s.Length, i + holeBraces); return; }
-                    depth--;
-                }
-                else if (c == ':' && depth == 0 && next != ':' && (i == 0 || s[i - 1] != ':'))
-                {
-                    while (i < s.Length && s[i] != '}' && s[i] != '\n') i++;
-                    continue;
-                }
-            }
-            text.Append(c);
-            i++;
-        }
-    }
-
-    // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
-    // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
-    // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
-    // P1-43: the head is read at bracket depth 0 only: a ';', '=>' or '{' inside the parameter list or an attribute
-    // (inside '(' .. ')' or '[' .. ']') is not the member's own end, arrow or block.
-    static string? MemberBody(string code, string signature)
-    {
-        var start = code.IndexOf(signature, StringComparison.Ordinal);
-        if (start < 0) return null;
-        var nested = 0;
-        for (var k = start; k < code.Length; k++)
-        {
-            var c = code[k];
-            if (c is '(' or '[') nested++;
-            else if (c is ')' or ']') nested--;
-            else if (nested > 0) continue;
-            else if (c == ';' || (c == '=' && k + 1 < code.Length && code[k + 1] == '>')) return null;
-            else if (c == '{')
-            {
-                var depth = 0;
-                for (var end = k; end < code.Length; end++)
-                {
-                    if (code[end] == '{') depth++;
-                    else if (code[end] == '}' && --depth == 0) return code[start..(end + 1)];
-                }
-                return null;
-            }
-        }
-        return null;
-    }
+    // P1-44: StripCode and MemberBody live once in tests/cli/DeadlineSourceScan.cs (shared with tests/mcp).
+    static string StripCode(string source) => DeadlineSourceScan.StripCode(source);
+    static string? MemberBody(string code, string signature) => DeadlineSourceScan.MemberBody(code, signature);
 
     static string[] SeamProblems(string source)
     {
@@ -1185,14 +1033,30 @@ internal static class RevitCommandDeadlineTests
     const string MeasuredPhrase = "the read is measured after the connect on every real-pipe page";
 
     // P1-44: McpServer.RevitCallAll's deadline comment: the whole-line // comments from its signature to its one
-    // RevitDeadlineTransport construction, folded into one line ("" without that body or construction).
+    // RevitDeadlineTransport construction, folded into one line ("" without that body or construction). The body and
+    // the construction are found on the StripCode output (MemberBody and the parsed construction pattern, so a signature
+    // or construction named in a comment or literal is not them); a line counts when it starts with '//' and
+    // CommentsBlanked blanks it whole (a comment, not '//' text inside a raw or verbatim literal).
     static string McpDeadlineComment(string source)
     {
-        var mcp = source.ReplaceLineEndings("\n");
-        var allStart = mcp.IndexOf("(string Text, bool IsError) RevitCallAll(", StringComparison.Ordinal);
-        var built = allStart < 0 ? -1 : mcp.IndexOf("new RevitDeadlineTransport(", allStart, StringComparison.Ordinal);
-        return built < 0 ? "" : string.Join(" ", mcp[allStart..built].Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith("//", StringComparison.Ordinal))
-            .Select(line => line.TrimStart('/').Trim()));
+        const string Signature = "(string Text, bool IsError) RevitCallAll(";
+        var raw = source.ReplaceLineEndings("\n");
+        var code = StripCode(raw);
+        var body = MemberBody(code, Signature);
+        if (body is null) return "";
+        var built = System.Text.RegularExpressions.Regex.Matches(body, DeadlineSourceScan.ConstructionPattern);
+        if (built.Count != 1) return "";
+        var first = LineOf(code, code.IndexOf(Signature, StringComparison.Ordinal));
+        var last = first + LineOf(body, built[0].Index);
+        var lines = raw.Split('\n');
+        var blanked = DeadlineSourceScan.CommentsBlanked(raw).Split('\n');
+        var said = new List<string>();
+        for (var line = first; line < last && line < lines.Length; line++)
+        {
+            var text = lines[line].Trim();
+            if (text.StartsWith("//", StringComparison.Ordinal) && blanked[line].Trim().Length == 0) said.Add(text.TrimStart('/').Trim());
+        }
+        return string.Join(" ", said);
     }
 
     // ---- 2h. P1-37: ReadReplyLine observes its abandoned read (static pin) ----
@@ -1448,12 +1312,46 @@ internal static class RevitCommandDeadlineTests
 
     // P1-42: why path is no safe place for the 2i scan control (empty: outside the repository root, or inside it only
     // under a gitignored folder, so a crash cannot leave a visible untracked file in the root).
+    // P1-44: root and path are compared with their symbolic links resolved (RealPath: a temp folder reached through a
+    // link to the root, or a root reached through a link, is still inside it); a git that cannot start is named
+    // 'git missing', apart from a path git reports as not gitignored (exit 1) and any other check-ignore failure.
     static string ControlLocationProblem(string root, string path, string gitExecutable = "git")
     {
-        var relative = Path.GetRelativePath(Path.GetFullPath(root), Path.GetFullPath(path)).Replace('\\', '/');
+        var realRoot = RealPath(root);
+        var relative = Path.GetRelativePath(realRoot, RealPath(path)).Replace('\\', '/');
         if (relative == ".." || relative.StartsWith("../", StringComparison.Ordinal) || Path.IsPathRooted(relative)) return "";
-        var ignored = GitRunWith(gitExecutable, root, new[] { "check-ignore", "-q", "--", relative });
-        return ignored.Exit == 0 ? "" : "inside the repository root and not gitignored: " + relative + " (git check-ignore exit " + N(ignored.Exit) + (ignored.Error.Length > 0 ? ", " + ignored.Error : "") + ")";
+        var ignored = GitRunWith(gitExecutable, realRoot, new[] { "check-ignore", "-q", "--", relative });
+        var error = ignored.Error.Length > 0 ? ", " + ignored.Error : "";
+        return ignored.Exit switch
+        {
+            0 => "",
+            1 => "inside the repository root and not gitignored: " + relative,
+            -1 => "git missing (" + ignored.Error + "): cannot tell whether " + relative + " inside the repository root is gitignored; " + GitRequired.TrimEnd(' ', ':'),
+            _ => "git check-ignore failed (exit " + N(ignored.Exit) + error + "): cannot tell whether " + relative + " inside the repository root is gitignored",
+        };
+    }
+
+    // P1-44: path made absolute with every symbolic link among its existing ancestors (and itself) resolved, the part
+    // that does not exist yet appended unchanged (at most 40 link hops).
+    static string RealPath(string path, int hops = 0)
+    {
+        var full = Path.GetFullPath(path);
+        var current = Path.GetPathRoot(full) ?? "";
+        var parts = full[current.Length..].Split(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }, StringSplitOptions.RemoveEmptyEntries);
+        for (var k = 0; k < parts.Length; k++)
+        {
+            var next = Path.Combine(current, parts[k]);
+            FileSystemInfo info = Directory.Exists(next) ? new DirectoryInfo(next) : new FileInfo(next);
+            string? link = null;
+            try { link = info.LinkTarget; }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            if (!info.Exists && link is null) return Path.Combine(new[] { next }.Concat(parts[(k + 1)..]).ToArray());
+            FileSystemInfo? target = null;
+            try { target = link is null || hops >= 40 ? null : info.ResolveLinkTarget(returnFinalTarget: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+            current = target is null ? next : RealPath(target.FullName, hops + 1);
+        }
+        return current;
     }
 
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
@@ -1560,69 +1458,12 @@ internal static class RevitCommandDeadlineTests
         return found;
     }
 
-    // The top-level arguments of the call whose '(' ends just before code[from]; null if it is not closed.
-    static string[]? ArgumentsAt(string code, int from)
-    {
-        var arguments = new List<string>();
-        var depth = 0;
-        for (var i = from; i < code.Length; i++)
-        {
-            var c = code[i];
-            if (c is '(' or '[' or '{') depth++;
-            else if (c is ')' or ']' or '}')
-            {
-                if (depth-- > 0) continue;
-                arguments.Add(code[from..i].Trim());
-                return arguments.ToArray();
-            }
-            else if (c == ',' && depth == 0) { arguments.Add(code[from..i].Trim()); from = i + 1; }
-        }
-        return null;
-    }
-
     // P1-40: RevitDeadlineTransport's constructor parameters, in order (the parsed argument list maps calls onto them).
     static readonly string[] DeadlineTransportParameters = { "pipeName", "policy", "transport", "readTimeout", "deadline", "elapsed", "listing", "cutReads", "probe", "connectThenRead" };
 
-    // P1-40: every `new [Bim.Cli.]RevitDeadlineTransport(` construction in stripped code, its arguments by parameter name
-    // (positional by position, named by name), whitespace removed; Map null with the Reason for a call that cannot be mapped.
-    static List<(Dictionary<string, string>? Map, string Reason)> DeadlineTransportCalls(string code)
-    {
-        var calls = new List<(Dictionary<string, string>? Map, string Reason)>();
-        foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?RevitDeadlineTransport\s*\("))
-            calls.Add(MapDeadlineArguments(ArgumentsAt(code, match.Index + match.Length)));
-        return calls;
-    }
-
-    // P1-42: maps one argument list onto DeadlineTransportParameters as C# does. `()` maps to no argument (checked before
-    // the loop); an empty argument is refused; a named argument maps by name; a positional one by its position, which
-    // C# allows after named arguments only while each of them is in its own position (else CS8323, refused by name).
-    static (Dictionary<string, string>? Map, string Reason) MapDeadlineArguments(string[]? arguments)
-    {
-        if (arguments is null) return (null, "the argument list is not closed");
-        var map = new Dictionary<string, string>(StringComparer.Ordinal);
-        if (arguments.Length == 1 && arguments[0].Length == 0) return (map, "");
-        string? outOfPosition = null;
-        for (var k = 0; k < arguments.Length; k++)
-        {
-            if (arguments[k].Length == 0) return (null, "argument " + N(k + 1) + " is empty");
-            var name = System.Text.RegularExpressions.Regex.Match(arguments[k], @"^([A-Za-z_][A-Za-z0-9_]*)\s*:(?!:)");
-            string key;
-            if (name.Success)
-            {
-                key = name.Groups[1].Value;
-                if (Array.IndexOf(DeadlineTransportParameters, key) != k) outOfPosition ??= key;
-            }
-            else if (outOfPosition is not null)
-                return (null, "positional argument " + N(k + 1) + " follows the out-of-position named argument '" + outOfPosition + "' (C# CS8323)");
-            else if (k >= DeadlineTransportParameters.Length)
-                return (null, "positional argument " + N(k + 1) + " is past the " + N(DeadlineTransportParameters.Length) + " parameters");
-            else key = DeadlineTransportParameters[k];
-            if (!DeadlineTransportParameters.Contains(key)) return (null, "no parameter named '" + key + "'");
-            if (map.ContainsKey(key)) return (null, "parameter '" + key + "' given twice");
-            map[key] = System.Text.RegularExpressions.Regex.Replace(name.Success ? arguments[k][name.Length..] : arguments[k], @"\s+", "");
-        }
-        return (map, "");
-    }
+    // P1-40/P1-42: every construction in stripped code mapped onto DeadlineTransportParameters as C# does (P1-44: the
+    // parser lives once in tests/cli/DeadlineSourceScan.cs, shared with tests/mcp).
+    static List<(Dictionary<string, string>? Map, string Reason)> DeadlineTransportCalls(string code) => DeadlineSourceScan.Calls(code, DeadlineTransportParameters);
 
     // P1-40: what is wrong with the CLI's deadline transport construction in stripped Program.cs code (empty: one
     // construction, exactly pipeName, policy, transport null, readTimeout revitOptions.ReadTimeout and deadline).
@@ -1644,12 +1485,19 @@ internal static class RevitCommandDeadlineTests
     // P1-42 (section 3a): what is wrong with McpServer's deadline transport construction in its source (empty: one
     // construction in the comment- and literal-stripped code, cutReads realPipe, no connectThenRead override and no
     // argument naming a connect bound or transport of its own), read from the parsed argument list.
+    // P1-44: only a construction inside RevitCallAll's body (MemberBody on the stripped code) is the call; any other is
+    // named as outside RevitCallAll, never counted as it.
     static string[] McpTransportProblems(string source)
     {
-        var calls = DeadlineTransportCalls(StripCode(source));
-        if (calls.Count != 1) return new[] { N(calls.Count) + " RevitDeadlineTransport constructions, not one" };
-        if (calls[0].Map is not { } arguments) return new[] { "the construction's arguments do not map onto the constructor parameters: " + calls[0].Reason };
+        var code = StripCode(source.ReplaceLineEndings("\n"));
+        var body = MemberBody(code, "(string Text, bool IsError) RevitCallAll(");
+        if (body is null) return new[] { "no RevitCallAll block body" };
+        var calls = DeadlineTransportCalls(body);
+        var outside = DeadlineTransportCalls(code).Count - calls.Count;
         var problems = new List<string>();
+        if (outside != 0) problems.Add(N(outside) + " RevitDeadlineTransport constructions outside RevitCallAll (not the call)");
+        if (calls.Count != 1) { problems.Add(N(calls.Count) + " RevitDeadlineTransport constructions inside RevitCallAll, not one"); return problems.ToArray(); }
+        if (calls[0].Map is not { } arguments) { problems.Add("the construction's arguments do not map onto the constructor parameters: " + calls[0].Reason); return problems.ToArray(); }
         var cut = arguments.TryGetValue("cutReads", out var c) ? c : null;
         if (cut != "realPipe") problems.Add("cutReads " + (cut ?? "absent"));
         if (arguments.ContainsKey("connectThenRead")) problems.Add("connectThenRead " + arguments["connectThenRead"]);
