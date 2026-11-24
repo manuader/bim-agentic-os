@@ -2172,6 +2172,85 @@ static class MirrorDriftLoopChecks
     const int LoweredNumerator = 3;
     const int LoweredDenominator = 4;
 
+    // P2-41: the macOS send-buffer gate as data, so its planted self-tests run the very checks the seam runs feed:
+    // what each lever did, the kept/requested lowered value, the fake's read and receive buffer, and the counts.
+    sealed record MacSendBufferCounts(bool LeversOk, int SendBuffer, int RaisedDefault, int LoweredDefault, int Raised, int Lowered, int RequestedLowered,
+        int InBuffer, int Read, int Chunk, long WireBytes, long SeamQueued, long Handed, long CliQueued, bool LoweredRun, long LoweredQueued, long LoweredHanded);
+
+    const string MacLeversName = "macos setup (P2-41): each lever (raised, then lowered) ran exactly once without error";
+    const string MacKeptPrefix = "macos setup (P2-39)";
+    const string MacSelfTestPrefix = "macos self-test (P2-39)";
+    const string MacLoweredPrefix = "macos (P2-37)";
+
+    // P2-41: the macOS checks in order as (passed, name); checks skipped because a setup check is red are added to notRun
+    // (their names), so the caller prints one 'not run (setup red)' line for each.
+    static List<(bool Ok, string Name)> MacSendBufferChecks(MacSendBufferCounts c, List<string> notRun)
+    {
+        var checks = new List<(bool Ok, string Name)>();
+        var kept = MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault + ")";
+        var preconditionName = "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + c.Chunk + "-byte piece, as are the " + c.Read + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer";
+        var selfTest = MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + 2L * c.Read + ") with queued == lowered (" + c.Lowered + ")";
+        const string raisedName = "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue";
+        const string loweredName = MacLoweredPrefix + ": with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways";
+        // P2-39: a kernel that rounds the lowered send buffer (kept != requested) is a named setup red carrying the
+        // measured value, not a relation red.
+        // P2-39 probe red (run 44927109449) planted lowered - 1: named red "measured lowered=6143, requested=6144".
+        // P2-40: this is the only check that names kept != requested: the precondition does not repeat it, and the
+        // lowered-run checks below (its self-test and relation, which read the kept value) run only when it holds, so a
+        // rounded lowered value is exactly one red, this one.
+        // P2-40 probe red (run 45243506492) planted lowered - 1: this setup check was the only macOS red.
+        var loweredKept = c.LeversOk && c.Lowered == c.RequestedLowered;
+        checks.Add((loweredKept, kept));
+        // P2-40: no lowered % chunk clause: LoweredCounts requires handed == read + lowered and handed % chunk == 0, so with
+        // read % chunk == 0 (checked here) a lowered value that is not a whole number of pieces already fails the lowered
+        // relation. The lowered clauses apply to a kept value only (a rounded one is the setup red above).
+        var precondition = c.LeversOk && c.SendBuffer > 0 && c.RaisedDefault == c.SendBuffer && c.LoweredDefault == c.SendBuffer
+            && c.Raised > c.SendBuffer && c.Raised % c.Chunk == 0 && c.InBuffer > c.Raised && c.Read % c.Chunk == 0
+            && (!loweredKept || (c.Lowered > 0 && c.Lowered < c.SendBuffer && c.Lowered != c.Read));
+        checks.Add((precondition, preconditionName));
+        // P2-38: the precondition guards every macOS relation once; a relation cannot pass without it.
+        void Relation(bool relation, string name) => checks.Add((precondition && relation, name));
+        // P2-39: the lowered queued/handed relation, once; its planted self-test proves it rejects handed == 2 x read
+        // (the precondition's lowered != read makes read + lowered != 2 x read), so no separate != 2 x read clause.
+        bool LoweredCounts(long queued, long handedBytes) => queued == c.Lowered && handedBytes == c.Read + c.Lowered && handedBytes % c.Chunk == 0;
+        // P2-39 probe red (run 44927109449) asserted acceptance and failed: the relation rejects handed 8192 == 2 x read.
+        if (loweredKept) Relation(!LoweredCounts(c.Lowered, 2L * c.Read), selfTest);
+        Relation(c.SeamQueued == c.Raised && c.Handed == c.Read + c.Raised && c.Handed == c.Read + c.SeamQueued && c.Handed % c.Chunk == 0 && c.Handed < c.WireBytes
+            && c.SeamQueued < c.InBuffer && c.CliQueued == c.SendBuffer && c.CliQueued < c.SeamQueued && c.CliQueued < c.WireBytes - c.Read, raisedName);
+        if (loweredKept) Relation(c.LoweredRun && LoweredCounts(c.LoweredQueued, c.LoweredHanded) && c.LoweredQueued < c.CliQueued && c.LoweredHanded < c.Handed, loweredName);
+        return checks;
+    }
+
+    // P2-41: the planted self-tests of the macOS gate. The baseline is built from the measured default send buffer, the
+    // fake's read and receive buffer and the wire bytes by the pinned relations (raised = 2 x default, lowered = the
+    // requested ratio of it, queued = the send buffer, handed = read + it), so it is green by construction; each plant
+    // changes one input and names the only red(s) and not-run lines it must give.
+    static void MacSendBufferSelfTests(MacSendBufferCounts measured, Action<bool, string, string> check)
+    {
+        var s = measured.SendBuffer;
+        var lowered = (int)((long)s * LoweredNumerator / LoweredDenominator);
+        var baseline = measured with
+        {
+            LeversOk = true, RaisedDefault = s, LoweredDefault = s, Raised = 2 * s, Lowered = lowered, RequestedLowered = lowered,
+            SeamQueued = 2L * s, Handed = measured.Read + 2L * s, CliQueued = s, LoweredRun = true, LoweredQueued = lowered, LoweredHanded = measured.Read + (long)lowered,
+        };
+        (string[] Red, string[] NotRun, string Seen) Outcome(MacSendBufferCounts c)
+        {
+            var notRun = new List<string>();
+            var red = MacSendBufferChecks(c, notRun).Where(x => !x.Ok).Select(x => x.Name).ToArray();
+            return (red, notRun.ToArray(), "red=[" + string.Join(" ; ", red) + "] not_run=[" + string.Join(" ; ", notRun) + "] counts=" + c);
+        }
+        static bool Names(string[] names, params string[] prefixes) => names.Length == prefixes.Length && names.Zip(prefixes).All(x => x.First.StartsWith(x.Second, StringComparison.Ordinal));
+        var green = Outcome(baseline);
+        check(green.Red.Length == 0 && green.NotRun.Length == 0, "macos self-test (P2-41): the baseline built from the pinned relations gives no red and no not-run line", green.Seen);
+        var rounded = Outcome(baseline with { Lowered = baseline.Read });
+        check(Names(rounded.Red, MacKeptPrefix) && Names(rounded.NotRun, MacSelfTestPrefix, MacLoweredPrefix),
+            "macos self-test (P2-41): a planted kernel rounding of the lowered send buffer to exactly the read size (" + baseline.Read + ") gives only the setup red, and the lowered self-test and relation each print a not-run line", rounded.Seen);
+        var failedLever = Outcome(baseline with { LeversOk = false });
+        check(Names(failedLever.Red, MacLeversName) && failedLever.NotRun.Length == 5,
+            "macos self-test (P2-41): a planted failed lever (leversOk false) gives one named red, the lever setup check, and every other macOS check prints a not-run line", failedLever.Seen);
+    }
+
     // P2-36/P2-37: the test-only lever (macOS): sets the connected client socket's SO_SNDBUF to numerator/denominator of
     // its own default, reading it back; errors are recorded, not thrown.
     static Action<System.IO.Pipes.PipeStream> SendBufferLever(int numerator, int denominator, LeverRecord record) => pipe =>
@@ -2381,41 +2460,16 @@ static class MirrorDriftLoopChecks
                 + " lowered_line=" + (extraLines.Length == 1 ? extraLines[0] : "<none>")
                 + " lowered_seam_line=" + (loweredSeam?.Line is { } low ? (low.Length > 200 ? low[..200] + "..." : low) : "<none>");
             var leversOk = raisedLever.Calls == 1 && raisedLever.Error.Length == 0 && loweredLever.Calls == 1 && loweredLever.Error.Length == 0;
-            // P2-39: a kernel that rounds the lowered send buffer (kept != requested) is a named setup red carrying the
-            // measured value, not a relation red.
-            // P2-39 probe red (run 44927109449) planted lowered - 1: named red "measured lowered=6143, requested=6144".
-            // P2-40: this is the only check that names kept != requested: the precondition no longer repeats it, and the
-            // lowered-run checks below (its self-test and relation, which read the kept value) run only when it holds, so a
-            // rounded lowered value is exactly one red, this one.
-            // P2-40 probe red (run 45243506492) planted lowered - 1: this setup check was the only macOS red.
-            var loweredKept = leversOk && lowered == requestedLowered;
-            Check(loweredKept,
-                "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + lowered + ", requested=" + requestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + loweredLever.Default + ")", macDetail);
-            // P2-40: no lowered % chunk clause: LoweredCounts requires handed == read + lowered and handed % chunk == 0, so with
-            // read % chunk == 0 (checked here) a lowered value that is not a whole number of pieces already fails the lowered
-            // relation. The lowered clauses apply to a kept value only (a rounded one is the setup red above).
-            var precondition = leversOk && sendBuffer > 0 && raisedLever.Default == sendBuffer && loweredLever.Default == sendBuffer
-                && raised > sendBuffer && raised % chunk == 0 && inBuffer > raised && MidArgsBreakBytes % chunk == 0
-                && (!loweredKept || (lowered > 0 && lowered < sendBuffer && lowered != MidArgsBreakBytes));
-            Check(precondition,
-                "macos precondition: each lever ran once without error on a client whose default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + chunk + "-byte piece, as are the " + MidArgsBreakBytes + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer", macDetail);
-            // P2-38: the precondition guards every macOS relation once; a relation cannot pass without it.
-            void Relation(bool relation, string name) => Check(precondition && relation, name, macDetail);
-            // P2-39: the lowered queued/handed relation, once; its planted self-test proves it rejects handed == 2 x read
-            // (the precondition's lowered != read makes read + lowered != 2 x read), so no separate != 2 x read clause.
-            bool LoweredCounts(long queued, long handedBytes) => queued == lowered && handedBytes == MidArgsBreakBytes + lowered && handedBytes % chunk == 0;
-            // P2-39 probe red (run 44927109449) asserted acceptance and failed: the relation rejects handed 8192 == 2 x read.
-            if (loweredKept)
-                Relation(!LoweredCounts(lowered, 2 * MidArgsBreakBytes),
-                    "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (" + 2 * MidArgsBreakBytes + ") with queued == lowered (" + lowered + ")");
-            Relation(seamQueued == raised && handed == MidArgsBreakBytes + raised && handed == MidArgsBreakBytes + seamQueued && handed % chunk == 0 && handed < wireBytes
-                && seamQueued < inBuffer && cliQueued == sendBuffer && cliQueued < seamQueued && cliQueued < wireBytes - MidArgsBreakBytes,
-                "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue");
-            if (loweredKept)
-                Relation(loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out
-                    && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes)
-                    && LoweredCounts(loweredQueued, loweredHanded) && loweredQueued < cliQueued && loweredHanded < handed,
-                    "macos (P2-37): with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways");
+            // P2-41: the gate (setup checks, precondition, self-test, relations) is MacSendBufferChecks; checks a red setup
+            // check skips print a named 'not run (setup red)' notice; the gate's planted self-tests run on every macOS run.
+            var gate = new MacSendBufferCounts(leversOk, sendBuffer, raisedLever.Default, loweredLever.Default, raised, lowered, requestedLowered, inBuffer, MidArgsBreakBytes, chunk,
+                wireBytes, seamQueued, handed, cliQueued,
+                loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes),
+                loweredQueued, loweredHanded);
+            var notRun = new List<string>();
+            foreach (var (ok, name) in MacSendBufferChecks(gate, notRun)) Check(ok, name, macDetail);
+            foreach (var name in notRun) Console.WriteLine("::notice::drift-loop: write progress per OS (P2-33): " + name + " not run (setup red)");
+            MacSendBufferSelfTests(gate, (condition, name, detail) => Check(condition, name, detail));
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
