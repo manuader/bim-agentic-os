@@ -335,7 +335,8 @@ internal static class RepeatedEnvelopeKeyTests
     //      (names or values; tools/call, ping, initialize) is accepted, since _meta is never read, compared or echoed; a
     //      notification's params are never read (no response); an unknown method's params are never read (-32601).
     //   3. Exact bytes: the new refusals, the echoed id of a valid surrogate pair (escaped and raw), well-formed neighbours.
-    //   4. The real Release Bim.Mcp.dll over stdio answers the P10-34 refusals and the new -32602 byte for byte; stdin is
+    //   4. The real Release Bim.Mcp.dll over stdio answers the P10-34 refusals and the new -32602 byte for byte (P10-40: each
+    //      response line matched to its request by id, then the whole stream in order); stdin is
     //      UTF-8 decoded with replacement, so WTF-8 lone-surrogate bytes (ED A0 80) become three U+FFFD and are valid text
     //      (pinned as measured); a raw UTF-8 surrogate pair id is echoed like the escaped one.
     //   5. Static: Handle checks the line as text after the size check and before JsonDocument.Parse; Dispatch checks
@@ -453,12 +454,11 @@ internal static class RepeatedEnvelopeKeyTests
                 if (response != expected) differing.Add(label + " => " + response);
             }
             Check(differing.Count == 0, "refusal, surrogate-pair id and well-formed response bytes are exact | " + string.Join(" ; ", differing));
-            var plainInit = server.Handle(Request("50", "initialize", "{" + Init + "}"));
+            // P10-40: compared against literal bytes (initialize) and a separate server's plain tools/list, not this server's.
             var metaInit = server.Handle(Request("50", "initialize", "{" + Init + ",\"_meta\":{\"\\ud800\":1}}"));
-            Check(plainInit is not null && plainInit == metaInit, "initialize with a lone surrogate inside _meta answers the plain initialize bytes | " + Short(metaInit ?? "none"));
-            var plainList = server.Handle("""{"jsonrpc":"2.0","id":51,"method":"tools/list"}""");
+            Check(metaInit == InitializeBytes("50"), "initialize with a lone surrogate inside _meta answers the literal initialize bytes | " + Short(metaInit ?? "none"));
             var cursorList = server.Handle(Request("51", "tools/list", """{"cursor":"x"}"""));
-            Check(plainList is not null && plainList == cursorList, "tools/list with a valid params object answers the plain tools/list bytes");
+            Check(ToolsListMatches(cursorList, "51"), "tools/list with a valid params object answers the plain tools/list bytes of a separate server | " + Short(cursorList ?? "none"));
         }
 
         // ---- 4. the real Release Bim.Mcp.dll over stdio ----
@@ -491,8 +491,10 @@ internal static class RepeatedEnvelopeKeyTests
                 ("-32602 name not text", Utf8(Request("22", "tools/call", """{"name":"\ud800"}""")),
                     """{"jsonrpc":"2.0","id":22,"error":{"code":-32602,"message":"invalid_params: name is not valid text"}}"""),
                 // P10-36
-                ("-32602 ping params name not text", Utf8(Request("1", "ping", """{"\ud800":1}""")), PingParamsRefusal),
-                ("escaped surrogate pair id", Utf8("""{"jsonrpc":"2.0","id":"\ud83d\ude00","method":"ping"}"""), PairIdEcho),
+                // P10-40: every line has its own id (the per-line comparison is keyed by id)
+                ("-32602 ping params name not text", Utf8(Request("64", "ping", """{"\ud800":1}""")),
+                    """{"jsonrpc":"2.0","id":64,"error":{"code":-32602,"message":"invalid_params: params member name is not valid text"}}"""),
+                ("escaped surrogate pair id", Utf8("""{"jsonrpc":"2.0","id":"e\ud83d\ude00","method":"ping"}"""), """{"jsonrpc":"2.0","id":"e\uD83D\uDE00","result":{}}"""),
                 ("raw UTF-8 surrogate pair id", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":\""), utf8Pair, Utf8("\",\"method\":\"ping\"}")), PairIdEcho),
                 ("WTF-8 lone surrogate member name", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":60,\"method\":\"ping\",\""), wtf8Lone, Utf8("\":1}")), """{"jsonrpc":"2.0","id":60,"result":{}}"""),
                 ("WTF-8 lone surrogate in method", Concat(Utf8("{\"jsonrpc\":\"2.0\",\"id\":61,\"method\":\"ping"), wtf8Lone, Utf8("\"}")),
@@ -503,7 +505,9 @@ internal static class RepeatedEnvelopeKeyTests
                 ("-32602 ping repeated params member", Utf8(Request("63", "ping", """{"x":1,"\u0078":2}""")), P10_38PingRefusal),
                 ("ping", Utf8("""{"jsonrpc":"2.0","id":62,"method":"ping"}"""), """{"jsonrpc":"2.0","id":62,"result":{}}"""),
             };
-            var wtf8Id = lines.FindIndex(line => line.Label == "WTF-8 lone surrogate id");
+            var wtf8Id = IdKey(lines.Single(line => line.Label == "WTF-8 lone surrogate id").Expected);
+            var expectedKeys = lines.Select(line => IdKey(line.Expected)).ToList();
+            Check(expectedKeys.Distinct(StringComparer.Ordinal).Count() == lines.Count, "fixture: every stdio line has its own response id | " + string.Join(" ", expectedKeys));
             var stdin = lines.SelectMany(line => line.Line.Concat(new byte[] { (byte)'\n' })).ToArray();
             byte[] stdout = [];
             var stderr = "";
@@ -530,15 +534,31 @@ internal static class RepeatedEnvelopeKeyTests
             }
             catch (Exception error) { stderr = "threw " + error.GetType().Name + ": " + error.Message; }
             var expectedBytes = System.Text.Encoding.UTF8.GetBytes(string.Concat(lines.Select(line => line.Expected + "\n")));
-            var got = System.Text.Encoding.UTF8.GetString(stdout).Split('\n');
+            // P10-40: each response line is matched to its request line by id, so a missing or extra line names that line only.
+            var answer = System.Text.Encoding.UTF8.GetString(stdout);
+            var got = answer.Split('\n').ToList();
+            if (answer.EndsWith('\n')) got.RemoveAt(got.Count - 1);
+            else if (got.Count > 0 && got[^1].Length == 0) got.RemoveAt(got.Count - 1);
+            var byKey = got.GroupBy(IdKey, StringComparer.Ordinal).ToDictionary(group => group.Key, group => group.ToList(), StringComparer.Ordinal);
             var differing = new List<string>();
-            for (var i = 0; i < lines.Count; i++)
-                if (i >= got.Length || got[i] != lines[i].Expected) differing.Add(lines[i].Label + " => " + (i < got.Length ? got[i] : "<missing>"));
+            foreach (var (label, _, expected) in lines)
+            {
+                var key = IdKey(expected);
+                if (!byKey.TryGetValue(key, out var answered)) differing.Add(label + " (id " + key + ") => <missing>");
+                else if (answered.Count != 1 || answered[0] != expected) differing.Add(label + " (id " + key + ") => " + string.Join(" | ", answered));
+            }
+            foreach (var (key, answered) in byKey)
+                if (!expectedKeys.Contains(key, StringComparer.Ordinal)) differing.Add("unexpected (id " + key + ") => " + string.Join(" | ", answered));
             if (dllExists)
-            Check(exit == 0 && stdout.AsSpan().SequenceEqual(expectedBytes),
-                "the real Bim.Mcp.dll over stdio answers the P10-34, P10-36 and P10-38 lines byte for byte (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
-                + stdout.Length.ToString(CultureInfo.InvariantCulture) + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | differing: "
-                + string.Join(" ; ", differing) + " | hex of the WTF-8 id line (" + wtf8Id.ToString(CultureInfo.InvariantCulture) + "): " + (wtf8Id >= 0 && wtf8Id < got.Length ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(got[wtf8Id])) : "-") + " | stderr: " + Short(stderr));
+            {
+                Check(exit == 0 && differing.Count == 0,
+                    "the real Bim.Mcp.dll over stdio answers each P10-34, P10-36 and P10-38 line byte for byte, matched by id (exit " + exit.ToString(CultureInfo.InvariantCulture) + ", "
+                    + got.Count.ToString(CultureInfo.InvariantCulture) + " lines, expected " + lines.Count.ToString(CultureInfo.InvariantCulture) + ") | differing: "
+                    + string.Join(" ; ", differing) + " | hex of the WTF-8 id line (id " + wtf8Id + "): " + (byKey.TryGetValue(wtf8Id, out var wtf8Lines) ? Convert.ToHexString(System.Text.Encoding.UTF8.GetBytes(wtf8Lines[0])) : "-") + " | stderr: " + Short(stderr));
+                // Reached only when every line matched: then a difference is order or framing.
+                Check(stdout.AsSpan().SequenceEqual(expectedBytes), "the stdio responses come in request order, one LF-terminated line each (" + stdout.Length.ToString(CultureInfo.InvariantCulture)
+                    + " bytes, expected " + expectedBytes.Length.ToString(CultureInfo.InvariantCulture) + ") | " + Short(string.Join(" ", got.Select(IdKey))));
+            }
         }
 
         // ---- 5. static ----
@@ -638,7 +658,6 @@ internal static class RepeatedEnvelopeKeyTests
 
         // ---- 3. exact bytes ----
         {
-            var plainInit = server.Handle(Request("20", "initialize", "{" + Init + "}"));
             var exact = new List<(string Label, string Line, string? Expected)>
             {
                 ("ping repeated escaped", Request("63", "ping", """{"x":1,"\u0078":2}"""), P10_38PingRefusal),
@@ -647,7 +666,7 @@ internal static class RepeatedEnvelopeKeyTests
                 ("tools/list repeated", Request("21", "tools/list", """{"cursor":"a","cursor":"a"}"""),
                     """{"jsonrpc":"2.0","id":21,"error":{"code":-32602,"message":"invalid_params: repeated params member cursor"}}"""),
                 ("ping distinct members", Request("22", "ping", """{"x":1,"y":1,"_meta":{"progressToken":1}}"""), """{"jsonrpc":"2.0","id":22,"result":{}}"""),
-                ("initialize distinct members", Request("20", "initialize", "{" + Init + "}"), plainInit),
+                ("initialize distinct members", Request("20", "initialize", "{" + Init + "}"), InitializeBytes("20")),
             };
             var differing = new List<string>();
             foreach (var (label, line, expected) in exact)
@@ -657,9 +676,9 @@ internal static class RepeatedEnvelopeKeyTests
                 catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
                 if (expected is null || response != expected) differing.Add(label + " => " + response);
             }
-            var plainList = server.Handle("""{"jsonrpc":"2.0","id":23,"method":"tools/list"}""");
+            // P10-40: a separate server's plain tools/list in the literal envelope, not this server's own answer.
             var cursorList = server.Handle(Request("23", "tools/list", """{"cursor":"x","_meta":{}}"""));
-            if (plainList is null || plainList != cursorList) differing.Add("tools/list distinct members differ from plain tools/list");
+            if (!ToolsListMatches(cursorList, "23")) differing.Add("tools/list distinct members differ from the plain tools/list of a separate server => " + (cursorList is { Length: > 300 } ? cursorList[..300] + "..." : cursorList ?? "none"));
             Check(differing.Count == 0, "refusal and well-formed response bytes are exact | " + string.Join(" ; ", differing));
         }
 
@@ -675,5 +694,99 @@ internal static class RepeatedEnvelopeKeyTests
             Check(text > 0 && repeated > text && switchAt > repeated, "Dispatch checks other methods' repeated params members after their text check, before the method switch | "
                 + string.Join(" ", new[] { text, repeated, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
         }
+
+        RunP10_40(root, check);
+    }
+
+    // P10-40 helpers. The literal initialize response for a request id (the JSON text of the id).
+    public static string InitializeBytes(string id) =>
+        "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{}},\"serverInfo\":{\"name\":\"bim-agentic-os\",\"version\":\"0.1.0\"}}}";
+
+    // The literal unknown_tool result for a request id.
+    public static string UnknownToolBytes(string id) =>
+        "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"{\\\"status\\\":\\\"failed\\\",\\\"code\\\":\\\"unknown_tool\\\"}\"}],\"isError\":true}}";
+
+    // A tools/list response is the literal envelope around a non-empty tools array and equals the plain (no params)
+    // tools/list of a separate, fresh server with the same catalogue and policy. The tool list itself is owned by the
+    // listing tests; this proves the params were not read.
+    static bool ToolsListMatches(string? response, string id)
+    {
+        var fresh = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => null, null);
+        var plain = fresh.Handle("{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"tools/list\"}");
+        var prefix = "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{\"tools\":[{\"name\":\"";
+        return response is not null && response == plain && response.StartsWith(prefix, StringComparison.Ordinal) && response.EndsWith("}]}}", StringComparison.Ordinal);
+    }
+
+    // The JSON text of a response line's id ("null" for a null id), or a marker when the line has none or is not JSON.
+    static string IdKey(string line)
+    {
+        try { return JsonNode.Parse(line) is JsonObject node && node.ContainsKey("id") ? node["id"]?.ToJsonString() ?? "null" : "<no id: " + line + ">"; }
+        catch (Exception) { return "<not JSON: " + line + ">"; }
+    }
+
+    // P10-40: members repeated one level or more below the params of initialize (inside capabilities or clientInfo) and
+    // inside _meta (initialize, ping, tools/list, tools/call). Oracle, through McpServer.Handle with a counting Revit
+    // transport, every outcome compared to literal response bytes:
+    //   1. Measurement (the probe): each case's response is reported in the failure message.
+    //   2. Pinned as measured, by design: the server never reads, compares or echoes capabilities, clientInfo or _meta
+    //      content (initialize answers a fixed result; ping, tools/list and an unknown tool ignore _meta), so a member
+    //      repeated inside them is answered exactly as without the repeat; so is a lone-surrogate escape nested there. Only
+    //      the params object's own members are checked (P10-36/P10-38): a repeat of capabilities itself stays -32602 even
+    //      when a nested repeat is also present. A refusal here would reject requests whose meaning to this server is
+    //      unambiguous. A notification's nested repeat gets no response.
+    //   3. No case reaches the Revit transport.
+    static void RunP10_40(string root, Action<bool, string> check)
+    {
+        void Check(bool condition, string name) => check(condition, "P10-40 nested repeated params members: " + name);
+        var sends = 0;
+        var server = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { sends++; return null; }, null);
+        static string Request(string id, string method, string parameters) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"method\":\"" + method + "\",\"params\":" + parameters + "}";
+        static string Initialize(string capabilities, string clientInfo) =>
+            "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":" + capabilities + ",\"clientInfo\":" + clientInfo + "}";
+        const string Client = """{"name":"p10-40","version":"0"}""";
+        static string Ping(string id) => "{\"jsonrpc\":\"2.0\",\"id\":" + id + ",\"result\":{}}";
+
+        var cases = new List<(string Label, string Line, string Expected)>
+        {
+            // ---- initialize capabilities / clientInfo: answered (never read) ----
+            ("I1 capabilities member twice", Request("1", "initialize", Initialize("""{"roots":{},"roots":{"listChanged":true}}""", Client)), InitializeBytes("1")),
+            ("I2 capabilities member twice escaped", Request("2", "initialize", Initialize("""{"sampling":{},"\u0073ampling":{}}""", Client)), InitializeBytes("2")),
+            ("I3 capabilities nested two levels", Request("3", "initialize", Initialize("""{"roots":{"listChanged":true,"listChanged":false}}""", Client)), InitializeBytes("3")),
+            ("I4 clientInfo name twice", Request("\"c\"", "initialize", Initialize("{}", """{"name":"a","name":"b","version":"0"}""")), InitializeBytes("\"c\"")),
+            ("I5 clientInfo version twice escaped", Request("4", "initialize", Initialize("{}", """{"name":"a","version":"0","\u0076ersion":"1"}""")), InitializeBytes("4")),
+            ("I6 both nested repeats", Request("5", "initialize", Initialize("""{"x":1,"x":2}""", """{"name":"a","name":"a","version":"0"}""")), InitializeBytes("5")),
+            ("I7 capabilities lone-surrogate name", Request("6", "initialize", Initialize("""{"\ud800":{}}""", Client)), InitializeBytes("6")),
+            ("I8 initialize _meta member twice", Request("7", "initialize", Initialize("{}", Client)[..^1] + ""","_meta":{"progressToken":1,"progressToken":2}}"""), InitializeBytes("7")),
+            // ---- _meta of the other methods: answered (never read) ----
+            ("M1 ping _meta member twice escaped", Request("10", "ping", """{"_meta":{"progressToken":1,"\u0070rogressToken":2}}"""), Ping("10")),
+            ("M2 ping _meta nested two levels", Request("11", "ping", """{"_meta":{"x":{"a":1,"a":2}}}"""), Ping("11")),
+            ("M3 tools/call _meta member twice (unknown tool)", Request("12", "tools/call", """{"name":"p10_40_unknown","arguments":{},"_meta":{"progressToken":1,"progressToken":2}}"""), UnknownToolBytes("12")),
+            ("M4 tools/call _meta nested two levels (unknown tool)", Request("\"t\"", "tools/call", """{"name":"p10_40_unknown","_meta":{"x":{"a":1,"\u0061":2}}}"""), UnknownToolBytes("\"t\"")),
+            // ---- the params object's own members stay checked (P10-38) ----
+            ("C1 capabilities twice beside a nested repeat", Request("20", "initialize", Initialize("""{"a":1,"a":2}""", Client)[..^1] + ""","capabilities":{}}"""),
+                """{"jsonrpc":"2.0","id":20,"error":{"code":-32602,"message":"invalid_params: repeated params member capabilities"}}"""),
+            ("C2 ping _meta twice, each with a nested repeat", Request("21", "ping", """{"_meta":{"a":1,"a":2},"_meta":{"b":1,"b":2}}"""),
+                """{"jsonrpc":"2.0","id":21,"error":{"code":-32602,"message":"invalid_params: repeated params member _meta"}}"""),
+            // ---- notification: never answered ----
+            ("N1 notification with a nested repeat", """{"jsonrpc":"2.0","method":"notifications/initialized","params":{"_meta":{"a":1,"a":2}}}""", "none"),
+        };
+        var measured = new List<string>();
+        var bad = new List<string>();
+        foreach (var (label, line, expected) in cases)
+        {
+            string response;
+            try { response = server.Handle(line) ?? "none"; }
+            catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+            measured.Add(label + " => " + (response.Length > 200 ? response[..200] + "..." : response));
+            if (response != expected) bad.Add(label);
+        }
+        Check(bad.Count == 0 && sends == 0,
+            "members repeated inside capabilities, clientInfo and _meta are answered exactly as without the repeat (never read), the params' own repeats stay -32602, no transport send (sends "
+            + sends.ToString(CultureInfo.InvariantCulture) + ") | failing " + bad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", bad)
+            + " | measured: " + string.Join(" ; ", measured));
+
+        // tools/list with a member repeated inside _meta: the plain tools/list bytes of a separate server.
+        var listed = server.Handle(Request("30", "tools/list", """{"cursor":"x","_meta":{"progressToken":1,"progressToken":2}}"""));
+        Check(ToolsListMatches(listed, "30") && sends == 0, "tools/list with a member repeated inside _meta answers the plain tools/list bytes | " + (listed is { Length: > 300 } ? listed[..300] + "..." : listed ?? "none"));
     }
 }
