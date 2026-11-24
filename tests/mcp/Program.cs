@@ -1764,6 +1764,8 @@ JurisdictionResolveToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(st
 // P5-22 skill_list (tests/mcp/SkillListToolTests.cs).
 SkillListToolTests.Run(root,cliDir,dotnet,cliDll,Call,stdin=>RunMcp(stdin).Out,Check);
 TwiceReadToolTests.Run(root,cliDir,dotnet,cliDll,mcpDll,Call,Check); // P5-30 twice-read bytes through skill_list and jurisdiction_resolve (tests/mcp/TwiceReadToolTests.cs).
+// P5-37 a failing server stdout during a jurisdiction_resolve or skill_list reply (tests/mcp/StdoutFailureToolTests.cs).
+StdoutFailureToolTests.Run(root,dotnet,mcpDll,Check);
 // P10-31 every tool refuses a repeated argument name uniformly in CallTool (tests/mcp/RepeatedArgumentToolTests.cs).
 RepeatedArgumentToolTests.Run(root,cliDir,Check);
 RepeatedEnvelopeKeyTests.Run(root,cliDir,Check); // P10-33 repeated request/params members and non-text argument names (tests/mcp/RepeatedEnvelopeKeyTests.cs).

@@ -116,6 +116,20 @@ using Bim.Core;
 //      (pinned with the reason: every project compiling a caller already links it; moving it would rewrite the pinned
 //      P5-31/P5-33 bytes): declared once there and called exactly by SkillListCommand.Run, SkillListTool,
 //      JurisdictionResolveCommand.Run and JurisdictionResolveTool.
+//  18. P5-37 Run's try scope and the remaining stdout probes. Run's try is kept over the whole body (not narrowed to the
+//      print), for this pinned reason: Resolve never throws for any exception whose Message can be read (WorkProbe
+//      forcing IOException, InvalidOperationException, ObjectDisposedException, UnauthorizedAccessException,
+//      OperationCanceledException, AggregateException and a null Message returns the typed internal-error envelope with
+//      the IntentPlan diagnostic; no probe: success, refusal and usage envelopes), but an exception whose own Message
+//      getter throws makes Resolve's catch throw (IntentPlan.Internal reads error.Message for the diagnostic), and only
+//      the whole-body try contains it: exit 1, stdout and stderr empty, nothing escapes Run (also with a rejecting
+//      stdout, never attempted). Static: JurisdictionResolveCommand.cs is the P5-35 file (SHA-256, "\n"), Resolve's body
+//      is its try/catch into IntentPlan.Internal, and IntentPlan.Internal/InternalDiagnostic read only the type name and
+//      Message. Real processes: a stdout open read-only (`1</dev/null`: every write fails EBADF, the Linux and macOS
+//      equivalent of >/dev/full, which macOS lacks; SKIP on Windows, no /bin/sh) exits 1 with empty stderr for
+//      jurisdiction-resolve success, jurisdiction_unknown and usage and for a skill-list listing; a stdout pipe the reader
+//      closes right after start (every OS) is not a failure the process sees (the runtime's console stream drops
+//      EPIPE / ERROR_NO_DATA): the exits are those of an open pipe (0, 1, 1, 0) and stderr is empty.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -482,6 +496,9 @@ internal static class SkillListTests
 
         // ---- 17. P5-35 a throwing stdout in jurisdiction-resolve and WriteDiagnostic's pinned home ----
         ResolveStdoutFailure(root, dotnet, cliDll, check);
+
+        // ---- 18. P5-37 Run's try scope (Resolve's one throwing case) and stdout read-only / closed-pipe processes ----
+        ResolveTryScope(root, dotnet, cliDll, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -1702,6 +1719,198 @@ internal static class SkillListTests
             var users = Links("JurisdictionResolveCommand.cs") || Links("SkillListCommand.cs") || LinksTool("JurisdictionResolveTool.cs") || LinksTool("SkillListTool.cs");
             Check(xml.Length > 0 && users && Links("SkillListCommand.cs"), project + " compiles a WriteDiagnostic caller and links SkillListCommand.cs, its home");
         }
+    }
+
+    // Section 18 (P5-37): see oracle 18 in the header.
+    static void ResolveTryScope(string root, string dotnet, string cliDll, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-37: " + name, detail);
+        const string ResolveInternal = "{\"status\":\"failed\",\"code\":\"jurisdiction_resolve_internal_error\"}";
+        const string ResolveUsage = "{\"status\":\"failed\",\"code\":\"jurisdiction_resolve_usage\",\"detail\":\"usage: jurisdiction-resolve --code c | --country cc --municipality m [--lock skills.lock.json] [--allow-stub]\"}";
+
+        // run in process with stdout = outWriter (a fresh StringWriter when null): stdout and stderr, the exit code and any
+        // escaping exception; globals restored.
+        static (int Exit, string Out, string Err, string Thrown) Inline(Action run, TextWriter? outWriter = null)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var thrown = "";
+            int exit;
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(outWriter ?? capturedOut);
+                Console.SetError(capturedError);
+                try { run(); }
+                catch (Exception failure) { thrown = failure.GetType().FullName + ": " + failure.Message; }
+            }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+            }
+            return (exit, capturedOut.ToString(), capturedError.ToString(), thrown);
+        }
+        // A real CLI process (arguments include the verb). redirect (Linux/macOS): the CLI is exec'd by /bin/sh with that
+        // redirection applied to it alone. closeStdout: the reader closes its end of the stdout pipe right after start
+        // (before the runtime has started, in practice; the outcome is the same either way, which is what is pinned).
+        (int Exit, string Out, string Err) Child(string? redirect, bool closeStdout, params string[] arguments)
+        {
+            var start = new ProcessStartInfo(redirect is null ? dotnet : "/bin/sh") { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false, StandardOutputEncoding = new UTF8Encoding(false) };
+            if (redirect is not null) { start.ArgumentList.Add("-c"); start.ArgumentList.Add("exec \"$@\" " + redirect); start.ArgumentList.Add("sh"); start.ArgumentList.Add(dotnet); }
+            start.ArgumentList.Add(cliDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + start.FileName);
+            Task<string> stdout;
+            if (closeStdout) { process.StandardOutput.Close(); stdout = Task.FromResult(""); }
+            else stdout = process.StandardOutput.ReadToEndAsync();
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, "<timed out>", ""); }
+            process.WaitForExit();
+            return (process.ExitCode, stdout.Result, stderr.Result);
+        }
+        static string D((int Exit, string Out, string Err, string Thrown) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out) + " stderr " + JsonSerializer.Serialize(r.Err) + (r.Thrown.Length > 0 ? " threw " + r.Thrown : "");
+        static string P((int Exit, string Out, string Err) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out) + " stderr " + JsonSerializer.Serialize(r.Err.Length > 400 ? r.Err[..400] + "..." : r.Err);
+        static string E(Bim.Cli.IntentEnvelope? e) => e is null ? "<none>" : e.Line + " exit " + e.Exit.ToString(CultureInfo.InvariantCulture) + " diagnostic " + JsonSerializer.Serialize(e.Diagnostic);
+        static (Bim.Cli.IntentEnvelope? Envelope, string Thrown) Resolve(string[] arguments)
+        {
+            try { return (Bim.Cli.JurisdictionResolveCommand.Resolve(["jurisdiction-resolve", .. arguments]), ""); }
+            catch (Exception failure) { return (null, failure.GetType().FullName + ": " + failure.Message); }
+        }
+
+        Check(Bim.Cli.JurisdictionResolveCommand.WorkProbe is null, "the WorkProbe seam is null in production");
+
+        // 18a. Resolve never throws for an exception whose Message can be read: each forced through WorkProbe is the typed
+        // internal-error envelope with the diagnostic "jurisdiction-resolve internal error: <type>: <message>".
+        foreach (var (label, make, message) in new (string, Func<Exception>, string)[]
+        {
+            ("IOException", () => new IOException("io P5-37"), "io P5-37"),
+            ("InvalidOperationException", () => new InvalidOperationException("invalid P5-37"), "invalid P5-37"),
+            ("ObjectDisposedException", () => new ObjectDisposedException(null, "disposed P5-37"), "disposed P5-37"),
+            ("UnauthorizedAccessException", () => new UnauthorizedAccessException("denied P5-37"), "denied P5-37"),
+            ("OperationCanceledException", () => new OperationCanceledException("canceled P5-37"), "canceled P5-37"),
+            ("AggregateException", () => new AggregateException("aggregate P5-37", new IOException("inner P5-37")), "aggregate P5-37 (inner P5-37)"),
+            ("a null Message", () => new NullMessageException(), ""),
+        })
+        {
+            var made = make();
+            Bim.Cli.JurisdictionResolveCommand.WorkProbe = () => throw make();
+            (Bim.Cli.IntentEnvelope? Envelope, string Thrown) result;
+            try { result = Resolve(["--code", "ar.caba"]); }
+            finally { Bim.Cli.JurisdictionResolveCommand.WorkProbe = null; }
+            var diagnostic = "jurisdiction-resolve internal error: " + made.GetType().FullName + ": " + message;
+            Check(result.Thrown.Length == 0 && result.Envelope is { } envelope && envelope.Line == ResolveInternal && envelope.Exit == 1 && envelope.Diagnostic == diagnostic,
+                "Resolve with WorkProbe throwing " + label + ": no throw, the typed internal-error envelope and its diagnostic", E(result.Envelope) + " threw " + result.Thrown + " expected " + diagnostic);
+        }
+        foreach (var (label, arguments, line, exit) in new (string, string[], string?, int)[]
+        {
+            ("success", ["--code", "ar.caba"], null, 0),
+            ("jurisdiction_unknown", ["--code", "zz.nowhere"], null, 1),
+            ("usage", [], ResolveUsage, 1),
+            ("lock path invalid", ["--code", "ar.caba", "--lock", "a\0b"], null, 1),
+        })
+        {
+            var result = Resolve(arguments);
+            Check(result.Thrown.Length == 0 && result.Envelope is { } envelope && envelope.Exit == exit && envelope.Diagnostic is null && (line is null || envelope.Line == line),
+                "Resolve without a probe (" + label + "): no throw, exit " + exit.ToString(CultureInfo.InvariantCulture) + ", no diagnostic", E(result.Envelope) + " threw " + result.Thrown);
+        }
+
+        // 18b. The one throwing case: an exception whose Message getter throws. Resolve's catch calls IntentPlan.Internal,
+        // whose diagnostic reads error.Message, so the getter's exception leaves Resolve; Run's whole-body try contains it
+        // (the reason the try is not narrowed to the print): exit 1, no line, no diagnostic, nothing escapes Run.
+        Bim.Cli.JurisdictionResolveCommand.WorkProbe = () => throw new MessageGetterThrowsException();
+        try
+        {
+            var result = Resolve(["--code", "ar.caba"]);
+            Check(result.Envelope is null && result.Thrown == "System.InvalidOperationException: " + MessageGetterThrowsException.GetterMessage,
+                "Resolve with WorkProbe throwing an exception whose Message getter throws: the getter's InvalidOperationException leaves Resolve (from IntentPlan.Internal's diagnostic)",
+                E(result.Envelope) + " threw " + result.Thrown);
+            var run = Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(["jurisdiction-resolve", "--code", "ar.caba"]));
+            Check(run.Exit == 1 && run.Out.Length == 0 && run.Err.Length == 0 && run.Thrown.Length == 0,
+                "Run contains Resolve's throw in its whole-body try: exit 1, stdout and stderr empty, nothing escapes Run", D(run));
+            var rejecting = new RejectingWriter(new IOException("stdout P5-37"));
+            var both = Inline(() => Bim.Cli.JurisdictionResolveCommand.Run(["jurisdiction-resolve", "--code", "ar.caba"]), rejecting);
+            Check(both.Exit == 1 && both.Err.Length == 0 && both.Thrown.Length == 0 && rejecting.Attempts == 0,
+                "Run with Resolve throwing and a rejecting stdout: exit 1, stdout never attempted, nothing escapes Run",
+                D(both) + " stdout attempts " + rejecting.Attempts.ToString(CultureInfo.InvariantCulture));
+        }
+        finally { Bim.Cli.JurisdictionResolveCommand.WorkProbe = null; }
+        Check(Bim.Cli.JurisdictionResolveCommand.WorkProbe is null, "the WorkProbe seam is null again");
+
+        // 18c. Static: the command file is the P5-35 file (Run's whole-body try kept), Resolve's body is the try/catch into
+        // IntentPlan.Internal, and IntentPlan.Internal and InternalDiagnostic read only the verb, the type name and Message.
+        static string Squeeze(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", "");
+        static int Count(string text, string part) { var n = 0; for (var at = text.IndexOf(part, StringComparison.Ordinal); at >= 0; at = text.IndexOf(part, at + 1, StringComparison.Ordinal)) n++; return n; }
+        var resolvePath = Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs");
+        var resolveSource = File.Exists(resolvePath) ? File.ReadAllText(resolvePath).ReplaceLineEndings("\n") : "";
+        Check(Sha256(resolveSource) == ResolveP535Sha256, "JurisdictionResolveCommand.cs is the P5-35 file byte for byte (\"\\n\"): Run's whole-body try is kept", Sha256(resolveSource));
+        var resolveBody = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(resolveSource, blankStrings: false), @"\bpublic\s+static\s+IntentEnvelope\s+Resolve\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
+        Check(resolveBody == "try{returnExecute(args);}catch(Exceptionerror){returnIntentPlan.Internal(\"jurisdiction-resolve\",error);}",
+            "Resolve's body: try { return Execute(args); } catch (Exception error) { return IntentPlan.Internal(\"jurisdiction-resolve\", error); }", resolveBody);
+        var planPath = Path.Combine(root, "interfaces", "cli", "IntentPlan.cs");
+        var plan = Squeeze(ApplyIntentTests.CodeOf(File.Exists(planPath) ? File.ReadAllText(planPath) : "", blankStrings: false));
+        const string InternalPin = "publicstaticIntentEnvelopeInternal(stringverb,Exceptionerror)=>new(JsonSerializer.Serialize(new{status=\"failed\",code=verb.Replace('-','_')+\"_internal_error\"}),1,InternalDiagnostic(verb,error));";
+        const string DiagnosticPin = "publicstaticstringInternalDiagnostic(stringverb,Exceptionerror)=>verb+\"internalerror:\"+error.GetType().FullName+\":\"+error.Message;";
+        Check(Count(plan, InternalPin) == 1 && Count(plan, DiagnosticPin) == 1 && Count(plan, "InternalDiagnostic(stringverb") == 1 && Count(plan, "IntentEnvelopeInternal(") == 1,
+            "IntentPlan.Internal builds the typed line and IntentPlan.InternalDiagnostic reads only the type name and Message (the one throwing read)");
+
+        // 18d. Real processes: stdout open read-only (Linux and macOS) and a stdout pipe the reader closed (every OS).
+        var cases = new (string Label, string[] Arguments, int OpenExit)[]
+        {
+            ("jurisdiction-resolve success", ["jurisdiction-resolve", "--code", "ar.caba"], 0),
+            ("jurisdiction-resolve jurisdiction_unknown", ["jurisdiction-resolve", "--code", "zz.nowhere"], 1),
+            ("jurisdiction-resolve usage", ["jurisdiction-resolve"], 1),
+            ("skill-list listing", ["skill-list"], 0),
+        };
+        foreach (var (label, arguments, openExit) in cases)
+        {
+            var open = Child(null, false, arguments);
+            Check(open.Exit == openExit && open.Out.Length > 0 && open.Err.Length == 0, "control: " + label + " with an open stdout pipe prints its line, exit " + openExit.ToString(CultureInfo.InvariantCulture) + ", stderr empty", P(open));
+            var closed = Child(null, true, arguments);
+            Check(closed.Exit == openExit && closed.Err.Length == 0,
+                label + " with the stdout pipe closed by the reader: exit " + openExit.ToString(CultureInfo.InvariantCulture) + " as with an open pipe, stderr empty (the runtime drops the broken pipe; " + (OperatingSystem.IsMacOS() ? "macOS" : OperatingSystem.IsWindows() ? "Windows" : "Linux") + ")", P(closed));
+        }
+        if (OperatingSystem.IsWindows())
+            Console.WriteLine("SKIP skill-list: P5-37 read-only stdout (1</dev/null) needs /bin/sh (Linux/macOS); the closed pipe ran on Windows");
+        else
+        {
+            Check(File.Exists("/dev/null"), "precondition: /dev/null exists");
+            foreach (var (label, arguments, _) in cases)
+            {
+                var readOnly = Child("1</dev/null", false, arguments);
+                Check(readOnly.Exit == 1 && readOnly.Out.Length == 0 && readOnly.Err.Length == 0,
+                    label + " with stdout open read-only (1</dev/null, every write fails; " + (OperatingSystem.IsMacOS() ? "macOS" : "Linux") + "): exit 1, stderr empty (no unhandled exception)", P(readOnly));
+            }
+        }
+    }
+
+    // P5-37: the P5-35 JurisdictionResolveCommand.cs ("\n" line endings), unchanged by P5-37.
+    const string ResolveP535Sha256 = "7537d0a68e994c9d0475db2790a02bdffbda9e556a61736f5beb27f990900948";
+
+    // P5-37: an exception whose Message is null (the diagnostic ends with ": ").
+    sealed class NullMessageException : Exception
+    {
+        public NullMessageException() { }
+        public NullMessageException(string message) : base(message) { }
+        public NullMessageException(string message, Exception inner) : base(message, inner) { }
+        public override string Message => null!;
+    }
+
+    // P5-37: an exception whose Message getter throws InvalidOperationException(GetterMessage).
+    sealed class MessageGetterThrowsException : Exception
+    {
+        public const string GetterMessage = "message getter P5-37";
+        public MessageGetterThrowsException() { }
+        public MessageGetterThrowsException(string message) : base(message) { }
+        public MessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
+        public override string Message => throw new InvalidOperationException(GetterMessage);
     }
 
     // P5-35 documented delta (new text, P5-33 text), "\n" line endings.
