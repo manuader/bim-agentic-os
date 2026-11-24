@@ -88,6 +88,16 @@ using Point2 = Bim.Cad.Point2;
 // integers equal to CliMaxInputBytes (32 MiB). Self-tests: an extra reader argument, a commented-out copy beside a
 // changed read and a changed cap are each caught. The options are pinned rather than shared because CadCommand reads the
 // input once for cad-draft and cad-brief (the reason recorded for the PDF reader options in the cad-brief contract).
+//
+// P6-44 (section RunJustified at the end): justified TEXT (72 = 1/2/4, 73 != 0) keeps its group 10 point, ezdxf 1.4.2
+// places it on group 11 (documented limit, measured and pinned); a non-finite group 30 and 31 on a justified near-Z
+// attribute fail at group 30's line; the A1/J1/K1 constants are cross-referenced.
+// P6-44 generator check (offline only, reason pinned): CI does not run tests/cad/tools/minsert_ezdxf_centres.py
+// because ezdxf is not a dependency of any CI job (a pinned `pip install ezdxf==1.4.2` step would edit
+// .github/workflows/ci.yml, outside the P6-44 files) and PyPI was unreachable where the constants were made. The
+// committed constants are checked reproducibly offline: with an ezdxf 1.4.2 checkout (tag v1.4.2, commit 8240df57)
+//     PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check
+// compares every constant row the generator prints with this file (exact doubles) and exits 1 on any difference.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -287,6 +297,7 @@ internal static class MinsertEzdxfTests
         RunLeaf(C);
         RunFollow(C);
         RunAligned(C);
+        RunJustified(C);
         if (RunCliPrecondition(C)) RunCli(C, bytes);
     }
 
@@ -1529,6 +1540,259 @@ internal static class MinsertEzdxfTests
         catch (Exception error)
         {
             c(false, "aligned relabel unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+    }
+
+    // ---------- P6-44: near-Z text: justified TEXT placement, 30/31 error order, A1/J1 cross-reference, generator check ----------
+    //
+    // JustifiedDrawing() mirrors JUST_* in tests/cad/tools/minsert_ezdxf_centres.py (section P6-44 justify_main).
+    // * Justified TEXT (72 = 1/2/4 or 73 != 0, not aligned/fit): ezdxf 1.4.2's Text.get_placement() places it on the
+    //   group 11 point (align_point, falling back to group 10 when 11 is absent). DxfReader keeps the group 10 point with
+    //   the z of group 30. Documented limit, pinned: DxfText has no justification member, so its Insertion stays the
+    //   left baseline start (AutoCAD writes it recomputed from 11; ezdxf's set_placement writes 10 = 11), which with
+    //   RotationDegrees and Height describes the text for a left-aligned reading; taking group 11 would need a model
+    //   change (a serialized alignment member) and moves room labels by up to half the text width. Every placed copy
+    //   equals ezdxf's transformed group 10 point within 1e-6, and lies exactly ezdxf's measured distance (62..131 mm
+    //   here) from ezdxf's placement point; TG (no group 11) equals both. Justified ATTRIB/ATTDEF keep group 11 (P6-40).
+    // * Error order: a justified ATTRIB/ATTDEF in its own near +-Z OCS checks group 30 first, so when both 30 and 31 are
+    //   non-finite the bad-number is at group 30's line, also when 31 comes first in the file; a justified TEXT reads
+    //   only 30 (a non-finite 31 alone parses). Under an exact +-Z OCS both read as 0 (P6-38/P6-42 tolerance).
+    // * Cross-reference: P6-42's A1/A2 FA/FF constants, P6-40's J1/J2 JT/JU constants and this section's K1/K2 TA/TB
+    //   group 10 constants are the same ezdxf numbers for the same insert and leaf parameters (checked here exactly).
+    // * Generator check: the offline-only reason in the file header is pinned here, with the generator's --check mode.
+    private static string JustifiedDrawing() =>
+        G("0 SECTION|2 HEADER|9 $INSUNITS|70 4|0 ENDSEC")
+        + G("0 SECTION|2 BLOCKS|0 BLOCK|5 K0|8 0|2 JB|70 0|10 40|20 -30|30 0")
+        + G("0 TEXT|5 TA|8 0|10 50|20 60|30 1300|11 150|21 60|31 1700|40 100|72 1|1 TA")
+        + G("0 TEXT|5 TB|8 0|10 120|20 -80|30 400|11 220|21 -80|31 900|40 100|72 2|1 TB|210 0|220 0|230 -1")
+        + G("0 TEXT|5 TC|8 0|10 -200|20 150|30 600|11 -100|21 180|31 1100|40 100|72 4|1 TC|210 1e-7|220 -1e-7|230 1")
+        + G("0 TEXT|5 TD|8 0|10 300|20 300|30 1000|11 300|21 420|31 1000|40 100|72 0|73 1|1 TD")
+        + G("0 TEXT|5 TE|8 0|10 -150|20 250|30 800|11 -60|21 250|31 1200|40 100|72 1|73 3|1 TE|210 -1e-7|220 2e-7|230 -1")
+        + G("0 TEXT|5 TF|8 0|10 250|20 -150|30 500|11 330|21 -110|31 500|40 100|72 2|73 2|1 TF|210 0|220 0|230 -1")
+        + G("0 TEXT|5 TG|8 0|10 400|20 100|30 2100|40 100|72 1|1 TG")
+        + G("0 ENDBLK|5 K9|8 0|0 ENDSEC")
+        + G("0 SECTION|2 ENTITIES")
+        + G("0 INSERT|5 K1|8 ROOMS|2 JB|10 50000|20 20000|30 700|41 1.2|42 1.2|50 25|210 3e-7|220 -2e-7|230 1")
+        + G("0 INSERT|5 K2|8 ROOMS|2 JB|10 -40000|20 30000|30 -300|41 0.9|42 0.9|43 -1.5|50 -40|210 -2e-7|220 1e-7|230 -1")
+        + G("0 ENDSEC|0 EOF");
+
+    // ezdxf 1.4.2 WCS points (generator section P6-44 justify_main): (insert path, leaf handle, transformed group 10
+    // point x, y, transformed Text.get_placement() p1 x, y).
+    private static readonly (string Path, string Handle, double X, double Y, double PX, double PY)[] JustifiedPoints =
+    {
+        ("K1", "TA", 49965.23352117541, 20102.95226014045, 50073.990575619806, 20153.66637154933),
+        ("K1", "TB", 49851.34609059236, 19864.478766523192, 49742.589006147966, 19813.76467511431),
+        ("K1", "TC", 49647.69829847912, 20074.048127792546, 49741.241205236416, 20157.389270513377),
+        ("K1", "TD", 50115.4117079051, 20490.754441329205, 50054.554678214445, 20621.26276266248),
+        ("K1", "TE", 49977.6326937947, 20360.305180433414, 49879.751248720626, 20314.66255488529),
+        ("K1", "TF", 49745.46197980086, 19722.42048358057, 49638.17075568179, 19725.35190423122),
+        ("K1", "TG", 50325.59735516724, 20323.954543849297, 50325.59735516724, 20323.954543849297),
+        ("K2", "TA", 39941.040253627114, 30056.264286405312, 39872.09637374641, 29998.413341533524),
+        ("K2", "TB", 40139.23578224482, 30058.089445854363, 40208.179632125524, 30115.94040572615),
+        ("K2", "TC", 40061.334240288415, 30262.94112740048, 39975.03511939962, 30225.773304095466),
+        ("K2", "TD", 39629.83804023306, 30077.10271893954, 39560.416978386915, 30159.83551879639),
+        ("K2", "TE", 39762.17990508381, 30129.407472897965, 39824.22836627334, 30181.473407578127),
+        ("K2", "TF", 40269.35857149999, 30085.03481127119, 40301.37341745584, 30158.893119120905),
+        ("K2", "TG", 39676.59614009593, 29881.363669306338, 39676.59614009593, 29881.363669306338),
+    };
+
+    // The pairs (code, value) of the record with the given group 5 handle in a G()-built drawing, without 5, 2 and 1.
+    private static List<string> RecordOf(string text, string handle)
+    {
+        var lines = text.Split('\n');
+        var pairs = new List<(string Code, string Value)>();
+        for (var k = 0; k + 1 < lines.Length; k += 2) pairs.Add((lines[k], lines[k + 1]));
+        var at = pairs.FindIndex(p => p.Code == "5" && p.Value == handle);
+        if (at < 1) return new List<string> { "missing " + handle };
+        var record = new List<string> { pairs[at - 1].Value };
+        for (var k = at + 1; k < pairs.Count && pairs[k].Code != "0"; k++)
+            if (pairs[k].Code is not ("5" or "2" or "1")) record.Add(pairs[k].Code + " " + pairs[k].Value);
+        return record;
+    }
+
+    // The header lines that record why the ezdxf generator is offline only (pinned by RunJustified).
+    private static readonly string[] OfflineReason =
+    {
+        "// P6-44 generator check (offline only, reason pinned): CI does not run tests/cad/tools/minsert_ezdxf_centres.py",
+        "// because ezdxf is not a dependency of any CI job (a pinned `pip install ezdxf==1.4.2` step would edit",
+        "// .github/workflows/ci.yml, outside the P6-44 files) and PyPI was unreachable where the constants were made. The",
+        "// committed constants are checked reproducibly offline: with an ezdxf 1.4.2 checkout (tag v1.4.2, commit 8240df57)",
+        "//     PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check",
+    };
+
+    private static void RunJustified(Action<bool, string, string> c)
+    {
+        var text = JustifiedDrawing();
+        {
+            var handles = HandlesOf(text);
+            var duplicates = handles.GroupBy(h => h, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key).ToList();
+            c(handles.Count > 10 && duplicates.Count == 0, "justified: JustifiedDrawing() group 5 handles are unique (" + handles.Count.ToString(CultureInfo.InvariantCulture) + ")", "duplicates " + string.Join(",", duplicates));
+        }
+
+        // Justified TEXT: the group 10 point equals ezdxf's transformed insert; ezdxf's placement point is group 11.
+        try
+        {
+            var drawing = DxfReader.Parse(new UTF8Encoding(false).GetBytes(text), "justified-ezdxf.dxf");
+            var x = drawing.Explode();
+            c(drawing.Warnings.Count == 0 && drawing.Unsupported.Count == 0 && x.Warnings.Count == 0,
+                "justified: no reader or explode warning and nothing unsupported",
+                "reader " + string.Join(",", drawing.Warnings.Select(w => w.Code + "@" + w.Line.ToString(CultureInfo.InvariantCulture))) + " explode " + string.Join(",", x.Warnings.Select(w => w.Code)));
+            foreach (var (path, handle, ex, ey, px, py) in JustifiedPoints)
+            {
+                var found = x.Entities.Where(e => e.Provenance.Handle == handle && string.Join(">", e.Provenance.InsertPath) == path).ToList();
+                var name = "justified: " + path + " " + handle;
+                if (found.Count != 1 || found[0] is not DxfText placed)
+                {
+                    c(false, name + " is one placed TEXT", "found " + found.Count.ToString(CultureInfo.InvariantCulture));
+                    continue;
+                }
+                var error = Distance(placed.Insertion, ex, ey);
+                c(error <= Eps && ZeroZ(placed), name + " group 10 point equals ezdxf 1.4.2's transformed insert within 1e-6 and the copy's z members are 0",
+                    P(placed.Insertion) + " expected (" + F(ex) + "," + F(ey) + ") error " + F(error) + " " + ZMembers(placed));
+                var offset = Distance(placed.Insertion, px, py);
+                var measured = Math.Max(Math.Abs(ex - px), Math.Abs(ey - py));
+                c(Math.Abs(offset - measured) <= Eps && (handle == "TG" ? measured == 0 : measured > 50),
+                    name + (handle == "TG"
+                        ? " (no group 11) is at ezdxf's placement point p1"
+                        : " limit pinned: not at ezdxf's placement point p1 (group 11), off by the measured " + F(Math.Round(measured, 3)) + " mm"),
+                    "placement (" + F(px) + "," + F(py) + ") offset " + F(offset) + " measured " + F(measured));
+            }
+            var jb = drawing.Blocks.Single(b => b.Name == "JB").Entities.ToDictionary(e => e.Provenance.Handle!, StringComparer.Ordinal);
+            // Near-Z leaves: the OCS point moves by z x 1e-7 or so; 1e-3 still tells group 10 from group 11 (>= 30 away)
+            // and the z of group 30 from that of 31 (400..500 away for TC/TE).
+            var kept = new (string Name, double X, double Y, double Z, double Tolerance)[]
+            {
+                ("TA", 50, 60, 1300, 0), ("TB", -120, -80, -400, 0), ("TC", -200, 150, 600, 1e-3), ("TD", 300, 300, 1000, 0),
+                ("TE", 150, 250, -800, 1e-3), ("TF", -250, -150, -500, 0), ("TG", 400, 100, 2100, 0),
+            };
+            foreach (var (name, ex, ey, ez, tolerance) in kept)
+            {
+                var entity = (DxfText)jb[name];
+                c(Distance(entity.Insertion, ex, ey) <= Math.Max(tolerance, 1e-9) && Math.Abs(entity.Elevation - ez) <= Math.Max(tolerance, 1e-9),
+                    "justified: reader keeps TEXT " + name + " at its group 10 point (" + F(ex) + "," + F(ey) + ") with the z of group 30 (" + F(ez) + "); group 11 is not modelled",
+                    P(entity.Insertion) + " z " + F(entity.Elevation));
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "justified unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // Cross-reference: A1/A2 FA/FF (P6-42), J1/J2 JT/JU (P6-40) and K1/K2 TA/TB (P6-44) share one set of numbers.
+        try
+        {
+            var aligned = AlignedDrawing();
+            var follow = FollowDrawing();
+            foreach (var (a, j, k) in new[] { ("A1", "J1", "K1"), ("A2", "J2", "K2") })
+            {
+                var ra = RecordOf(aligned, a);
+                var rj = RecordOf(follow, j);
+                var rk = RecordOf(text, k);
+                c(ra.SequenceEqual(rj) && rj.SequenceEqual(rk), "justified: cross-reference: inserts " + a + ", " + j + " and " + k + " have the same parameters",
+                    string.Join(" ", ra) + " | " + string.Join(" ", rj) + " | " + string.Join(" ", rk));
+                foreach (var (fa, jt, ta) in new[] { ("FA", "JT", "TA"), ("FF", "JU", "TB") })
+                {
+                    string Leaf(List<string> record) => string.Join(" ", record.Where(g => g.Split(' ')[0] is "10" or "20" or "30" or "210" or "220" or "230"));
+                    var la = Leaf(RecordOf(aligned, fa));
+                    var lj = Leaf(RecordOf(follow, jt));
+                    var lk = Leaf(RecordOf(text, ta));
+                    var pa = AlignedPoints.Where(p => p.Path == a && p.Handle == fa).Select(p => (p.X, p.Y)).ToList();
+                    var pj = FollowPoints.Where(p => p.Path == j && p.Handle == jt).Select(p => (p.X, p.Y)).ToList();
+                    var pk = JustifiedPoints.Where(p => p.Path == k && p.Handle == ta).Select(p => (p.X, p.Y)).ToList();
+                    c(la == lj && lj == lk && pa.Count == 1 && pj.Count == 1 && pk.Count == 1 && pa[0] == pj[0] && pj[0] == pk[0],
+                        "justified: cross-reference: " + a + " " + fa + " (P6-42), " + j + " " + jt + " (P6-40) and " + k + " " + ta + " (P6-44) have the same group 10/20/30 and OCS and the same ezdxf constant",
+                        la + " | " + lj + " | " + lk + "; " + string.Join(";", pa.Concat(pj).Concat(pk).Select(p => "(" + F(p.X) + "," + F(p.Y) + ")")));
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "justified cross-reference unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // Error order when both group 30 and 31 are non-finite: group 30's line, whatever the file order.
+        try
+        {
+            const string NearPlus = "|210 1e-7|220 -1e-7|230 1";
+            const string NearMinus = "|210 2e-7|220 1e-7|230 -1";
+            const string MinusZ = "|210 0|220 0|230 -1";
+            string Definition(string z, string justify, string ocs) =>
+                G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0")
+                + G("0 ATTDEF|5 B1|8 0|10 100|20 50|" + z + "|40 100|1 X|3 P?|2 P|70 2" + justify + ocs)
+                + G("0 ENDBLK|5 B2|8 0|0 ENDSEC|0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|10 0|20 0|0 ENDSEC|0 EOF");
+            string Attribute(string z, string justify, string ocs) =>
+                G("0 SECTION|2 BLOCKS|0 BLOCK|5 B0|8 0|2 BOX|70 0|10 0|20 0|30 0|0 LINE|5 B1|8 0|10 0|20 0|11 100|21 0|0 ENDBLK|5 B2|8 0|0 ENDSEC")
+                + G("0 SECTION|2 ENTITIES|0 INSERT|5 S0|8 0|2 BOX|66 1|10 0|20 0")
+                + G("0 ATTRIB|5 S1|8 0|10 100|20 50|" + z + "|40 100|1 v|2 P|70 0" + justify + ocs + "|0 SEQEND|5 S2|8 0|0 ENDSEC|0 EOF");
+            string Plain(string z, string justify, string ocs) =>
+                G("0 SECTION|2 ENTITIES|0 TEXT|5 X1|8 0|10 100|20 50|" + z + "|40 100|1 T" + justify + ocs + "|0 ENDSEC|0 EOF");
+            // (label, text, group code whose value line is reported, its value; null code when the file must parse)
+            var cases = new (string Label, string Text, string? Code, string? Value)[]
+            {
+                ("ATTDEF 72 1 near +Z 30 NaN, 31 inf", Definition("30 NaN|11 160|21 70|31 inf", "|72 1", NearPlus), "30", "NaN"),
+                ("ATTDEF 74 2 near -Z 30 1e999, 31 -Infinity", Definition("30 1e999|11 160|21 70|31 -Infinity", "|74 2", NearMinus), "30", "1e999"),
+                ("ATTDEF 72 4 near +Z 31 -1e999 written before 30 1e999", Definition("11 160|21 70|31 -1e999|30 1e999", "|72 4", NearPlus), "30", "1e999"),
+                ("ATTRIB 72 2 near -Z 30 inf, 31 NaN", Attribute("30 inf|11 160|21 70|31 NaN", "|72 2", NearMinus), "30", "inf"),
+                ("ATTRIB 74 1 near +Z 31 NaN written before 30 -inf", Attribute("11 160|21 70|31 NaN|30 -inf", "|74 1", NearPlus), "31", "NaN"),
+                ("TEXT 72 1 near +Z 30 NaN, 31 inf", Plain("30 NaN|11 160|21 70|31 inf", "|72 1", NearPlus), "30", "NaN"),
+                ("TEXT 72 2 near -Z 31 inf only (31 not read for TEXT)", Plain("30 500|11 160|21 70|31 inf", "|72 2", NearMinus), null, null),
+                ("ATTDEF 72 1 exact -Z 30 NaN, 31 inf (tolerated)", Definition("30 NaN|11 160|21 70|31 inf", "|72 1", MinusZ), null, null),
+                ("ATTRIB 74 2 +Z 30 1e999, 31 NaN (tolerated)", Attribute("30 1e999|11 160|21 70|31 NaN", "|74 2", ""), null, null),
+            };
+            foreach (var (label, drawingText, code, value) in cases)
+            {
+                string outcome;
+                try
+                {
+                    var d = DxfReader.Parse(new UTF8Encoding(false).GetBytes(drawingText), "order-z.dxf");
+                    var z = d.Entities.OfType<DxfText>().Select(t => t.Elevation).Concat(d.Blocks.SelectMany(b => b.Entities).OfType<DxfAttribute>().Concat(d.Entities.OfType<DxfInsert>().SelectMany(i => i.Attributes)).Select(a => a.Elevation)).ToList();
+                    outcome = "parsed: warnings " + string.Join(",", d.Warnings.Select(w => w.Code)) + " elevations " + string.Join(",", z.Select(F));
+                }
+                catch (DxfFormatException e)
+                {
+                    outcome = e.Code + "@" + e.Line.ToString(CultureInfo.InvariantCulture) + ":" + e.Message;
+                }
+                if (code is not null)
+                {
+                    var lines = drawingText.Split('\n');
+                    var line = Enumerable.Range(0, lines.Length - 1).First(k => lines[k] == code && lines[k + 1] == value) + 2;
+                    var other = Enumerable.Range(0, lines.Length - 1).Where(k => lines[k] == "31").Select(k => k + 2).DefaultIfEmpty(0).First();
+                    c(outcome.StartsWith("bad-number@" + line.ToString(CultureInfo.InvariantCulture) + ":group " + code + " value is not a finite number", StringComparison.Ordinal),
+                        "justified: error order: " + label + " is refused bad-number at group " + code + "'s line " + line.ToString(CultureInfo.InvariantCulture) + " (group 31 at line " + other.ToString(CultureInfo.InvariantCulture) + ")", outcome);
+                }
+                else
+                {
+                    c(outcome.StartsWith("parsed: warnings  elevations ", StringComparison.Ordinal),
+                        "justified: error order: " + label + " parses", outcome);
+                }
+            }
+        }
+        catch (Exception error)
+        {
+            c(false, "justified error order unexpected exception", error.GetType().Name + ": " + error.Message);
+        }
+
+        // Generator check: offline only, the reason pinned in this file's header; the generator has the --check mode.
+        try
+        {
+            var root = RepoRoot();
+            var source = File.ReadAllText(Path.Combine(root, "tests", "cad", "MinsertEzdxfTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
+            var header = source[..source.IndexOf("internal static class MinsertEzdxfTests", StringComparison.Ordinal)];
+            var reason = string.Join("\n", OfflineReason) + "\n";
+            c(header.Contains(reason, StringComparison.Ordinal),
+                "justified: generator: the file header records why the ezdxf generator is offline only and the --check command",
+                "header has the reason block: " + header.Contains(reason, StringComparison.Ordinal));
+            var generator = File.ReadAllText(Path.Combine(root, "tests", "cad", "tools", "minsert_ezdxf_centres.py")).Replace("\r\n", "\n", StringComparison.Ordinal);
+            var sections = new[] { "def main():", "def bulge_main():", "def chain_main():", "def z_main():", "def leaf_main():", "def follow_main():", "def align_main():", "def justify_main():", "def check_main(cs_path):" };
+            var missing = sections.Where(s => !generator.Contains("\n" + s + "\n", StringComparison.Ordinal)).ToList();
+            var checkedSections = generator.Contains("for section in (main, bulge_main, chain_main, z_main, leaf_main, follow_main, align_main, justify_main):", StringComparison.Ordinal);
+            c(missing.Count == 0 && checkedSections && generator.Contains("if sys.argv[1:2] == [\"--check\"]:", StringComparison.Ordinal) && generator.Contains("commit 8240df5793daf2fd7db95d118a78e17ec92043ec", StringComparison.Ordinal),
+                "justified: generator: tests/cad/tools/minsert_ezdxf_centres.py has every section, a --check mode over all of them, and records ezdxf 1.4.2 commit 8240df57",
+                "missing " + string.Join(",", missing) + " check covers all " + checkedSections);
+        }
+        catch (Exception error)
+        {
+            c(false, "justified generator unexpected exception", error.GetType().Name + ": " + error.Message);
         }
     }
 }

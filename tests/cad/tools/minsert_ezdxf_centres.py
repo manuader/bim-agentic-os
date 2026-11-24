@@ -8,6 +8,10 @@ ezdxf 1.4.2 (tag v1.4.2, commit 8240df5793daf2fd7db95d118a78e17ec92043ec) on Pyt
 (PyPI was blocked where the constants were generated, so ezdxf was imported from a source checkout of tag v1.4.2;
 `pip install ezdxf==1.4.2` works equally where PyPI is reachable.)
 
+P6-44: `... minsert_ezdxf_centres.py --check [path to MinsertEzdxfTests.cs]` runs every section and compares each
+printed constant row with the committed C# constants (exact doubles); exit status 1 on any difference. Offline only:
+the reason is pinned in the header of tests/cad/MinsertEzdxfTests.cs.
+
 It builds, with ezdxf's own API, the block RECT and the INSERT/MINSERT entities that MinsertEzdxfTests.Drawing()
 writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
   * for every MINSERT cell (ezdxf Insert.multi_insert(), row-major) the four WCS corners of the cell's RECT outline
@@ -17,8 +21,8 @@ writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
   * for the tilted inserts (non-axis extrusion, which DxfReader reports as ocs-non-planar instead of projecting), the
     world XY centre the projection reading would give, used as decoy label positions.
 
-P6-34, P6-36, P6-38, P6-40 and P6-42 extensions (chain_main, z_main, leaf_main, follow_main, align_main) are described
-at their sections below.
+P6-34, P6-36, P6-38, P6-40, P6-42 and P6-44 extensions (chain_main, z_main, leaf_main, follow_main, align_main,
+justify_main) and the --check mode are described at their sections below.
 
 P6-32 extension (same ezdxf 1.4.2 checkout, commit 8240df57; printed after the P6-30 sections, which are unchanged):
 a second drawing (BULGE_* below, mirrored by MinsertEzdxfTests.BulgeDrawing()) whose block ARCH (base (50, 20)) holds
@@ -30,6 +34,12 @@ multi_insert(), row-major) it prints the insert path, the four WCS corners (LWPo
 segment in order (closing segment last), the WCS midpoint of the segment: for an ARC from LWPolyline.virtual_entities()
 the point Arc.vertices() gives at the middle of its counter-clockwise span, for a LINE the mean of its end points.
 """
+
+import contextlib
+import io
+import os
+import re
+import sys
 
 import ezdxf
 from ezdxf import path
@@ -852,7 +862,146 @@ def align_main():
                   + "; align point p2 at " + r(p2.x) + ", " + r(p2.y))
 
 
+# P6-44: justified TEXT (72 = 1/2/4 or 73 != 0) under near +-Z inserts. For every alignment except LEFT, ALIGNED and
+# FIT, ezdxf's Text.get_placement() returns the group 11 point (align_point) as the placement point p1 (falling back to
+# the group 10 point when group 11 is absent). DxfReader keeps the group 10 point with the z of group 30 for TEXT (a
+# documented limit: DxfText has no justification member, so its Insertion stays the left baseline start that, with
+# Rotation and Height, describes the text). Block JB (base (40, -30, 0)) holds TEXT TA (72 = 1, +Z), TB (72 = 2, exact
+# -Z OCS), TC (72 = 4, its own near +Z OCS (1e-7, -1e-7, 1)), TD (72 = 0, 73 = 1, +Z), TE (72 = 1, 73 = 3, its own
+# near -Z OCS (-1e-7, 2e-7, -1)), TF (72 = 2, 73 = 2, exact -Z) with 31 != 30 for TA/TB/TC/TE, and TG (72 = 1, no group
+# 11, so ezdxf's p1 is the group 10 point). Model space: K1 (JB, near +Z, scale 1.2, elevation 700, rotation 25) and K2
+# (JB, near -Z, scale 0.9, Z scale -1.5, rotation -40): the same placements as P6-40's J1/J2. Printed per leaf: the
+# transformed group 10 point (what DxfExploder must give) and ezdxf's transformed placement point p1, both from the
+# composed Insert.matrix44() applied to the point taken to block WCS by the leaf's own OCS, cross-checked within 1e-9
+# against a copy transformed with its own transform(m) (insert, and get_placement() p1) and against virtual_entities().
+JUST_BLOCK_BASE = (40.0, -30.0, 0.0)
+# name, insert (10/20/30), align point (11/21/31) or None, halign (72), valign (73), extrusion
+JUST_LEAVES = [
+    ("TA", (50.0, 60.0, 1300.0), (150.0, 60.0, 1700.0), 1, 0, (0.0, 0.0, 1.0)),
+    ("TB", (120.0, -80.0, 400.0), (220.0, -80.0, 900.0), 2, 0, (0.0, 0.0, -1.0)),
+    ("TC", (-200.0, 150.0, 600.0), (-100.0, 180.0, 1100.0), 4, 0, (1e-7, -1e-7, 1.0)),
+    ("TD", (300.0, 300.0, 1000.0), (300.0, 420.0, 1000.0), 0, 1, (0.0, 0.0, 1.0)),
+    ("TE", (-150.0, 250.0, 800.0), (-60.0, 250.0, 1200.0), 1, 3, (-1e-7, 2e-7, -1.0)),
+    ("TF", (250.0, -150.0, 500.0), (330.0, -110.0, 500.0), 2, 2, (0.0, 0.0, -1.0)),
+    ("TG", (400.0, 100.0, 2100.0), None, 1, 0, (0.0, 0.0, 1.0)),
+]
+JUST_CASES = [
+    ("K1", (50000.0, 20000.0, 700.0), 25.0, 1.2, 1.2, 1.0, (3e-7, -2e-7, 1.0)),
+    ("K2", (-40000.0, 30000.0, -300.0), -40.0, 0.9, 0.9, -1.5, (-2e-7, 1e-7, -1.0)),
+]
+
+
+def build_justified():
+    doc = ezdxf.new("R2018")
+    doc.header["$INSUNITS"] = 4
+    jb = doc.blocks.new("JB", base_point=JUST_BLOCK_BASE)
+    made = {}
+    for name, ins, align, h, v, ext in JUST_LEAVES:
+        attribs = {"insert": ins, "halign": h, "valign": v, "height": 100.0, "extrusion": ext}
+        if align is not None:
+            attribs["align_point"] = align
+        e = jb.add_text(name, dxfattribs=attribs)
+        assert e.get_placement()[0].name not in ("LEFT", "ALIGNED", "FIT"), (name, e.get_placement())
+        assert e.dxf.hasattr("align_point") == (align is not None), name
+        made[name] = e
+    msp = doc.modelspace()
+    top = {}
+    for name, ins, rot, sx, sy, sz, ext in JUST_CASES:
+        top[name] = msp.add_blockref("JB", ins, dxfattribs={"rotation": rot, "xscale": sx, "yscale": sy, "zscale": sz, "extrusion": ext})
+    return made, top
+
+
+def placement_wcs(e):
+    # ezdxf's placement point p1 of a TEXT in WCS (its own OCS).
+    return e.ocs().to_wcs(Vec3(e.get_placement()[1]))
+
+
+def justify_main():
+    print("// P6-44 justified TEXT points: (path, handle, group 10 x, y, placement p1 x, y)")
+    made, top = build_justified()
+    for name, *_ in JUST_CASES:
+        m = top[name].matrix44()
+        virtual = {v.dxf.text: v for v in top[name].virtual_entities() if v.dxftype() == "TEXT"}
+        for handle, *_ in JUST_LEAVES:
+            e = made[handle]
+            g = m.transform(follow_point(e, "insert"))
+            p = m.transform(placement_wcs(e))
+            c = e.copy()
+            c.transform(m)
+            assert (follow_point(c, "insert") - g).magnitude <= 1e-9, (name, handle)
+            assert (placement_wcs(c) - p).magnitude <= 1e-9, (name, handle)
+            v = virtual[handle]
+            assert (follow_point(v, "insert") - g).magnitude <= 1e-9, (name, handle)
+            assert (placement_wcs(v) - p).magnitude <= 1e-9, (name, handle)
+            print('("' + name + '", "' + handle + '", ' + r(g.x) + ", " + r(g.y) + ", " + r(p.x) + ", " + r(p.y) + "),")
+            print("//   " + name + " " + handle + " group 10 vs placement p1: " + r(max(abs(g.x - p.x), abs(g.y - p.y))))
+
+
+# P6-44: --check compares every printed constant tuple with the committed tests/cad/MinsertEzdxfTests.cs. A printed
+# line that starts with "(" is a constant row: its quoted names (except the point labels in LABELS) and its numbers
+# (the trailing // comment dropped) must appear in one line of the C# file, each name on that line (alone or as the
+# first step of an insert path, e.g. J3 in "J3>JI") and the numbers as a contiguous run of that line's numbers, each
+# equal as a double (Python repr and C# "R" both round-trip, so equality is exact). DECOYS are matched by their numbers
+# only (Drawing() writes them as label TEXTs L5..L7). Rows printed for the record are listed in UNUSED with the reason;
+# any other unmatched row, or an UNUSED row that is matched, fails the check (exit status 1). Offline only, like the
+# generator (the reason is pinned in the test header).
+LABELS = {"insert", "end", "start", "center", "mid", "v0", "v1", "v2", "v3"}
+DECOYS = {"T1", "T2[0,0]", "T3[1,1]"}
+# Not committed: the tilted T2/T3 cells other than the decoy label positions, and the heavy POLYLINE LH (not modelled
+# by DxfReader; MinsertEzdxfTests pins that nothing of it is placed).
+UNUSED = {"T2[0,1]", "T2[1,0]", "T2[1,1]", "T3[0,0]", "T3[0,1]", "T3[1,0]", "LH"}
+_NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])")
+_QUOTED = re.compile(r'"([^"]*)"')
+
+
+def _row(line):
+    body = line.split("//", 1)[0]
+    names = [q for q in _QUOTED.findall(body) if q not in LABELS]
+    numbers = [float(n) for n in _NUMBER.findall(_QUOTED.sub("", body))]
+    return names, numbers
+
+
+def _named(name, cnames):
+    return any(c == name or c.startswith(name + ">") for c in cnames)
+
+
+def _contains(run, numbers):
+    n = len(run)
+    return any(numbers[k:k + n] == run for k in range(len(numbers) - n + 1))
+
+
+def check_main(cs_path):
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        for section in (main, bulge_main, chain_main, z_main, leaf_main, follow_main, align_main, justify_main):
+            section()
+    committed = [_row(line) for line in open(cs_path, encoding="utf-8").read().splitlines()]
+    matched, unused, failures = 0, 0, []
+    for line in out.getvalue().splitlines():
+        if not line.startswith("("):
+            continue
+        names, numbers = _row(line)
+        if not numbers:
+            continue
+        wanted = [] if names and names[0] in DECOYS else names
+        found = any(all(_named(name, cnames) for name in wanted) and _contains(numbers, cnumbers) for cnames, cnumbers in committed)
+        if any(name in UNUSED for name in names):
+            unused += 1
+            if found:
+                failures.append("listed as unused but committed: " + line)
+        elif found:
+            matched += 1
+        else:
+            failures.append("not committed: " + line)
+    for failure in failures:
+        print(failure)
+    print("ezdxf " + ezdxf.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, " + str(len(failures)) + " failures")
+    return 1 if failures else 0
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--check"]:
+        sys.exit(check_main(sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "MinsertEzdxfTests.cs")))
     main()
     bulge_main()
     chain_main()
@@ -860,3 +1009,4 @@ if __name__ == "__main__":
     leaf_main()
     follow_main()
     align_main()
+    justify_main()
