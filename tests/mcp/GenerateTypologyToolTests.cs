@@ -84,7 +84,13 @@ internal static class GenerateTypologyToolTests
             using var process = Process.Start(start) ?? throw new Exception("CLI process did not start: " + dotnet);
             var stdout = process.StandardOutput.ReadToEndAsync();
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(180000)) { process.Kill(true); throw new Exception("CLI timed out: generate-typology " + requestPath); }
+            if (!process.WaitForExit(180000))
+            {
+                // P3-40: contained as Server's (section 9): the process may exit, or the kill be denied, after the timeout.
+                try { process.Kill(true); }
+                catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                throw new Exception("CLI timed out: generate-typology " + requestPath);
+            }
             process.WaitForExit();
             _ = stderr.Result;
             var text = stdout.Result;
@@ -757,7 +763,9 @@ internal static class GenerateTypologyToolTests
             // pipe (the buffered bytes, then EOF). Two chunk sizes: 1 KiB (the server's AutoFlush writes are small) and
             // 1 MiB (a large write is what grows the macOS pipe to its 64 KiB maximum). Documented capacities: Linux pipe(7),
             // 16 pages = 65536 bytes by default; macOS (xnu sys/pipe.h) PIPE_SIZE 16384 growing to BIG_PIPE_SIZE 65536;
-            // Windows .NET Process pipes use the default (smaller) buffer. The bound holds if every measurement is at most
+            // Windows .NET Process pipes use the default (smaller) buffer: measured 4096 bytes in 1 KiB writes, and 0 in 1 MiB
+            // writes (a write larger than the free buffer stays pending whole, so the reader sees none of it); the 1 KiB
+            // count above 0 shows the after-kill read sees buffered bytes on every OS. The bound holds if every measurement is at most
             // PipeBufferBound and the success cut leaves more than that unread.
             const int SettleMs = 1500;
             const int FillMs = 30000;
@@ -805,7 +813,7 @@ internal static class GenerateTypologyToolTests
             var small = Capacity(1024);
             var large = Capacity(1 << 20);
             var measured = Math.Max(small.Bytes, large.Bytes);
-            Check(small.Settled && large.Settled && small.Bytes > 0 && large.Bytes > 0 && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
+            Check(small.Settled && large.Settled && small.Bytes > 0 && large.Bytes >= 0 && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
                 "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + small.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 KiB writes and "
                 + large.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 MiB writes before the writer blocked, at most PipeBufferBound " + PipeBufferBound.ToString(CultureInfo.InvariantCulture)
                 + ", and the success cut leaves " + (Length("success") - CutBytes).ToString(CultureInfo.InvariantCulture) + " bytes unread | settled " + small.Settled + "/" + large.Settled
