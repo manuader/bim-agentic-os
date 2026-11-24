@@ -860,28 +860,33 @@ internal static class DeletedCwdPathTests
         PathProblemFilters41(root, Check);
         McpUnsearchable41(scratch, Check, skip);
         LockVerbsUnsearchable41(root, scratch, cliDll, Check, skip);
+        RestoreSelfTest43(scratch, Check, skip);
+        WriteFailed43SelfTest(Check);
+        GenericCatch43(scratch, cliDll, Check);
     }
 
     static readonly string[] Tools41 = { "AuditVerifyTool", "DiffIntentTool", "DocRealizedTool", "DocUpdateTool", "GeneratePrototypesTool", "GenerateTypologyTool", "PlanLayoutsTool", "SkillLockTool" };
     static readonly string[] Filter41 = { "ArgumentException", "NotSupportedException", "PathTooLongException", "FileNotFoundException", "UnauthorizedAccessException" };
 
-    // Null when the source's PathProblem GetFullPath catch takes every Filter41 type, else what is wrong.
+    // Null when the source's PathProblem GetFullPath catch takes every Filter41 type, else what is wrong. P10-43: the reader
+    // does not depend on the layout: the try and the catch filter may be split over lines and indented any way (only
+    // whitespace and // comment lines may stand between the try and its catch); the filter must have the shape
+    // catch (Exception <v>) when (<v> is A or B or ...), checked by a reformat self-test in PathProblemFilters41.
+    static readonly System.Text.RegularExpressions.Regex Try41 = new(@"try\s*\{\s*Path\.GetFullPath\(\s*path\s*\)\s*;\s*\}", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    static readonly System.Text.RegularExpressions.Regex Catch41 = new(
+        @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     static string? FilterProblem41(string source)
     {
-        const string Try = "try { Path.GetFullPath(path); }";
-        var at = source.IndexOf(Try, StringComparison.Ordinal);
-        if (at < 0 || source.IndexOf(Try, at + Try.Length, StringComparison.Ordinal) >= 0) return "not exactly one '" + Try + "'";
+        var tries = Try41.Matches(source);
+        if (tries.Count != 1) return "not exactly one 'try { Path.GetFullPath(path); }' (any layout): " + tries.Count.ToString(CultureInfo.InvariantCulture);
+        var at = tries[0].Index;
         var method = source.LastIndexOf(" PathProblem(", at, StringComparison.Ordinal);
         if (method < 0 || source[method..at].Contains("\n    }", StringComparison.Ordinal)) return "the GetFullPath try is not inside PathProblem";
-        const string Catch = "catch (Exception error) when (error is ";
-        var catchAt = source.IndexOf(Catch, at, StringComparison.Ordinal);
-        if (catchAt < 0) return "no catch filter follows the GetFullPath try";
-        var between = source[(at + Try.Length)..catchAt].Split('\n').Select(line => line.Trim()).Where(line => line.Length > 0 && !line.StartsWith("//", StringComparison.Ordinal)).ToArray();
-        if (between.Length > 0) return "code between the GetFullPath try and its catch: " + string.Join(" ", between);
-        var close = source.IndexOf(") {", catchAt, StringComparison.Ordinal);
-        var lineEnd = source.IndexOf('\n', catchAt);
-        if (close < 0 || (lineEnd >= 0 && close > lineEnd)) return "the catch filter is not on one line";
-        var types = source[(catchAt + Catch.Length)..close].Split(" or ", StringSplitOptions.TrimEntries);
+        var filter = Catch41.Match(source, at + tries[0].Length);
+        if (!filter.Success) return "no 'catch (Exception e) when (e is A or B ...)' filter directly follows the GetFullPath try (only whitespace and // comment lines may stand between)";
+        var types = System.Text.RegularExpressions.Regex.Split(filter.Groups["types"].Value, @"\s+or\s+");
         var missing = Filter41.Where(type => !types.Contains(type, StringComparer.Ordinal)).ToArray();
         return missing.Length == 0 ? null : "the filter (" + string.Join(" or ", types) + ") lacks " + string.Join(", ", missing);
     }
@@ -908,6 +913,23 @@ internal static class DeletedCwdPathTests
                 "P10-41 static pin: the reader refuses a filter without UnauthorizedAccessException (planted mutant)", FilterProblem41(mutant) ?? "accepted");
             Check(FilterProblem41(skillLock.Replace("try { Path.GetFullPath(path); }", "Path.GetFullPath(path);", StringComparison.Ordinal)) is not null,
                 "P10-41 static pin: the reader refuses a PathProblem without the GetFullPath try (planted mutant)", "");
+            // P10-43 reformat self-test: the same SkillLockTool source with the try and the filter split over lines (a comment
+            // line between them, one type per line, other indentation) is still accepted, and the reformatted filter without
+            // UnauthorizedAccessException, or testing another variable, is still refused.
+            const string OneLine = "catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException or FileNotFoundException or UnauthorizedAccessException)";
+            var nl = Environment.NewLine;
+            var split = "catch (Exception error)" + nl + "            when (error is ArgumentException" + nl + "                or NotSupportedException" + nl + "                or PathTooLongException"
+                + nl + "                or FileNotFoundException" + nl + "                or UnauthorizedAccessException" + nl + "            )";
+            var reformatted = skillLock.Replace(OneLine, "// P10-43 reformat self-test" + nl + "        " + split, StringComparison.Ordinal)
+                .Replace("try { Path.GetFullPath(path); }", "try" + nl + "        {" + nl + "            Path.GetFullPath(path);" + nl + "        }", StringComparison.Ordinal);
+            Check(reformatted.Contains(split, StringComparison.Ordinal) && !reformatted.Contains("try { Path.GetFullPath(path); }", StringComparison.Ordinal) && FilterProblem41(reformatted) is null,
+                "P10-43 static pin reformat self-test: the reader accepts the SkillLockTool try and filter split over lines",
+                FilterProblem41(reformatted) ?? (reformatted.Contains(split, StringComparison.Ordinal) ? "try not reformatted" : "filter not reformatted"));
+            var splitMutant = reformatted.Replace(nl + "                or UnauthorizedAccessException", "", StringComparison.Ordinal);
+            Check(splitMutant != reformatted && FilterProblem41(splitMutant) is { } splitWhy && splitWhy.Contains("lacks UnauthorizedAccessException", StringComparison.Ordinal),
+                "P10-43 static pin reformat self-test: the reader refuses the split filter without UnauthorizedAccessException", FilterProblem41(splitMutant) ?? "accepted");
+            Check(FilterProblem41(skillLock.Replace(OneLine, "catch (Exception error) when (other is ArgumentException)", StringComparison.Ordinal)) is not null,
+                "P10-43 static pin reformat self-test: the reader refuses a filter that tests another variable", "");
         }
     }
 
@@ -949,60 +971,58 @@ internal static class DeletedCwdPathTests
         {
             var server = new Bim.Mcp.McpServer();
             var original = Environment.CurrentDirectory;
-            const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
             foreach (var mode in modes)
             {
                 var parent = Path.Combine(scratch, "p10-41-mcp-" + mode);
                 var cwd = Path.Combine(parent, "cwd");
-                Directory.CreateDirectory(cwd);
                 var locked = mode == "cwd" ? cwd : parent;
-                var measured = new List<(string Label, bool Ok, string Detail)>();
-                foreach (var (tool, parameter, expected, arguments) in cases)
+                // P10-43: the mode's directories are created inside the try, and the finally restores the owner mode of both,
+                // the working directory and removes them even when a CreateDirectory, chmod or case throws.
+                var cleanup = "";
+                try
                 {
-                    var request = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 41, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = tool, ["arguments"] = arguments.DeepClone() } }.ToJsonString();
-                    var previousError = Console.Error;
-                    var capturedError = new StringWriter();
-                    var probe = "";
-                    var thrown = "";
-                    string? response = null;
-                    try
+                    Directory.CreateDirectory(cwd);
+                    var measured = new List<(string Label, bool Ok, string Detail)>();
+                    foreach (var (tool, parameter, expected, arguments) in cases)
                     {
-                        Directory.SetCurrentDirectory(cwd);
-                        Chmod(locked, UnixFileMode.None);
-                        try { Path.GetFullPath(RelativeName); probe = "GetFullPath accepted"; }
-                        catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
-                        Console.SetError(capturedError);
-                        response = server.Handle(request);
+                        var request = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 41, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = tool, ["arguments"] = arguments.DeepClone() } }.ToJsonString();
+                        var capturedError = new StringWriter();
+                        var probe = "";
+                        string? response = null;
+                        var (thrown, restore) = Locked43(cwd, locked, original, Chmod, () =>
+                        {
+                            try { Path.GetFullPath(RelativeName); probe = "GetFullPath accepted"; }
+                            catch (Exception failure) { probe = "GetFullPath threw " + failure.GetType().FullName; }
+                            Console.SetError(capturedError);
+                            response = server.Handle(request);
+                        });
+                        if (thrown.Length > 0) thrown = "threw " + thrown;
+                        if (restore.Length > 0) thrown += " restore " + restore;
+                        string text = "", isError = "";
+                        try
+                        {
+                            var node = response is null ? null : System.Text.Json.Nodes.JsonNode.Parse(response);
+                            text = node?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
+                            isError = node?["result"]?["isError"]?.ToJsonString() ?? "";
+                            if (text.Length == 0) text = response ?? "";
+                        }
+                        catch (Exception failure) { thrown += " response " + failure.Message; }
+                        text = text.Replace(scratch, "<scratch>", StringComparison.Ordinal);
+                        var stderr = capturedError.ToString().Trim();
+                        var ok = probe == "GetFullPath threw System.UnauthorizedAccessException" && isError == "true" && text == expected && stderr.Length == 0 && thrown.Length == 0;
+                        ran++;
+                        measured.Add((tool + " " + parameter, ok, probe + "; isError " + isError + " " + text + (stderr.Length > 0 ? " stderr " + stderr : "") + (thrown.Length > 0 ? " " + thrown : "")));
                     }
-                    catch (Exception failure) { thrown = "threw " + failure.GetType().FullName + ": " + failure.Message; }
-                    finally
-                    {
-                        Console.SetError(previousError);
-                        Chmod(locked, Owner);
-                        Directory.SetCurrentDirectory(original);
-                    }
-                    string text = "", isError = "";
-                    try
-                    {
-                        var node = response is null ? null : System.Text.Json.Nodes.JsonNode.Parse(response);
-                        text = node?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
-                        isError = node?["result"]?["isError"]?.ToJsonString() ?? "";
-                        if (text.Length == 0) text = response ?? "";
-                    }
-                    catch (Exception failure) { thrown += " response " + failure.Message; }
-                    text = text.Replace(scratch, "<scratch>", StringComparison.Ordinal);
-                    var stderr = capturedError.ToString().Trim();
-                    var ok = probe == "GetFullPath threw System.UnauthorizedAccessException" && isError == "true" && text == expected && stderr.Length == 0 && thrown.Length == 0;
-                    ran++;
-                    measured.Add((tool + " " + parameter, ok, probe + "; isError " + isError + " " + text + (stderr.Length > 0 ? " stderr " + stderr : "") + (thrown.Length > 0 ? " " + thrown : "")));
+                    // Every case runs before the first check, so one failing check names every observed outcome.
+                    var failing = string.Join(" || ", measured.Where(m => !m.Ok).Select(m => m.Label + " => " + m.Detail));
+                    foreach (var (label, ok, detail) in measured)
+                        Check(ok, Label(mode, label + ": GetFullPath throws UnauthorizedAccessException, isError, exactly the tool's <tool>_path_invalid line, nothing on stderr"),
+                            ok ? "" : detail + " | failing cases: " + failing);
+                    Check(Environment.CurrentDirectory == original, Label(mode, "the working directory is restored (finally)"), Environment.CurrentDirectory + " != " + original);
                 }
-                // Every case runs before the first check, so one failing check names every observed outcome.
-                var failing = string.Join(" || ", measured.Where(m => !m.Ok).Select(m => m.Label + " => " + m.Detail));
-                foreach (var (label, ok, detail) in measured)
-                    Check(ok, Label(mode, label + ": GetFullPath throws UnauthorizedAccessException, isError, exactly the tool's <tool>_path_invalid line, nothing on stderr"),
-                        ok ? "" : detail + " | failing cases: " + failing);
-                Check(Environment.CurrentDirectory == original, Label(mode, "the working directory is restored (finally)"), Environment.CurrentDirectory + " != " + original);
-                Directory.Delete(parent, true);
+                catch (Exception failure) { Check(false, Label(mode, "the cases run without an exception"), failure.GetType().FullName + ": " + failure.Message); }
+                finally { cleanup = Cleanup43(parent, original); }
+                Check(cleanup.Length == 0 && !Directory.Exists(parent), Label(mode, "the owner mode, the working directory and the case directory are restored (finally)"), cleanup);
             }
         }
         if (why is null) Check(ran == 34, "P10-41 MCP unsearchable (macOS): every case of both modes ran on a non-root macOS runner", "ran " + ran.ToString(CultureInfo.InvariantCulture) + " of 34");
@@ -1010,9 +1030,284 @@ internal static class DeletedCwdPathTests
             Check(why is null, "P10-41 MCP unsearchable (macOS): the GitHub Actions macOS runner is non-root, so the cases run", why ?? "");
     }
 
+    // ---- P10-43: restore helpers, their fault-injection self-test and the McpServer generic-catch sweep ----
+    const UnixFileMode Owner43 = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
+
+    // Runs body with the working directory set to cwd and locked made mode 000 through lockWith (Chmod in the cases; the
+    // self-test plants one that throws). Whatever throws (SetCurrentDirectory, the lock or the body), every restore step
+    // runs on its own in the finally: Console.Error, the owner mode of locked (the real Chmod) and the original working
+    // directory. Returns what threw ("" when nothing did) and which restore step threw ("" when every step restored).
+    static (string Thrown, string Restore) Locked43(string cwd, string locked, string original, Action<string, UnixFileMode> lockWith, Action body)
+    {
+        var previousError = Console.Error;
+        var thrown = "";
+        var restore = "";
+        try
+        {
+            Directory.SetCurrentDirectory(cwd);
+            lockWith(locked, UnixFileMode.None);
+            body();
+        }
+        catch (Exception failure) { thrown = failure.GetType().FullName + ": " + failure.Message; }
+        finally
+        {
+            Console.SetError(previousError);
+            restore = Restore43(locked, original);
+        }
+        return (thrown, restore);
+    }
+
+    // Each step in its own try: the owner mode of every directory given (in order, so a parent before its child) and the
+    // working directory. Returns the steps that threw, "" when all restored.
+    static string Restore43(string locked, string original, params string[] more)
+    {
+        var problems = new List<string>();
+        foreach (var directory in more.Prepend(locked))
+        {
+            // A later directory is skipped when absent (its parent is restored first, so the test is meaningful).
+            if (directory != locked && !Directory.Exists(directory)) continue;
+            try { Chmod(directory, Owner43); }
+            catch (Exception failure) { problems.Add("chmod " + failure.GetType().Name + ": " + failure.Message); }
+        }
+        try { Directory.SetCurrentDirectory(original); }
+        catch (Exception failure) { problems.Add("cwd " + failure.GetType().Name + ": " + failure.Message); }
+        return string.Join("; ", problems);
+    }
+
+    // A mode's finally: restores the owner mode of parent then parent/cwd (each when present), the working directory, and
+    // removes parent. Returns what failed, "" when everything was restored and removed.
+    static string Cleanup43(string parent, string original)
+    {
+        if (!Directory.Exists(parent))
+        {
+            try { Directory.SetCurrentDirectory(original); return ""; }
+            catch (Exception failure) { return "cwd " + failure.GetType().Name + ": " + failure.Message; }
+        }
+        var problems = Restore43(parent, original, Path.Combine(parent, "cwd"));
+        try { Directory.Delete(parent, true); }
+        catch (Exception failure) { problems += (problems.Length > 0 ? "; " : "") + "delete " + failure.GetType().Name + ": " + failure.Message; }
+        return problems;
+    }
+
+    // Fault injection on Linux and macOS non-root runners (Windows: no Unix permission bits; root: mode 000 does not deny):
+    // 1. a planted lock that makes the directory mode 000 and then throws: the body does not run, the throw is reported,
+    //    the owner mode and the working directory are restored; 2. a CreateDirectory that throws inside the locked body
+    //    (a child of the mode-000 parent): the same restore; 3. Cleanup43 after both directories were left mode 000 restores
+    //    them and removes the case directory.
+    static void RestoreSelfTest43(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
+    {
+        string Label(string what) => "P10-43 restore self-test: " + what;
+        var why = OperatingSystem.IsWindows() ? "Unix permission bits (chmod 000) only" : PrivilegeSkip(scratch, "p10-43-restore-probe");
+        if (why is not null)
+        {
+            foreach (var what in new[] { "planted chmod throw", "CreateDirectory throw", "cleanup of mode-000 directories" }) skip(Prefix + Label(what), why);
+            return;
+        }
+        var original = Environment.CurrentDirectory;
+        var errorBefore = Console.Error;
+        var parent = Path.Combine(scratch, "p10-43-restore");
+        var cwd = Path.Combine(parent, "cwd");
+        Directory.CreateDirectory(cwd);
+        string Mode(string path)
+        {
+            if (OperatingSystem.IsWindows()) return "windows";
+            try { return File.GetUnixFileMode(path).ToString(); }
+            catch (Exception failure) { return failure.GetType().Name; }
+        }
+        var owner = Owner43.ToString();
+        try
+        {
+            var bodyRan = false;
+            var planted = Locked43(cwd, cwd, original, (path, mode) => { Chmod(path, mode); throw new IOException("planted P10-43 chmod"); }, () => bodyRan = true);
+            Check(planted.Thrown == "System.IO.IOException: planted P10-43 chmod" && !bodyRan && planted.Restore.Length == 0 && Mode(cwd) == owner
+                && Environment.CurrentDirectory == original && ReferenceEquals(Console.Error, errorBefore),
+                Label("a chmod that throws after making the directory mode 000: the owner mode, the working directory and Console.Error are restored"),
+                planted.Thrown + "; body ran " + bodyRan + "; restore '" + planted.Restore + "'; mode " + Mode(cwd) + "; cwd " + Environment.CurrentDirectory);
+            var child = Path.Combine(parent, "child");
+            var created = Locked43(cwd, parent, original, Chmod, () => Directory.CreateDirectory(child));
+            Check(created.Thrown.StartsWith("System.UnauthorizedAccessException: ", StringComparison.Ordinal) && created.Restore.Length == 0 && Mode(parent) == owner
+                && Environment.CurrentDirectory == original && !Directory.Exists(child),
+                Label("a CreateDirectory that throws under the mode-000 parent: the owner mode and the working directory are restored, nothing created"),
+                created.Thrown + "; restore '" + created.Restore + "'; mode " + Mode(parent) + "; cwd " + Environment.CurrentDirectory);
+            Chmod(cwd, UnixFileMode.None);
+            Chmod(parent, UnixFileMode.None);
+            var cleanup = Cleanup43(parent, original);
+            Check(cleanup.Length == 0 && !Directory.Exists(parent) && Environment.CurrentDirectory == original,
+                Label("Cleanup43 restores a mode-000 parent and cwd and removes them"), cleanup);
+        }
+        finally { Cleanup43(parent, original); }
+    }
+
+    // The McpServer.CallTool generic catch (catch (Exception e) { text = Failed(e.Message); isError = true; }) is the CLI
+    // Program generic catch's twin (interfaces/cli/Program.cs: {"status":"failed","code":<message>}), which the MCP tools'
+    // CLI byte equality relies on (diff, validate, room and plan carry Core's failure codes through it). Sweep: every listed
+    // tool's Execute is replaced, in a fresh server, by a planted throw (IOException, UnauthorizedAccessException and
+    // InvalidOperationException whose message is a path-bearing runtime-style text; McpInvalidParamsException), called
+    // through tools/call with its required arguments. Recorded (not changed, CLI parity): each answers isError with exactly
+    // {"status":"failed","code":<message>} and nothing on stderr; McpInvalidParamsException answers -32602 with its message.
+    // A real reachable case, plan with a missing store, is pinned against the runtime message and the CLI line.
+    static void GenericCatch43(string scratch, string cliDll, Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-43 MCP generic catch: " + what;
+        var server = new Bim.Mcp.McpServer();
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        var tools = typeof(Bim.Mcp.McpServer).GetField("tools", flags)?.GetValue(server) as Array;
+        var spec = tools?.GetType().GetElementType();
+        var nameProperty = spec?.GetProperty("Name");
+        var parametersProperty = spec?.GetProperty("Parameters");
+        var executeProperty = spec?.GetProperty("Execute");
+        var clone = spec?.GetMethod("<Clone>$");
+        if (tools is null || nameProperty is null || parametersProperty is null || executeProperty is null || clone is null)
+        {
+            Check(false, Label("fixture: the server's tools array and ToolSpec Name, Parameters, Execute and clone are readable by reflection"), spec?.FullName ?? "no tools field");
+            return;
+        }
+        var listing = System.Text.Json.Nodes.JsonNode.Parse(server.Handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}") ?? "null");
+        var listed = listing?["result"]?["tools"]?.AsArray().Select(tool => tool?["name"]?.GetValue<string>() ?? "").ToArray() ?? Array.Empty<string>();
+        var names = Enumerable.Range(0, tools.Length).Select(i => (string)nameProperty.GetValue(tools.GetValue(i))!).ToArray();
+        Check(names.Length > 16 && listed.SequenceEqual(names, StringComparer.Ordinal), Label("fixture: the swept array is the tools/list listing (core and revit_* tools)"),
+            names.Length.ToString(CultureInfo.InvariantCulture) + " swept, " + listed.Length.ToString(CultureInfo.InvariantCulture) + " listed");
+        System.Text.Json.Nodes.JsonNode? Value(string type) => type switch
+        {
+            "string" => "p10-43",
+            "object" => new System.Text.Json.Nodes.JsonObject(),
+            "integer" => 0,
+            "boolean" => false,
+            "array" => new System.Text.Json.Nodes.JsonArray("p10-43"),
+            _ => null,
+        };
+        var planted = new (string Kind, Func<string, Exception> Make)[]
+        {
+            ("IOException", message => new IOException(message)),
+            ("UnauthorizedAccessException", message => new UnauthorizedAccessException(message)),
+            ("InvalidOperationException", message => new InvalidOperationException(message)),
+            ("McpInvalidParamsException", message => new Bim.Mcp.McpInvalidParamsException(message)),
+        };
+        var swept = 0;
+        for (var i = 0; i < tools.Length; i++)
+        {
+            var original = tools.GetValue(i)!;
+            var name = names[i];
+            var arguments = new System.Text.Json.Nodes.JsonObject();
+            foreach (var parameter in (Array)parametersProperty.GetValue(original)!)
+            {
+                var parameterType = parameter!.GetType();
+                if (!(bool)parameterType.GetProperty("Required")!.GetValue(parameter)!) continue;
+                arguments[(string)parameterType.GetProperty("Name")!.GetValue(parameter)!] = Value((string)parameterType.GetProperty("Type")!.GetValue(parameter)!);
+            }
+            var problems = new List<string>();
+            foreach (var (kind, make) in planted)
+            {
+                var message = "Access to the path '" + Path.Combine(scratch, "p10-43-planted", name + ".json") + "' is denied (planted " + kind + ").";
+                Func<JsonElement, (string, bool)> throwing = _ => throw make(message);
+                var copy = clone.Invoke(original, null)!;
+                executeProperty.SetValue(copy, throwing);
+                var request = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 43, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = name, ["arguments"] = arguments.DeepClone() } }.ToJsonString();
+                var previousError = Console.Error;
+                var capturedError = new StringWriter();
+                string? response = null;
+                var thrown = "";
+                try
+                {
+                    tools.SetValue(copy, i);
+                    Console.SetError(capturedError);
+                    response = server.Handle(request);
+                }
+                catch (Exception failure) { thrown = " threw " + failure.GetType().FullName + ": " + failure.Message; }
+                finally
+                {
+                    Console.SetError(previousError);
+                    tools.SetValue(original, i);
+                }
+                var node = response is null ? null : System.Text.Json.Nodes.JsonNode.Parse(response);
+                bool ok;
+                if (kind == "McpInvalidParamsException")
+                    ok = node?["error"]?["code"]?.GetValue<int>() == -32602 && node?["error"]?["message"]?.GetValue<string>() == message && node?["result"] is null && node?["id"]?.GetValue<int>() == 43;
+                else
+                    ok = node?["result"]?["isError"]?.GetValue<bool>() == true && node?["result"]?["content"]?[0]?["text"]?.GetValue<string>() == JsonSerializer.Serialize(new { status = "failed", code = message })
+                        && node?["result"]?["content"]?.AsArray().Count == 1 && node?["error"] is null;
+                if (!ok || capturedError.ToString().Length > 0 || thrown.Length > 0)
+                    problems.Add(kind + " => " + (response ?? "no response") + (capturedError.ToString().Length > 0 ? " stderr " + capturedError.ToString().Trim() : "") + thrown);
+            }
+            swept++;
+            Check(problems.Count == 0, Label(name + ": a planted throw escaping Execute answers isError {\"status\":\"failed\",\"code\":<its message>} (McpInvalidParamsException: -32602), nothing on stderr"),
+                string.Join(" || ", problems).Replace(scratch, "<scratch>", StringComparison.Ordinal));
+        }
+        Check(swept == names.Length && names.SequenceEqual(Enumerable.Range(0, tools.Length).Select(i => (string)nameProperty.GetValue(tools.GetValue(i))!), StringComparer.Ordinal),
+            Label("every listed tool was swept and the server's tools are restored"), swept.ToString(CultureInfo.InvariantCulture) + " of " + names.Length.ToString(CultureInfo.InvariantCulture));
+
+        // Real reachable case (every host): plan with a store directory that does not exist. ProjectStore.Read's
+        // DirectoryNotFoundException reaches the generic catch, so the code is the runtime message carrying the absolute
+        // path, byte-equal to the CLI plan verb's Program generic-catch line (exit 1, empty stderr). Recorded, not changed.
+        var missing = Path.Combine(scratch, "p10-43-missing-store");
+        string runtime;
+        try { File.ReadAllText(Path.Combine(missing, "project.json")); runtime = "read succeeded"; }
+        catch (Exception failure) { runtime = failure.Message; }
+        var expected = JsonSerializer.Serialize(new { status = "failed", code = runtime });
+        var planRequest = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 44, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = "plan", ["arguments"] = new System.Text.Json.Nodes.JsonObject { ["store_path"] = missing, ["desired"] = new System.Text.Json.Nodes.JsonObject() } } }.ToJsonString();
+        var planNode = System.Text.Json.Nodes.JsonNode.Parse(new Bim.Mcp.McpServer().Handle(planRequest) ?? "null");
+        var planText = planNode?["result"]?["content"]?[0]?["text"]?.GetValue<string>() ?? "";
+        Check(runtime.Contains(missing, StringComparison.Ordinal) && planNode?["result"]?["isError"]?.GetValue<bool>() == true && planText == expected,
+            Label("plan with a missing store: isError with the runtime message (absolute path) as the code"), (planText + " | runtime " + runtime).Replace(scratch, "<scratch>", StringComparison.Ordinal));
+        var desired = Path.Combine(scratch, "p10-43-desired.json");
+        File.WriteAllText(desired, "{}\n", new UTF8Encoding(false));
+        MethodInfo? entry = null;
+        try { entry = Assembly.LoadFrom(cliDll).EntryPoint; }
+        catch (Exception error) when (error is IOException or BadImageFormatException) { Check(false, Label("the Release CLI assembly loads"), error.Message); }
+        if (entry is null) { Check(false, Label("the Release CLI assembly has an entry point"), cliDll); return; }
+        var cli = Invoke(entry, new[] { "plan", missing, desired });
+        Check(cli.Exit == 1 && cli.Error.Length == 0 && cli.Line == planText, Label("plan with a missing store: the MCP text equals the CLI plan line (exit 1, empty stderr)"),
+            ("exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " " + cli.Line + " " + cli.Error + " | mcp " + planText).Replace(scratch, "<scratch>", StringComparison.Ordinal));
+    }
+
     // Linux, as measured (see the contract section P10-41): GetFullPath accepts the relative lock; the read of a lock under
     // the mode-000 directory reports it missing, and pin's exclusive write is refused write_failed.
     const string LockMissing41 = """{"status":"failed","code":"lock_missing","subject":"skills.lock.json","detail":"lock file not found"}""";
+
+    // P10-43: null when line is exactly the members status failed, code write_failed, subject skills.lock.json and a string
+    // detail that names denied and ends "' is denied." (the .NET UnauthorizedAccessException path message's suffix), else
+    // what differs. The rest of the detail (the message's wording before the path) is not pinned.
+    static string? WriteFailed43(string line, string denied)
+    {
+        System.Text.Json.Nodes.JsonObject? node;
+        try { node = System.Text.Json.Nodes.JsonNode.Parse(line) as System.Text.Json.Nodes.JsonObject; }
+        catch (JsonException error) { return "not JSON: " + error.Message; }
+        if (node is null) return "not a JSON object";
+        System.Text.Json.Nodes.JsonObject members = node;
+        var names = string.Join(",", members.Select(member => member.Key));
+        if (names != "status,code,subject,detail") return "members " + names + " (want status,code,subject,detail)";
+        string? Text(string name) => members[name] is System.Text.Json.Nodes.JsonValue value && value.TryGetValue<string>(out var text) ? text : null;
+        if (Text("status") != "failed" || Text("code") != "write_failed") return "status/code " + Text("status") + "/" + Text("code");
+        if (Text("subject") != LockName39) return "subject " + Text("subject");
+        var detail = Text("detail");
+        if (detail is null) return "detail is not a string";
+        if (!detail.EndsWith("' is denied.", StringComparison.Ordinal)) return "detail does not end \"' is denied.\": " + detail;
+        if (!detail.Contains("'" + denied + "'", StringComparison.Ordinal)) return "detail does not name '" + denied + "': " + detail;
+        return null;
+    }
+
+    // Self-test of WriteFailed43 (every host): the P10-41 measured shape and a reworded prefix are accepted; another code,
+    // subject, suffix, path, member order or a missing detail are refused.
+    static void WriteFailed43SelfTest(Action<bool, string, string> Check)
+    {
+        const string Denied = "<scratch>/p/cwd/skills.lock.json.<guid>.tmp";
+        string Line(string code, string subject, string detail) => JsonSerializer.Serialize(new { status = "failed", code, subject, detail });
+        var measured = Line("write_failed", LockName39, "Access to the path '" + Denied + "' is denied.");
+        var accepted = new[] { measured, Line("write_failed", LockName39, "Permission refused for the path '" + Denied + "' is denied.") };
+        var refused = new[]
+        {
+            Line("write_error", LockName39, "Access to the path '" + Denied + "' is denied."),
+            Line("write_failed", "other.json", "Access to the path '" + Denied + "' is denied."),
+            Line("write_failed", LockName39, "Access to the path '" + Denied + "' is refused."),
+            Line("write_failed", LockName39, "Access to the path '<scratch>/q/cwd' is denied."),
+            JsonSerializer.Serialize(new { status = "failed", subject = LockName39, code = "write_failed", detail = "Access to the path '" + Denied + "' is denied." }),
+            JsonSerializer.Serialize(new { status = "failed", code = "write_failed", subject = LockName39 }),
+            "not json",
+        };
+        var wrong = accepted.Where(line => WriteFailed43(line, Denied) is not null).Concat(refused.Where(line => WriteFailed43(line, Denied) is null)).ToArray();
+        Check(wrong.Length == 0, "P10-43 write_failed matcher self-test: accepts the measured shape and a reworded prefix, refuses another code, subject, suffix, path, member order or a missing detail",
+            string.Join(" || ", wrong));
+    }
 
     static void LockVerbsUnsearchable41(string root, string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
     {
@@ -1038,7 +1333,6 @@ internal static class DeletedCwdPathTests
             if (entry is null) { Check(false, "the Release CLI assembly has an entry point", cliDll); return; }
             var original = Environment.CurrentDirectory;
             var exitBefore = Environment.ExitCode;
-            const UnixFileMode Owner = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute;
             var repositorySkills = Path.Combine(root, "skills");
             var outside = Path.Combine(scratch, "p10-41-lock-outside");
             var skills = Path.Combine(outside, "skills");
@@ -1082,6 +1376,7 @@ internal static class DeletedCwdPathTests
                         _ => new[] { "skills-lock", "unpin", skills, LockName39, Gamma },
                     };
                     var locked = mode == "cwd" ? cwd : parent;
+                    var restoreProblem = "";
                     (int Exit, string Line, string Error, string Probe) Call(bool lockIt)
                     {
                         var probe = "";
@@ -1098,8 +1393,8 @@ internal static class DeletedCwdPathTests
                         }
                         finally
                         {
-                            Chmod(locked, Owner);
-                            Directory.SetCurrentDirectory(original);
+                            // P10-43: each restore step on its own (Restore43), so a throwing chmod still restores the working directory.
+                            restoreProblem = Restore43(locked, original);
                         }
                         return (run.Exit, Normalize(run.Line), run.Error, probe);
                     }
@@ -1114,18 +1409,24 @@ internal static class DeletedCwdPathTests
                     ran++;
                     var measured = result.Probe + "; exit " + result.Exit.ToString(CultureInfo.InvariantCulture) + " " + result.Line + (result.Error.Length > 0 ? " stderr " + result.Error : "");
                     var expectedProbe = macOS ? "GetFullPath threw System.UnauthorizedAccessException" : "GetFullPath accepted";
-                    string expected;
-                    if (macOS) expected = pathInvalid;
-                    else if (verb != "skills-lock pin") expected = LockMissing41;
+                    Check(result.Probe == expectedProbe, label + ": precondition: " + expectedProbe + " (" + (macOS ? "macOS" : "Linux") + ")", measured);
+                    if (macOS || verb != "skills-lock pin")
+                    {
+                        var expected = macOS ? pathInvalid : LockMissing41;
+                        Check(result.Exit == 1 && result.Line == expected && result.Error.Length == 0, label + ": exactly " + expected + " (exit 1, empty stderr)", measured);
+                    }
                     else
                     {
-                        // Linux pin: the exclusive write of the temporary lock (cwd mode) or the directory creation (parent mode) is denied.
-                        var denied = mode == "cwd" ? Path.Combine(cwd, LockName39 + "." + new string('0', 32) + ".tmp") : cwd;
-                        expected = Normalize(JsonSerializer.Serialize(new { status = "failed", code = "write_failed", subject = LockName39, detail = "Access to the path '" + denied + "' is denied." }));
+                        // Linux pin: the exclusive write of the temporary lock (cwd mode) or the directory creation (parent mode) is
+                        // denied. P10-43: the detail is the runtime's UnauthorizedAccessException message, so only the code, the
+                        // subject, the denied path and the "' is denied." suffix are pinned (WriteFailed43), not the full text.
+                        var denied = Normalize(mode == "cwd" ? Path.Combine(cwd, LockName39 + "." + new string('0', 32) + ".tmp") : cwd);
+                        var problem = WriteFailed43(result.Line, denied);
+                        Check(result.Exit == 1 && problem is null && result.Error.Length == 0,
+                            label + ": write_failed, subject " + LockName39 + ", a detail naming " + denied + " and ending ' is denied.' (exit 1, empty stderr)", measured + (problem is null ? "" : " | " + problem));
                     }
-                    Check(result.Probe == expectedProbe, label + ": precondition: " + expectedProbe + " (" + (macOS ? "macOS" : "Linux") + ")", measured);
-                    Check(result.Exit == 1 && result.Line == expected && result.Error.Length == 0, label + ": exactly " + expected + " (exit 1, empty stderr)", measured);
-                    Check(Environment.CurrentDirectory == original, label + ": the working directory is restored (finally)", Environment.CurrentDirectory + " != " + original);
+                    Check(Environment.CurrentDirectory == original && restoreProblem.Length == 0, label + ": the working directory and the owner mode are restored (finally)",
+                        Environment.CurrentDirectory + (Environment.CurrentDirectory == original ? "" : " != " + original) + " " + restoreProblem);
                     var after = File.Exists(lockFile) ? File.ReadAllBytes(lockFile) : null;
                     var unchanged = lockBytes is null ? after is null : after is not null && after.AsSpan().SequenceEqual(lockBytes);
                     Check(unchanged && Directory.GetFileSystemEntries(cwd).Length == entriesBefore && Directory.GetFileSystemEntries(parent).Length == 1,
