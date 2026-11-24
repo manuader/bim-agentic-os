@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bim-agentic-os": {
+      "command": "${BIM_DOTNET:-dotnet}",
+      "args": ["${BIM_MCP_DLL:-interfaces/mcp/bin/Release/net8.0/Bim.Mcp.dll}"]
+    }
+  }
+}

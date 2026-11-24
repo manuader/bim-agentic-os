@@ -137,3 +137,15 @@ code, a task on the board. Goal: each lesson becomes a tested command usable in 
   `height_mm`) or box (`min`/`max` [x, y, z] mm, z as project elevation), optional `material` and `name`. Boulder
   1200 x 800 x 900 on Level 1: `{category: site, shape: {kind: extrusion, level: Level 1, outline:
   [[0,0],[1200,0],[1200,800],[0,800]], height_mm: 900}}`. Faceted rock shapes need several boxes/extrusions for now.
+
+## Lessons (2026-11-04, cabin C7 "Lago Escondido")
+- **Auto-join moves wall ends**: Revit snaps a new wall's endpoint to the location line of a wall it meets (also
+  across base offsets: a plinth at −600 snapped to the stone wall's centre line). `wall.create` then fails its
+  readback. Draw every end on the centre line of the wall it meets; it cost 7 retries of a 22-step batch.
+- **Profile frame after joins**: once a wall's ends moved by joining, `wall.set_profile` reads back u from the joined
+  location line. Send the profile in that frame (use the readback the refusal reports, or query the wall first).
+- **Diagonal roof fold** (a facet that comes down below the eave, like the Lago Escondido reference): one plane
+  through three points split on its eave-height contour into two footprint roofs, each with its sloped edge on a
+  contour line (the low piece gets a 20 mm contour stub at its lowest corner). The wall under it takes the fold's
+  trace as its profile top.
+- Pending: slab on top of an interior block (floor with height offset), negative-slope roof pieces / slope arrows.
