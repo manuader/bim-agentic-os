@@ -491,6 +491,37 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a property get accessor", declaration + "\nstatic int P { get { try { " + read + " } catch (Exception) { throw; } return 0; } }\n", true),
                     ("an unrelated local function inside an accessor closed before the pinned read", declaration + "\nstatic int P { get { int Unrelated() { return 0; } return Unrelated(); } }\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("the pinned read in a method of a generic class constrained where T : class", declaration + "\nsealed class C<T> where T : class { static void W() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    // P3-37: local functions inside accessors of properties carrying required/virtual/override/sealed
+                    // modifiers or explicit interface members, init/add/remove accessors, where T : struct local functions,
+                    // constructors (incl. static and with a this(...) initializer), finalizers and switch-expression-arm
+                    // lambdas; and the pinned read directly in such a member stays clean.
+                    ("the read moved into a local function inside a required property init accessor (planted)", declaration + "\nsealed class C { public required int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside a virtual property get accessor", declaration + "\nclass C { public virtual int P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
+                    ("the read moved into a local function inside an override property set accessor", declaration + "\nclass C : B { public override int P { get => 0; set { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside a sealed override protected set accessor", declaration + "\nclass C : B { public sealed override int P { get => 0; protected set { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an explicit interface get accessor (planted)", declaration + "\nsealed class C : I { int I.P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
+                    ("the read moved into a local function inside an explicit interface indexer get accessor", declaration + "\nsealed class C : I { int I.this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
+                    ("the read moved into a local function inside an init accessor", declaration + "\nsealed class C { int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an event add accessor (planted)", declaration + "\nsealed class C { event Action E { add { void Later() { " + read + " } Later(); } remove { } } }\n", false),
+                    ("the read moved into a local function inside an event remove accessor", declaration + "\nsealed class C { event Action E { add { } remove { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an explicit interface event add accessor", declaration + "\nsealed class C : I { event Action I.E { add { void Later() { " + read + " } Later(); } remove { } } }\n", false),
+                    ("the read moved into a local function constrained where T : struct (planted)", declaration + "\nstatic void W() { void Later<T>() where T : struct { " + read + " } Later<int>(); }\n", false),
+                    ("the read moved into a local function inside a method constrained where T : struct", declaration + "\nstatic void W<T>() where T : struct { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside a constructor (planted)", declaration + "\nsealed class C { public C() { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a this() initializer", declaration + "\nsealed class C { public C(int n) : this() { void Later() { " + read + " } Later(); } C() { } }\n", false),
+                    ("the read moved into a local function inside a static constructor", declaration + "\nsealed class C { static C() { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a finalizer (planted)", declaration + "\nclass C { ~C() { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a block lambda in a switch-expression arm (planted)", declaration + "\nstatic void W(int n) { Action later = n switch { 0 => () => { " + read + " }, _ => () => { } }; later(); }\n", false),
+                    ("the read moved into a local function inside a switch-expression-arm lambda", declaration + "\nstatic void W(int n) { Action later = n switch { _ => () => { void Later() { " + read + " } Later(); } }; later(); }\n", false),
+                    ("the pinned read in a constructor", declaration + "\nsealed class C { public C() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in a static constructor", declaration + "\nsealed class C { static C() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in a finalizer", declaration + "\nclass C { ~C() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in an override property get accessor", declaration + "\nclass C : B { public override int P { get { try { " + read + " } catch (Exception) { throw; } return 0; } } }\n", true),
+                    ("the pinned read in an init accessor", declaration + "\nsealed class C { int P { get => 0; init { try { " + read + " } catch (Exception) { throw; } } } }\n", true),
+                    ("the pinned read in an event add accessor", declaration + "\nsealed class C { event Action E { add { try { " + read + " } catch (Exception) { throw; } } remove { } } }\n", true),
+                    ("the pinned read in a method constrained where T : struct", declaration + "\nstatic void W<T>() where T : struct { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("an unrelated switch-expression-arm lambda closed before the pinned read", declaration + "\nstatic void W(int n) { Action unrelated = n switch { _ => () => { } }; try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("an unrelated local function inside a finalizer closed before the pinned read", declaration + "\nclass C { ~C() { void Unrelated() { } Unrelated(); } }\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
                 };
                 if (full)
                 {
@@ -532,9 +563,10 @@ internal static class InternalErrorDelegationTests
                 }
             }
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
-            // accessor/operator/constrained-generic/tuple-return cases (P3-35) for each of the 9 seams; 16 more plus 1
-            // (Action) or 2 (Action<string>) form cases for each of the four new seams: 340.
-            Check(selfTests == 9 * (8 + 8 + 14) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 340, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
+            // cases (P3-37) for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of
+            // the four new seams: 583.
+            Check(selfTests == 9 * (8 + 8 + 14 + 27) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 583, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
@@ -671,7 +703,11 @@ internal static class InternalErrorDelegationTests
     // no initializer; an Action seam's read is a statement `<name>?.Invoke();` (unqualified, at statement start; P3-29:
     // an Action<string> seam's `<name>?.Invoke(output);`, and neither inside a block lambda or anonymous method; P3-33: nor a
     // block-bodied local function (an expression-bodied one already fails the statement-start test); P3-35: also one
-    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header);
+    // inside an accessor or operator body, or with a `where` constraint or a tuple return type in a header; P3-37: also
+    // one inside a constructor, finalizer, init/add/remove accessor or switch-expression-arm lambda). Policy: the pinned
+    // read placed directly in an accessor, operator, constructor, finalizer or constrained method body (not inside a
+    // local function, lambda or anonymous method there) is clean: such a member runs its body when it is invoked, like a
+    // method, so the read is still the one seam read;
     // GenerationWeightsProbe's read is the last argument of `new AlternativeOptions(...)` closing
     // `AlternativeGenerator.Generate(...)`. Clean: one declaration, one read, no other use, and the name's count with
     // literals kept (comments stripped) equal to declarations + reads.
@@ -741,6 +777,10 @@ internal static class InternalErrorDelegationTests
     // generic method or local function); a property/indexer/event accessor (`[attributes] [modifiers] get|set|init|add|remove`)
     // and an operator (`... operator <token>(...)`, before any constraint) open method-like bodies too. A generic tuple
     // return type (`List<(int, int)> F()`, `(int A, int B) F()`) already matched (parenthesised header token).
+    // P3-37: a finalizer header `~C()` opens a method-like body too (an optional '~' before the name). Accessors of
+    // required/virtual/override/sealed or explicit interface members (`int I.P { get { ... } }`), init/add/remove
+    // accessors, `where T : struct`, constructors (static, or with a `: this(...)`/`: base(...)` initializer) and
+    // switch-expression-arm lambdas (`=> () => { ... }`) already matched.
     static bool MethodBody(string header)
     {
         var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
@@ -749,7 +789,7 @@ internal static class InternalErrorDelegationTests
         if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
         if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
-            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
+            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:]+)\s*)*?~?\s*(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
         return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
             .Contains(match.Groups[1].Value, StringComparer.Ordinal);
     }
