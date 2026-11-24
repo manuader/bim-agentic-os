@@ -25,6 +25,9 @@ using Bim.Core;
 //   3e. P1-37: ReadReplyLine's abandoned read on a real stalled pipe raises no unobserved fault. P1-39: a pipe-dispose
 //      control (D2) proves the detector's StreamReader filter; a completed read records its result; E claims no collection.
 //   P1-39: one strip helper (StripCode: comments, literals, interpolation holes as code) and brace-matched member bodies.
+//   P1-43: Run ends with one summary line listing every FAIL name (::warning::, beyond the 10 error annotations a step
+//      shows); the Windows D2/B measured runtime is declared once and a different one is a named ::notice::; MemberBody
+//      reads its head at bracket depth 0 (a parameter list or attribute may hold ';', '=>', '{'); {x::} pinned as measured.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -875,7 +878,8 @@ internal static class RevitCommandDeadlineTests
     static string FailSummary(IReadOnlyList<string> failed)
     {
         if (failed.Count == 0) return SummaryTitle + ": 0 FAIL";
-        return "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL";
+        static string Escape(string text) => text.Replace("%", "%25", StringComparison.Ordinal).Replace("\r", "%0D", StringComparison.Ordinal).Replace("\n", "%0A", StringComparison.Ordinal);
+        return "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL: " + string.Join("; ", failed.Select((name, k) => "#" + N(k + 1) + " " + Escape(name)));
     }
 
     // The check the steps call: records each FAIL name (in order) and passes every call on unchanged.
@@ -892,7 +896,10 @@ internal static class RevitCommandDeadlineTests
     static string WindowsMeasured => "Windows pins measured on " + WindowsMeasuredRuntime + ", " + WindowsMeasuredOs + " (CI run " + WindowsMeasuredRun + ")";
 
     // null when the running runtime and OS are the measured ones; otherwise a named ::notice:: line (the pins still apply).
-    static string? RuntimeNotice(string framework, string os) => null;
+    static string? RuntimeNotice(string framework, string os) =>
+        framework == WindowsMeasuredRuntime && os.Contains(WindowsMeasuredOs, StringComparison.Ordinal) ? null
+            : "::notice::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
+                + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
 
     // P1-43: echoes the format an interpolation hole passes (the compiler's reading of a hole like {x::}).
     sealed class EchoFormat : IFormattable
@@ -1078,18 +1085,30 @@ internal static class RevitCommandDeadlineTests
     // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
     // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
     // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
+    // P1-43: the head is read at bracket depth 0 only: a ';', '=>' or '{' inside the parameter list or an attribute
+    // (inside '(' .. ')' or '[' .. ']') is not the member's own end, arrow or block.
     static string? MemberBody(string code, string signature)
     {
         var start = code.IndexOf(signature, StringComparison.Ordinal);
-        var open = start < 0 ? -1 : code.IndexOf('{', start);
-        if (open < 0) return null;
-        var head = code[start..open];
-        if (head.Contains(';') || head.Contains("=>", StringComparison.Ordinal)) return null;
-        var depth = 0;
-        for (var k = open; k < code.Length; k++)
+        if (start < 0) return null;
+        var nested = 0;
+        for (var k = start; k < code.Length; k++)
         {
-            if (code[k] == '{') depth++;
-            else if (code[k] == '}' && --depth == 0) return code[start..(k + 1)];
+            var c = code[k];
+            if (c is '(' or '[') nested++;
+            else if (c is ')' or ']') nested--;
+            else if (nested > 0) continue;
+            else if (c == ';' || (c == '=' && k + 1 < code.Length && code[k + 1] == '>')) return null;
+            else if (c == '{')
+            {
+                var depth = 0;
+                for (var end = k; end < code.Length; end++)
+                {
+                    if (code[end] == '{') depth++;
+                    else if (code[end] == '}' && --depth == 0) return code[start..(end + 1)];
+                }
+                return null;
+            }
         }
         return null;
     }
@@ -1874,8 +1893,11 @@ internal static class RevitCommandDeadlineTests
             // decoder fault), so the same filter would see B's fault; where it completes (Windows) it reads end of stream.
             var disposeControl = Step("D2", false, false, false);
             // P1-41: the failure text names the runtime the Windows D2/B pins were measured on and the one of this run.
-            var runtime = "Windows pins measured on .NET 8.0.34, Windows 10.0.26100 (CI run 44873211457); this run "
-                + System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription + ", " + System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+            // P1-43: that runtime is declared once (WindowsMeasured*); on Windows a different one is a named ::notice::.
+            var framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+            var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+            var runtime = WindowsMeasured + "; this run " + framework + ", " + os;
+            if (OperatingSystem.IsWindows() && RuntimeNotice(framework, os) is { } notice) Console.WriteLine(notice);
             check(disposeControl.Collected && disposeControl.Outcome.Count == 3 && disposeControl.Outcome[0] == "unobserved" && disposeControl.Outcome[1] == "served p1-37 D2"
                 && (OperatingSystem.IsWindows()
                     ? disposeControl.Outcome[2].StartsWith("completed null in ", StringComparison.Ordinal) && disposeControl.Faults.Length == 0
@@ -1896,7 +1918,7 @@ internal static class RevitCommandDeadlineTests
             check(honoured.Collected && honoured.Outcome.Count == 3 && honoured.Outcome[0] == timeout && honoured.Outcome[1] == "served p1-37 A"
                 && !honoured.Outcome[2].StartsWith("pending", StringComparison.Ordinal) && !honoured.Outcome[2].Contains("after 2 s", StringComparison.Ordinal) && honoured.Faults.Length == 0,
                 "P1-37 real pipe: the production read form (honouring the cancel, pipe disposed at once) times out and raises no UnobservedTaskException", Describe(honoured));
-            // Measured (CI probe run 44788387750; P1-39 re-measured in run 44873211457 on .NET 8.0.34, Windows 10.0.26100,
+            // Measured (CI probe run 44788387750; P1-39 re-measured on the WindowsMeasured runtime, OS and run,
             // Ubuntu 26.04.1, macOS 25.6): A ends canceled on Linux, macOS and Windows; B (pipe disposed under a read
             // ignoring the cancel) ends faulted on Linux and macOS (IOException, the late fault the continuation observes;
             // D2 shows its type) and on Windows completes successfully with null, end of stream (no fault); C and D fault
