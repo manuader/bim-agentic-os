@@ -2157,14 +2157,16 @@ static class MirrorDriftLoopChecks
     static readonly string[] PerOsRequestsBefore = { "p2-33-levels", "p2-33-floor-types" };
 
     // P2-36/P2-37: what one macOS seam run's lever did: how often PipeConnected ran (once per WriteRequest, so once per
-    // request line), the client socket's send buffer read before the set, the value read back after it, and any error.
+    // request line), the client socket's send buffer read before the set, the value asked for (P2-41), the value read back
+    // after it, and any error.
     sealed class LeverRecord
     {
         public int Calls;
         public int Default = -1;
+        public int Requested = -1;
         public int Set = -1;
         public string Error = "";
-        public override string ToString() => "calls=" + Calls + " default=" + Default + " set=" + Set + " error=" + (Error.Length == 0 ? "<none>" : Error);
+        public override string ToString() => "calls=" + Calls + " default=" + Default + " requested=" + Requested + " set=" + Set + " error=" + (Error.Length == 0 ? "<none>" : Error);
     }
 
     // P2-40: the lowered lever's ratio (3/4 of the client's default send buffer), declared once: the second macOS seam
@@ -2192,6 +2194,10 @@ static class MirrorDriftLoopChecks
         var selfTest = MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + 2L * c.Read + ") with queued == lowered (" + c.Lowered + ")";
         const string raisedName = "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue";
         const string loweredName = MacLoweredPrefix + ": with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways";
+        // P2-41: a failed lever (not exactly one call, or an error) is one named setup red; nothing else runs, each
+        // skipped check is a not-run line (before P2-41 it was the rounding setup red plus precondition and relation reds).
+        checks.Add((c.LeversOk, MacLeversName));
+        if (!c.LeversOk) { notRun.AddRange(new[] { kept, preconditionName, selfTest, raisedName, loweredName }); return checks; }
         // P2-39: a kernel that rounds the lowered send buffer (kept != requested) is a named setup red carrying the
         // measured value, not a relation red.
         // P2-39 probe red (run 44927109449) planted lowered - 1: named red "measured lowered=6143, requested=6144".
@@ -2214,10 +2220,10 @@ static class MirrorDriftLoopChecks
         // (the precondition's lowered != read makes read + lowered != 2 x read), so no separate != 2 x read clause.
         bool LoweredCounts(long queued, long handedBytes) => queued == c.Lowered && handedBytes == c.Read + c.Lowered && handedBytes % c.Chunk == 0;
         // P2-39 probe red (run 44927109449) asserted acceptance and failed: the relation rejects handed 8192 == 2 x read.
-        if (loweredKept) Relation(!LoweredCounts(c.Lowered, 2L * c.Read), selfTest);
+        if (loweredKept) Relation(!LoweredCounts(c.Lowered, 2L * c.Read), selfTest); else notRun.Add(selfTest);
         Relation(c.SeamQueued == c.Raised && c.Handed == c.Read + c.Raised && c.Handed == c.Read + c.SeamQueued && c.Handed % c.Chunk == 0 && c.Handed < c.WireBytes
             && c.SeamQueued < c.InBuffer && c.CliQueued == c.SendBuffer && c.CliQueued < c.SeamQueued && c.CliQueued < c.WireBytes - c.Read, raisedName);
-        if (loweredKept) Relation(c.LoweredRun && LoweredCounts(c.LoweredQueued, c.LoweredHanded) && c.LoweredQueued < c.CliQueued && c.LoweredHanded < c.Handed, loweredName);
+        if (loweredKept) Relation(c.LoweredRun && LoweredCounts(c.LoweredQueued, c.LoweredHanded) && c.LoweredQueued < c.CliQueued && c.LoweredHanded < c.Handed, loweredName); else notRun.Add(loweredName);
         return checks;
     }
 
@@ -2261,7 +2267,8 @@ static class MirrorDriftLoopChecks
             var property = typeof(Microsoft.Win32.SafeHandles.SafePipeHandle).GetProperty("PipeSocket", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
             if (property?.GetValue(pipe.SafePipeHandle) is not Socket socket) { record.Error = property is null ? "no SafePipeHandle.PipeSocket" : "PipeSocket is not a Socket"; return; }
             record.Default = socket.SendBufferSize;
-            socket.SendBufferSize = (int)((long)record.Default * numerator / denominator);
+            record.Requested = (int)((long)record.Default * numerator / denominator);
+            socket.SendBufferSize = record.Requested;
             record.Set = socket.SendBufferSize;
         }
         catch (Exception failure) { record.Error = failure.GetType().Name + ": " + failure.Message; }
@@ -2453,7 +2460,7 @@ static class MirrorDriftLoopChecks
             var loweredQueued = extraLines.Length == 1 ? Queued(extraLines[0]) : long.MinValue;
             var chunk = RevitCommandService.WriteProgressChunk;
             var counts = "macos send buffer counts (P2-37): wire=" + wireBytes + " read=" + MidArgsBreakBytes + " in_buffer=" + inBuffer + " default=" + sendBuffer
-                + " raised=" + raised + " raised_queued=" + seamQueued + " raised_handed=" + handed + " lowered=" + lowered + " lowered_queued=" + loweredQueued
+                + " raised=" + raised + " raised_queued=" + seamQueued + " raised_handed=" + handed + " lowered=" + lowered + " lowered_requested=" + requestedLowered + " lowered_queued=" + loweredQueued
                 + " lowered_handed=" + loweredHanded + " cli_queued=" + cliQueued;
             Console.WriteLine("::notice::drift-loop: " + counts);
             var macDetail = measured + " | " + counts + " | raised_lever " + raisedLever + " | lowered_lever " + loweredLever + " lowered_reports=" + loweredReports.Count
