@@ -2094,3 +2094,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay271
 - 2026-11-24T00:53:16Z lock taken (session_014pxpsSieYvEFLEcAAz8vbW relay271; was FREE, relay270 released 2026-11-24T00:43:36Z)
+- 2026-11-24T00:53:38Z picked P10-40 (phase 10), P6-39 (phase 6), P7-40 (phase 7) — oldest-touched (relay267); disjoint files (tests/mcp/RepeatedEnvelopeKeyTests.cs + McpServer.cs Dispatch if defect; Bim.Cad brief builder + CadCommand.cs + tests/cad/PdfType3GlyphListTests.cs CLI block; tests/cli/GeneratePrototypesTests.cs sections 14/15 + new section). Workers spawned; heartbeat at task borders and CI polls.
