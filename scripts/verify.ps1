@@ -14,6 +14,7 @@ try {
     Invoke-EvidenceCommand catalogue-session $pwsh @('-NoProfile','-File',"$root/tests/integration/test-catalogue-session.ps1") $evidence
     Invoke-EvidenceCommand owner-open-project $pwsh @('-NoProfile','-File',"$root/tests/integration/test-owner-open-project.ps1") $evidence
     Invoke-EvidenceCommand install-mcp $pwsh @('-NoProfile','-File',"$root/tests/integration/test-install-mcp.ps1") $evidence
+    Invoke-EvidenceCommand puente-modelado $pwsh @('-NoProfile','-File',"$root/tests/integration/test-puente-modelado.ps1") $evidence
     if ($HostOnly) {
         'MODE host-only: net8 target build and native execution UNVERIFIED'
         Invoke-EvidenceCommand core-tests $pwsh @('-NoProfile','-File',"$PSScriptRoot/test-roslyn.ps1") $evidence
