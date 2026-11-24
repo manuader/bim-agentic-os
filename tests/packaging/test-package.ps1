@@ -2109,6 +2109,20 @@ try {
             $bare = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Remove-PackageCaseDirectory' -and $n.CommandElements.Count -ge 2 -and $n.CommandElements[1] -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.CommandElements[1].Value -ceq 'P4-31' }, $true)).Count
             return "finally $finallyCalls bare $bare"
         }
+        # P4-36: which of P4-31..P4-36 open a line ("# P4-3n: ") of the leading comment block of script text (tokens, so a
+        # later comment or a string does not count), joined by commas ('-' for none).
+        function Get-P436Header([string]$Text) {
+            $tokens = $null; $parseErrors = $null
+            $null = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
+            if ($parseErrors.Count) { return "unparsable: $($parseErrors[0].Message)" }
+            $header = [Collections.Generic.List[string]]::new()
+            foreach ($token in $tokens) {
+                if ($token.Kind -eq [Management.Automation.Language.TokenKind]::NewLine) { continue }
+                if ($token.Kind -ne [Management.Automation.Language.TokenKind]::Comment) { break }
+                foreach ($id in @('P4-31', 'P4-32', 'P4-33', 'P4-34', 'P4-35', 'P4-36')) { if ($token.Text.StartsWith("# $($id): ") -and !$header.Contains($id)) { $header.Add($id) } }
+            }
+            return $(if ($header.Count) { $header -join ',' } else { '-' })
+        }
         function Get-P431ControlMissing([string]$Layout) {
             $missing = [Collections.Generic.List[string]]::new()
             $cliGltf = Join-Path $Layout 'cli/Bim.Gltf.dll'
@@ -2274,6 +2288,37 @@ try {
             $p435Own = Get-P435FinallyPin ([IO.File]::ReadAllText($PSCommandPath))
             Assert ($p435Own -ceq 'finally 1 bare 0') "P4-35: this script's P4-31 layout copy finally goes through Remove-P434LayoutCopy and no bare P4-31 remover remains: $p435Own (want finally 1 bare 0)"
         } catch { $failures.Add("P4-35 cleanup prefix/finally pin self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-36 self-test: this script's header lists P4-31..P4-36 (a P4-3n line after the leading block does not count);
+        # the finally pin counts only the finally of the try whose own statements copy $outA to $p431Copy (planted
+        # misplaced finallys read finally 0); the cleanup prefix is the neutral 'package pin cleanup failed: ' on both
+        # sides; the parity scan flags only prefix-shaped literals (ending in 'cleanup failed: ') other than the prefix and
+        # hard-coded copies of the prefix, never a check name that merely contains 'cleanup failed: '.
+        try {
+            $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36') "P4-36: this script's header lists P4-31..P4-36: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36)"
+            $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
+            Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
+            $p436Misplaced = [ordered]@{
+                'finally of a later try' = "try { Copy-P431Layout `$outA `$p431Copy } catch { }`ntry { `$x = 1 } finally { Remove-P434LayoutCopy `$failures `$p431Copy }"
+                'outer finally around a nested copy try' = "try { try { Copy-P431Layout `$outA `$p431Copy } finally { } } finally { Remove-P434LayoutCopy `$failures `$p431Copy }"
+                'finally of a try copying something else' = "try { Copy-P431Layout `$p432HiddenSource `$p432HiddenCopy } finally { Remove-P434LayoutCopy `$failures `$p431Copy }"
+            }
+            foreach ($p436Case in $p436Misplaced.GetEnumerator()) {
+                $p436Pin = Get-P435FinallyPin $p436Case.Value
+                Assert ($p436Pin -ceq 'finally 0 bare 0') "P4-36 self-test: a misplaced P4-31 finally ($($p436Case.Key)) is not counted: $p436Pin (want finally 0 bare 0)"
+            }
+            $p436Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p436Into 'P4-36' '/p4-36/left' { param($l, $p) 'W' }
+            $p436Prefix = if ($p436Into.Count -eq 1 -and $p436Into[0].EndsWith('W')) { $p436Into[0].Substring(0, $p436Into[0].Length - 1) } else { '<none>' }
+            Assert ($p436Prefix -ceq 'package pin cleanup failed: ') "P4-36: the shared cleanup prefix is the neutral 'package pin cleanup failed: ' (not a task id): '$p436Prefix'"
+            $p436Neutral = 'package pin cleanup failed: '
+            $p436Name = Get-P435PrefixMismatch ('const string CleanupFailed = "package pin cleanup failed: "; check(ok, "P4-36: the copy cleanup failed: named, not swallowed", detail);') $p436Neutral
+            Assert ($p436Name.Count -eq 0) "P4-36 self-test: a check name that merely contains 'cleanup failed: ' is not flagged: $(Format-P431List $p436Name)"
+            $p436Hard = Get-P435PrefixMismatch ('const string CleanupFailed = "package pin cleanup failed: "; return "package pin cleanup failed: build tree " + path;') $p436Neutral
+            Assert (($p436Hard -join '|') -ceq 'hard-coded prefix literal "package pin cleanup failed: build tree "') "P4-36 self-test: a hard-coded copy of the prefix is flagged: $(Format-P431List $p436Hard)"
+            $p436OtherPrefix = Get-P435PrefixMismatch ('const string CleanupFailed = "package pin cleanup failed: "; return "P4-34: cleanup failed: " + path;') $p436Neutral
+            Assert (($p436OtherPrefix -join '|') -ceq 'other cleanup-failed literal "P4-34: cleanup failed: "') "P4-36 self-test: another prefix-shaped literal is flagged: $(Format-P431List $p436OtherPrefix)"
+        } catch { $failures.Add("P4-36 header/finally/prefix pin self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
