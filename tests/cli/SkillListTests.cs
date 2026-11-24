@@ -105,6 +105,10 @@ using Bim.Core;
 //      over the drifted lock); with xx.p534b.pack drifted too, the refusal is xx.p534a.pack's line with the literal
 //      " (+1 more lock issue(s))" suffix (in process and as a real process, twice each); the fixture builders are
 //      duplicated in tests/mcp/TwiceReadToolTests.cs on purpose (separate test executables), pinned there as equal text.
+//      P5-38: that pin compares whole builder bodies of this section (mutant self-test: a builder grown by a line fails
+//      it); an invalid code (xx.p538.bad: jurisdiction_invalid on the valid lock) prints the drift line over the drifted
+//      lock (drift before validation); the escaped '+' (\u002B, JsonSerializer's default encoder) of the two-drift line is
+//      pinned as the current encoder behaviour.
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1375,11 +1379,10 @@ internal static class SkillListTests
         // Drifted lock: xx.p534a.pack's sidecar note edited after pinning; the locked load refuses before any selection.
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
         // The hashes are bim-skill-pack-sha256-v1 of the xx.p534a.pack fixture bytes as pinned and as edited.
-        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs
-        // and tests/mcp/TwiceReadToolTests.cs): first pinned after the P5-34 red probe run 44911652955; both files' drift lines
-        // were re-observed byte for byte, as the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli
-        // on macOS in run 45316035463, tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they
-        // are the same on every OS.
+        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs and tests/mcp/TwiceReadToolTests.cs):
+        // first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as
+        // the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463,
+        // tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they are the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
