@@ -3461,6 +3461,62 @@ internal static class GeneratePrototypesTests
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
+        // P7-44 (i): BoundedInput.Stat's Func parameter call( is followed to the arguments Stat's callers pass (no
+        // BoundedInput.call allowance), and (k) GltfExporter.WriteNew is followed into GltfExporter.cs, its wrap parameter to
+        // the lambdas its callers pass. Each mutant edits the followed code and names the problem it must be rejected for.
+        const string ReadBytesCall = @"var\s+bytes\s*=\s*ReadBytes\s*\(\s*path\s*,\s*MaxBytes\s*,\s*share\s*\)\s*;";
+        const string RequireRegular = @"\bstatic\s+void\s+RequireUnixRegular\s*\(";
+        var parameterMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("an unrelated call( in a BoundedInput helper ReadText reaches", new[] { (ReadBytesCall, "Poke(path); var bytes = ReadBytes(path, MaxBytes, share);"),
+                (RequireRegular, "static void Poke(string path) { call(path); } static void RequireUnixRegular(") }, "Execute reaches call("),
+            ("a call( of a BoundedInput parameter named call that is not a delegate", new[] { (ReadBytesCall, "Poke(path); var bytes = ReadBytes(path, MaxBytes, share);"),
+                (RequireRegular, "static void Poke(string call) { call(); } static void RequireUnixRegular(") }, "Execute reaches call("),
+            ("a stdout write in a lambda another BoundedInput caller passes to Stat", new[] {
+                (RequireRegular, "static bool Noisy(out int mode) => Stat(status => { Console.WriteLine(); return 0; }, out mode); static void RequireUnixRegular(") }, Through + "call"),
+            ("a stdout write in GltfExporter.WriteNew", new[] { (@"try\s*\{\s*file\s*=\s*new\s+FileStream\s*\(", "Console.WriteLine(path); try { file = new FileStream(") },
+                Through + "GltfExporter.WriteNew"),
+            ("a stdout write in the wrap lambda GltfExporter.WriteGltf passes to WriteNew", new[] {
+                (@"ExportGltf\s*\(\s*project\s*\)\s*\)\s*,\s*path\s*,\s*stream\s*=>\s*stream\s*\)", "ExportGltf(project)), path, stream => { Console.Out.Write(path); return stream; })") }, Through + "wrap"),
+        };
+        foreach (var (label, edits, reason) in parameterMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-44 parameter self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+        Check(!ExecuteExternalCalls.Contains("BoundedInput.call") && !ExecuteExternalCalls.Contains("GltfExporter.WriteNew"),
+            "P7-44 ExecuteExternalCalls lists neither BoundedInput.call (Stat's Func argument is followed) nor GltfExporter.WriteNew (followed into GltfExporter.cs)");
+
+        // P7-44 (j): a local or parameter named like a field is not that field (its assignments are not followed from the
+        // local's scope, and the local's own assignments are not field assignments), and a tuple-typed local declaration is
+        // not an assignment; a field assignment after if (...) and a local of another method still leave the field followed.
+        const string Field = "static Action? Echo; ";
+        var shadowMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string? Reason)[]
+        {
+            ("a local Echo shadowing a delegate field armed with a stdout write", new[] { (AfterParsed, Parsed + "Quiet();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Quiet() { Action Echo = () => { }; Echo = () => { }; Echo(); } static void Fail(") }, null),
+            ("a parameter Echo shadowing a delegate field armed with a stdout write", new[] { (AfterParsed, Parsed + "Relay();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Relay() { Quiet(() => { }); } static void Quiet(Action Echo) { Echo(); } static void Fail(") }, null),
+            ("a stdout write assigned to a shadowing local in a method Execute does not reach", new[] { (AfterParsed, Parsed + "Echo?.Invoke();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => { }; } static void Other() { Action Echo = () => { }; Echo = () => Console.WriteLine(); Echo(); } static void Fail(") }, null),
+            ("a tuple-typed local declaration named like the field", new[] { (AfterParsed, Parsed + "Echo?.Invoke();"),
+                (BeforeFail, Field + "static void Other() { (Action Say, int Count) Echo = (() => Console.WriteLine(), 1); Echo.Say(); } static void Fail(") }, null),
+            ("a field assigned after if (on)", new[] { (AfterParsed, Parsed + "Echo?.Invoke();"),
+                (BeforeFail, Field + "static void Arm(bool on) { if (on) Echo = () => Console.WriteLine(); } static void Fail(") }, Through + "Echo"),
+            ("a field whose name another method uses for a local", new[] { (AfterParsed, Parsed + "Fire();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Other() { Action Echo = () => { }; Echo(); } static void Fire() { Echo?.Invoke(); } static void Fail(") },
+                Through + "Echo"),
+        };
+        foreach (var (label, edits, reason) in shadowMutants)
+        {
+            var mutated = Mutate(write, edits);
+            var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command);
+            if (reason is null) Check(problems.Count == 0, "P7-44 shadow self-test: Execute pin accepts " + label, Problems(problems));
+            else Check(problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-44 shadow self-test: " + label + " is still rejected for " + reason, Problems(problems));
+        }
+
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
         const string ThirteenCall = @"var\s+r\s*=\s*ForcedRun\s*\(\s*runMethod\s*,\s*seams\s*,\s*stdout\s*,\s*null\s*,\s*null\s*,\s*stage\s*,\s*args\s*\)\s*;";
         const string Thirteen = "var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);";
