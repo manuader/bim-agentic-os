@@ -169,6 +169,15 @@ jobs:
         run: |
           dotnet build tests/mirror-journal --configuration Release --warnaserror
           dotnet run --project tests/mirror-journal --configuration Release --no-build -- --write-progress-only
+      - name: MCP generate_typology stdio section 9 alone (macOS, P3-38)
+        if: runner.os == 'macOS'
+        run: |
+          set -o pipefail
+          dotnet build interfaces/mcp --configuration Release --warnaserror
+          dotnet build tests/mcp --configuration Release --warnaserror
+          tests_dll="$PWD/tests/mcp/bin/Release/net8.0/Bim.Mcp.Tests.dll"
+          BIM_TEST_P3_38_SECTION=9 DOTNET_STARTUP_HOOKS="$tests_dll" dotnet "$tests_dll" | tee "$RUNNER_TEMP/mcp-section-9.txt"
+          grep -q '"section":9' "$RUNNER_TEMP/mcp-section-9.txt"
   native-build:
     runs-on: windows-latest
     steps:

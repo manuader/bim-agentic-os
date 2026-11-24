@@ -469,6 +469,15 @@ internal static class GenerateTypologyToolTests
     // real MCP process and stays covered in process (tests/cli section 14). The closed-pipe "does not throw" fact is per
     // OS: measured on Linux and Windows (the CI jobs that run tests/mcp); macOS unmeasured (the macOS CI job runs only
     // tests/cli and tests/mirror-journal), so the case label names the OS it ran on.
+    // P3-38. macOS measured: the macOS CI job runs this section alone (SectionNineOnly below, entered through the same
+    // startup hook with SectionVariable=9, so no other tests/mcp section runs there), so the closed-pipe fact is measured
+    // on Linux, Windows and macOS. The partial-stdout claim is split by size: the success case now takes CutBytes and
+    // leaves more than PipeBufferBound (64 KiB: the default Linux pipe capacity, the macOS maximum; Windows' anonymous
+    // pipe is smaller) unread, so the server's write cannot have completed into the buffer before the reader closed and
+    // the server did meet the cut (and dropped it); the typed line is shorter than the bound (asserted), so it may sit
+    // whole in the pipe buffer before the close and that case pins only the reader-side prefix, exit 0 and the one
+    // diagnostic, not that the server met the cut. Server's Kill also contains Win32Exception (the process may exit or
+    // be denied between the timeout and the kill).
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -603,7 +612,7 @@ internal static class GenerateTypologyToolTests
                     StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
                 start.ArgumentList.Add(mcpDll);
                 start.Environment.Remove("DOTNET_STARTUP_HOOKS");
-                foreach (var name in new[] { StartupHook.SeamVariable, StartupHook.StderrVariable, StartupHook.LogVariable }) start.Environment.Remove(name);
+                foreach (var name in new[] { StartupHook.SeamVariable, StartupHook.StderrVariable, StartupHook.LogVariable, StartupHook.SectionVariable }) start.Environment.Remove(name);
                 if (hook is { } h)
                 {
                     start.Environment["DOTNET_STARTUP_HOOKS"] = hookAssembly;
@@ -630,7 +639,12 @@ internal static class GenerateTypologyToolTests
                     });
                 }
                 try { process.StandardInput.Write(line + "\n"); process.StandardInput.Close(); } catch (IOException) { }
-                if (!process.WaitForExit(limit)) { try { process.Kill(true); } catch (InvalidOperationException) { } return (-1, "", null, new List<string>(), false); }
+                if (!process.WaitForExit(limit))
+                {
+                    try { process.Kill(true); }
+                    catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
+                    return (-1, "", null, new List<string>(), false);
+                }
                 process.WaitForExit();
                 var rest = (int)Math.Max(1, Math.Min(PerCaseMs, TotalMs - clock.ElapsedMilliseconds));
                 if (!stdout.Wait(rest) || (stderr is not null && !stderr.Wait(rest))) return (process.ExitCode, "", null, new List<string>(), false);
@@ -656,6 +670,10 @@ internal static class GenerateTypologyToolTests
             var whole = new Dictionary<string, string>(StringComparer.Ordinal);
             byte[] Utf8(string text) => new UTF8Encoding(false).GetBytes(text);
             int Half(string key) => whole.TryGetValue(key, out var full) ? Utf8(full).Length / 2 : 1;
+            // P3-38: the success cut leaves more than the pipe buffer unread; the typed line fits in it.
+            const int CutBytes = 4096;
+            const int PipeBufferBound = 65536;
+            int Length(string key) => whole.TryGetValue(key, out var full) ? Utf8(full).Length : -1;
             bool Prefix(string key, string read, int k) => whole.TryGetValue(key, out var full) && k > 0 && k < Utf8(full).Length
                 && Encoding.Latin1.GetBytes(read).AsSpan().SequenceEqual(Utf8(full).AsSpan(0, k));
 
@@ -688,15 +706,19 @@ internal static class GenerateTypologyToolTests
                         (seam, stderrMode), closeStderr, null, r => TypedRun(r) && (r.Err is null || r.Err.Length == 0) && r.Log.SequenceEqual(expectedLog)));
                 }
             }
-            // P3-36: partial stdout in the real process. The reader takes the first half of the response line's bytes (or
-            // none) and closes its end of the stdout pipe; the server's stdout is an AutoFlush StreamWriter over the console
-            // stream, whose write to a closed pipe is dropped (EPIPE / ERROR_NO_DATA), so the server never observes the cut:
-            // exit 0, nothing on stderr but the forced diagnostic once. The P3-31 path (stdout accepts part of a line and then
-            // throws) is unreachable here; it stays covered in process (tests/cli section 14).
-            cases.Add(("partial-success", "P3-36 partial stdout: the real process without the hook, the reader takes half of the success line and closes stdout: exit 0, the bytes read are the success line's prefix, stderr empty",
-                null, false, () => Half("success"), r => r.InTime && r.Exit == 0 && Prefix("success", r.Out, Half("success")) && r.Err is { Length: 0 } && r.Log.Count == 0));
-            cases.Add(("partial-typed", "P3-36 partial stdout: the real process, Document's catch-all forced (stderr forwarded), the reader takes half of the typed line and closes stdout: exit 0, the prefix of the typed tools/call line, the diagnostic attempted once and written once",
-                ("unguarded", "pipe"), false, () => Half("typed-unguarded"), r => r.InTime && r.Exit == 0 && Prefix("typed-unguarded", r.Out, Half("typed-unguarded")) && r.Err == diagnostic + nl
+            // P3-36: partial stdout in the real process. The reader takes a prefix of the response line's bytes (or none) and
+            // closes its end of the stdout pipe; the server's stdout is an AutoFlush StreamWriter over the console stream,
+            // whose write to a closed pipe is dropped (EPIPE / ERROR_NO_DATA): exit 0, nothing on stderr but the forced
+            // diagnostic once. The P3-31 path (stdout accepts part of a line and then throws) is unreachable here; it stays
+            // covered in process (tests/cli section 14). P3-38: only the success case proves the server met the cut (more
+            // than PipeBufferBound left unread); the typed line fits the pipe buffer, so its case claims the prefix only.
+            cases.Add(("partial-success", "P3-38 partial stdout: the real process without the hook, the reader takes the first " + CutBytes.ToString(CultureInfo.InvariantCulture)
+                + " bytes of the success line and closes stdout with more than " + PipeBufferBound.ToString(CultureInfo.InvariantCulture) + " bytes unwritten (the server's write met the closed pipe): exit 0, the bytes read are the success line's prefix, stderr empty",
+                null, false, () => CutBytes, r => r.InTime && r.Exit == 0 && Length("success") - CutBytes > PipeBufferBound && Prefix("success", r.Out, CutBytes) && r.Err is { Length: 0 } && r.Log.Count == 0));
+            cases.Add(("partial-typed", "P3-38 partial stdout: the real process, Document's catch-all forced (stderr forwarded), the reader takes half of the typed line (shorter than " + PipeBufferBound.ToString(CultureInfo.InvariantCulture)
+                + " bytes, so it may sit whole in the pipe buffer: the prefix only, no claim that the server met the cut) and closes stdout: exit 0, the prefix of the typed tools/call line, the diagnostic attempted once and written once",
+                ("unguarded", "pipe"), false, () => Half("typed-unguarded"), r => r.InTime && r.Exit == 0 && Length("typed-unguarded") is > 0 and < PipeBufferBound
+                    && Prefix("typed-unguarded", r.Out, Half("typed-unguarded")) && r.Err == diagnostic + nl
                     && r.Log.SequenceEqual(Log("hook:unguarded:pipe", attempt))));
             cases.Add(("closed-stdout", "P3-36 partial stdout: the real process, Document's catch-all forced (stderr forwarded), stdout closed by the reader before any byte: exit 0, the diagnostic attempted once and written once",
                 ("unguarded", "pipe"), false, () => 0, r => r.InTime && r.Exit == 0 && r.Out.Length == 0 && r.Err == diagnostic + nl && r.Log.SequenceEqual(Log("hook:unguarded:pipe", attempt))));
@@ -716,16 +738,21 @@ internal static class GenerateTypologyToolTests
                 "P3-36 every process case ran through the launch helper within its limit and the total deadline | runs " + runs.ToString(CultureInfo.InvariantCulture)
                 + " late [" + string.Join(", ", late) + "] elapsed " + clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture) + " ms on " + os);
 
-            // P3-36: the contract records the P3-34 green run, the closed-pipe fact per OS (macOS unmeasured), the partial
-            // stdout result and the launch helper's bounds (docs/contracts/module-contracts.md, the P3-34 paragraph).
+            // P3-36 / P3-38: the contract records the P3-34 and P3-36 (relay270) runs, the closed-pipe fact measured on all
+            // three OSes in one unsplit sentence, the partial stdout result split by size and the launch helper's bounds
+            // (docs/contracts/module-contracts.md, the P3-34 paragraph).
             var contracts = File.ReadAllText(Path.Combine(root, "docs", "contracts", "module-contracts.md"));
             var paragraph = contracts.Split('\n').FirstOrDefault(l => l.StartsWith("P3-34: ", StringComparison.Ordinal)) ?? "";
             Check(paragraph.Contains("CI red 44938717123, green 44940471877", StringComparison.Ordinal)
-                && paragraph.Contains("measured on Linux and Windows; macOS unmeasured", StringComparison.Ordinal)
+                && paragraph.Contains("relay270 CI red 45284714663, green 45286868396", StringComparison.Ordinal)
+                && paragraph.Contains("a write to the closed stderr pipe does not throw, because the runtime's console stream drops the broken-pipe error (measured on Linux, Windows and macOS)", StringComparison.Ordinal)
+                && !paragraph.Contains("macOS unmeasured", StringComparison.Ordinal)
+                && paragraph.Contains("more than 64 KiB of the success line unread", StringComparison.Ordinal)
+                && paragraph.Contains("the typed line fits the pipe buffer, so its case pins only the prefix read", StringComparison.Ordinal)
                 && paragraph.Contains("the P3-31 partial-write-then-throw path is unreachable in the real MCP process", StringComparison.Ordinal)
                 && paragraph.Contains("one launch helper: " + CaseCount.ToString(CultureInfo.InvariantCulture) + " cases, " + (PerCaseMs / 1000).ToString(CultureInfo.InvariantCulture) + " s each, "
                     + (TotalMs / 1000).ToString(CultureInfo.InvariantCulture) + " s in total", StringComparison.Ordinal),
-                "P3-36 docs/contracts P3-34 paragraph: green run, closed pipe per OS (macOS unmeasured), partial stdout unreachable, launch helper bounds | " + Short(paragraph));
+                "P3-38 docs/contracts P3-34 paragraph: P3-34 and relay270 runs, closed pipe measured on Linux, Windows and macOS (one sentence), partial stdout split by size, launch helper bounds | " + Short(paragraph));
         }
         finally
         {
@@ -733,11 +760,53 @@ internal static class GenerateTypologyToolTests
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
     }
+
+    // P3-38: section 9 alone, for the macOS CI job (which runs no other tests/mcp section). StartupHook.Initialize enters it
+    // when SectionVariable is "9" (the job runs `dotnet Bim.Mcp.Tests.dll` with DOTNET_STARTUP_HOOKS naming the same
+    // assembly) and exits with its code before Main. The in-process server is a default McpServer, as Program.cs's; Check
+    // throws on the first failure and prints an Actions annotation, as Program.cs does. Server removes SectionVariable from
+    // every child, so the hooked Bim.Mcp.dll never re-enters this.
+    public static int SectionNineOnly()
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "global.json"))) dir = dir.Parent;
+        var work = Path.Combine(Path.GetTempPath(), "mcp-section-9-" + Guid.NewGuid().ToString("N"));
+        var passed = 0;
+        try
+        {
+            if (dir is null) throw new Exception("repository root with global.json not found from " + AppContext.BaseDirectory);
+            Directory.CreateDirectory(work);
+            var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
+            var server = new McpServer();
+            JsonObject Call(string request) => (JsonNode.Parse(server.Handle(request) ?? throw new Exception("expected response for: " + request)) ?? throw new Exception("null json")).AsObject();
+            StdioStderrRun(dir.FullName, work, dotnet, Call, (condition, name) =>
+            {
+                if (!condition) throw new Exception(name);
+                Console.WriteLine("PASS " + name);
+                passed++;
+            });
+            if (passed == 0) throw new Exception("section 9 ran no check");
+            Console.WriteLine(JsonSerializer.Serialize(new { passed, section = 9, os = OperatingSystem.IsMacOS() ? "macOS" : OperatingSystem.IsWindows() ? "Windows" : "Linux" }));
+            return 0;
+        }
+        catch (Exception exception)
+        {
+            Console.Error.WriteLine(exception);
+            Console.WriteLine("::error title=mcp-generate-typology-section-9::" + exception.Message.Replace("\r", " ", StringComparison.Ordinal).Replace("\n", " ", StringComparison.Ordinal));
+            return 1;
+        }
+        finally
+        {
+            try { if (Directory.Exists(work)) Directory.Delete(work, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+    }
 }
 
 // P3-34: the DOTNET_STARTUP_HOOKS entry GenerateTypologyToolTests section 9 lends to the real Release Bim.Mcp.dll process
 // (the runtime calls Initialize() before the server's Main; type in the global namespace, as the runtime requires). It
-// does nothing unless BIM_TEST_P3_34_LOG is set. It appends "hook:<seam>:<stderr>" to that log, sets the server's
+// does nothing unless BIM_TEST_P3_34_LOG is set (or, P3-38, BIM_TEST_P3_38_SECTION is "9": it then runs section 9 alone and
+// exits; Server never passes that variable on). It appends "hook:<seam>:<stderr>" to that log, sets the server's
 // GenerateTypologyCommand.UnguardedWorkProbe ("unguarded") or GuardedWorkProbe ("guarded") to throw
 // InvalidOperationException(FailureMessage) by reflection on the loaded Bim.Mcp assembly (the production seams have no
 // other switch), and replaces Console.Error with an AttemptWriter logging to the file: "pipe" forwards to the real stderr,
@@ -750,9 +819,12 @@ internal static class StartupHook
     public const string LogVariable = "BIM_TEST_P3_34_LOG";
     public const string FailureMessage = "boom generate_typology P3-34 stdio original";
     public const string StderrMessage = "p3-34 stderr rejects the diagnostic";
+    public const string SectionVariable = "BIM_TEST_P3_38_SECTION";
 
     public static void Initialize()
     {
+        // P3-38: the macOS CI job's section-9-only entry (GenerateTypologyToolTests.SectionNineOnly); never set in a child.
+        if (Environment.GetEnvironmentVariable(SectionVariable) == "9") Environment.Exit(GenerateTypologyToolTests.SectionNineOnly());
         var log = Environment.GetEnvironmentVariable(LogVariable);
         if (string.IsNullOrEmpty(log)) return;
         var seam = Environment.GetEnvironmentVariable(SeamVariable) ?? "none";
