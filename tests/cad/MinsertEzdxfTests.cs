@@ -5,9 +5,6 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
-using System.Text.Json.Serialization;
-using BriefSerializer = Bim.Core.BriefSerializer;
 using Point2 = Bim.Cad.Point2;
 
 // P6-30 block regions under a general extrusion normal, and an ezdxf cross-check of MINSERT cell placement.
@@ -40,7 +37,7 @@ using Point2 = Bim.Cad.Point2;
 //     within 1e-6; the bulges survive (no arc-tessellated warning) and flip sign under the mirroring placements.
 //   * cad-brief CLI pin: the P6-30 Drawing() through the real Release CLI (interfaces/cli Bim.Cli.dll, built by
 //     scripts/verify.ps1 before tests/cad runs) with and without --include-block-regions writes exactly the bytes of the
-//     same document built in process (BriefExtract.FromDxf, BriefSerializer, the CLI's JSON options); both digests pinned.
+//     same document built in process (P6-41: through CadBriefDocument.FromDxf, as the CLI); both digests pinned.
 //   * Documented limit (pinned): the dropped tilted inserts' ocs-non-planar reader warnings are NOT in the brief's
 //     uncertainty list. BriefExtract reports only explode warnings, never DxfDrawing.Warnings/Unsupported, and adding
 //     them would change existing brief bytes: the checked-in minsert-ocs.dxf already has a dropped INSERT (handle 85,
@@ -368,8 +365,6 @@ internal static class MinsertEzdxfTests
 
     // ---------- P6-32: cad-brief CLI pin and the dropped inserts' reader warnings ----------
 
-    private static readonly JsonSerializerOptions CliJson = new() { Converters = { new JsonStringEnumConverter() } };
-
     // First 16 hex digits of the SHA-256 of the cad-brief document of Drawing() (with / without the flag), and the
     // in-process uncertainty codes; measured in CI by the P6-32 probe run 44825236825 (identical on Linux and Windows).
     private const string PinnedWithFlag = "8411ECC467B1097C";
@@ -387,23 +382,14 @@ internal static class MinsertEzdxfTests
     }
 
     // The document CadCommand writes for a DXF cad-brief without a scale option (interfaces/cli/CadCommand.cs), built in
-    // process with the same members, order and JSON options.
+    // process through the same public entry point (P6-41: CadBriefDocument.FromDxf, then ToUtf8Bytes) with the CLI's
+    // 32 MiB reader cap, so no document member or serializer setting is mirrored here. No independent mirror is kept:
+    // the CLI digests PinnedWithFlag / PinnedWithout (measured before the builder existed) still pin the bytes, and the
+    // P6-39 block of tests/cad/PdfType3GlyphListTests.cs keeps the hand-built mirror for the shared document layout.
     private static byte[] InProcessDocument(byte[] bytes, string file, bool includeBlockRegions)
     {
         var drawing = DxfReader.Parse(bytes, file, new DxfReadOptions(32 * 1024 * 1024));
-        var result = BriefExtract.FromDxf(drawing, new BriefExtractOptions { IncludeBlockRegions = includeBlockRegions });
-        var document = new
-        {
-            kind = "cad-brief",
-            version = 1,
-            persisted = false,
-            source = new { file, format = "dxf", bytes = bytes.LongLength, sha256 = Convert.ToHexString(SHA256.HashData(bytes)), page = (int?)null, scale = drawing.MetresPerUnit is not null ? "insunits" : "none", metres_per_unit = result.MetresPerUnit },
-            brief = JsonNode.Parse(BriefSerializer.Serialize(result.Brief)),
-            rooms = result.Rooms,
-            uncertainties = result.Uncertainties,
-            issues = result.Issues,
-        };
-        return JsonSerializer.SerializeToUtf8Bytes(document, CliJson);
+        return CadBriefDocument.FromDxf(file, bytes, drawing, new BriefExtractOptions { IncludeBlockRegions = includeBlockRegions }).ToUtf8Bytes();
     }
 
     private static void RunCli(Action<bool, string, string> c, byte[] bytes)

@@ -93,7 +93,6 @@ internal static class CadCommand
         try { bytes = BoundedInput.ReadBytes(input, MaxInputBytes); }
         catch (InputRejectedException e) { throw new Refusal(e.Message); }
         var sourceFile = Path.GetFileName(input);
-        var sha = SHA256.HashData(bytes);
         int? page = format == "pdf" ? options.Page ?? 1 : null;
 
         object document;
@@ -111,6 +110,8 @@ internal static class CadCommand
             }
             if (draft)
             {
+                // P6-41: the input is hashed here for cad-draft only; CadBriefDocument hashes it for cad-brief.
+                var sha = SHA256.HashData(bytes);
                 var cadOptions = new CadToBimIrOptions(options.ProjectId ?? new Guid(sha.AsSpan(0, 16)))
                 {
                     PdfDoorForms = options.DoorForms ?? Array.Empty<int>(),
@@ -145,8 +146,12 @@ internal static class CadCommand
             }
             else
             {
-                // P6-39: the document is built by Bim.Cad's CadBriefDocument (same members and bytes as before).
-                var brief = CadBriefDocument.Create(sourceFile, bytes, drawing, pdf, page, calibration, new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions });
+                // P6-39: the document is built by Bim.Cad's CadBriefDocument (same members and bytes as before); P6-41: one
+                // factory per input kind, and the builder owns the input hash.
+                var briefOptions = new BriefExtractOptions { MetresPerUnit = options.MetresPerUnit, IncludeBlockRegions = options.IncludeBlockRegions };
+                var brief = drawing is not null
+                    ? CadBriefDocument.FromDxf(sourceFile, bytes, drawing, briefOptions)
+                    : CadBriefDocument.FromPdf(sourceFile, bytes, pdf!, page!.Value, calibration, briefOptions);
                 var result = brief.Result;
                 document = brief;
                 counts = new JsonObject { ["rooms"] = result.Rooms.Count, ["uncertainties"] = result.Uncertainties.Count, ["issues"] = result.Issues.Count };
