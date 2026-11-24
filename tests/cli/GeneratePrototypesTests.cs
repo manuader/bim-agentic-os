@@ -2710,6 +2710,9 @@ internal static class GeneratePrototypesTests
     // P7-40: Execute is found as a member of GenerateCommand (not at brace depth 1), and the reach also follows generic,
     // qualified (GenerateCommand.X(), method-group, delegate and cross-class calls (see Reach); a call into a class outside
     // the two files is allowed only when listed in ExecuteExternalCalls, else unresolved (a problem).
+    // P7-42: the code also holds followed (default: ExecuteFollowedCode(), the real OutputProblem.cs, BoundedInput.cs,
+    // SkillPackLookup.cs and IntentPlan.cs), so Execute's calls into those repository CLI helpers are followed into their
+    // files like any other declared type's members, with the same stdout and resolution checks.
     static List<string> ExecuteWriteProblems(string write, string command, string? followed = null)
     {
         static int Count(string code, string pattern) => System.Text.RegularExpressions.Regex.Matches(code, pattern).Count;
@@ -2752,13 +2755,13 @@ internal static class GeneratePrototypesTests
             + @"catch\s*\(\s*Exception\s*\)\s*\{\s*try\s*\{\s*Console\s*\.\s*Error\s*\.\s*WriteLine\s*\(\s*PartialOutputLeft\s*\+\s*output\s*\)\s*;\s*\}\s*catch\s*\(\s*Exception\s*\)\s*\{\s*\}\s*\}\s*throw\s*;\s*\}\s*\}$") != 1)
             problems.Add("the success line is not the last statement of its try with the delete / report / rethrow catch (Exception) closing Execute");
         if (Count(body, @"\bPrint\s*\(") != 0) problems.Add("Execute calls Print(");
-        var code = write + "\n" + command;
+        var code = write + "\n" + command + "\n" + (followed ?? ExecuteFollowedCode());
         var map = new CodeMap(code);
         var executes = map.MembersOf("GenerateCommand", "Execute", false);
         if (executes.Count != 1) { problems.Add("Execute declared " + executes.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GenerateCommand, not once"); return problems; }
         var (reached, unresolved) = Reach(map, executes, ExecuteExternalCalls);
         foreach (var name in unresolved)
-            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs or GenerateCommand.cs and not a listed external call (a delegate parameter or a class the pin cannot read)");
+            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs, GenerateCommand.cs or the followed CLI files and not a listed external call (a delegate parameter or a class the pin cannot read)");
         foreach (var (name, start, end) in reached)
         {
             var helper = code[start..end];
@@ -2769,9 +2772,26 @@ internal static class GeneratePrototypesTests
     }
 
     // P7-40: the calls into classes outside GenerateWrite.cs and GenerateCommand.cs that Execute may reach, as written
-    // (Type.Member): BCL and library code, and CLI helpers that write nothing to stdout (OutputProblem, BoundedInput,
-    // SkillPackLookup, IntentPlan.InternalDiagnostic; not followed into their files). Console's members are listed so the
-    // stdout checks, not this list, judge them. Any other external call Execute reaches is unresolved.
+    // (Type.Member): BCL and library code. Console's members are listed so the stdout checks, not this list, judge them.
+    // Any other external call Execute reaches is unresolved.
+    // P7-42: OutputProblem, BoundedInput, SkillPackLookup and IntentPlan are no longer listed: their files are followed
+    // (ExecuteFollowedCode), so the BCL calls made there are listed instead, and an unqualified call with no body in the read
+    // code is allowed as Type.Member of its enclosing type: BoundedInput's extern P/Invoke declarations GetFileType,
+    // NativeLStat and NativeFStat (lstat / fstat / GetFileType, no writes) and BoundedInput.Stat's Func parameter call (invoked
+    // with the lambdas LStat and FStat pass, which are followed as their text). The repository library calls
+    // (GltfExporter.WriteNew, PrototypePipeline.Run, PrototypePipelineSerializer.Serialize, SkillParser.IsId / Parse,
+    // RevitCommandPolicy.RepositoryRoot, in core / adapters) are still listed, not followed (gap: the pin reads CLI files only).
+    static readonly HashSet<string> ExecuteExternalCalls = new(StringComparer.Ordinal)
+    {
+        "Console.WriteLine", "Console.Error.WriteLine", "GltfExporter.WriteNew", "Convert.ToHexString", "SHA256.HashData", "JsonSerializer.Serialize",
+        "File.Delete", "PrototypePipeline.Run", "PrototypePipelineSerializer.Serialize", "JsonDocument.Parse", "Array.Empty", "Array.IndexOf",
+        "SkillParser.IsId", "Guid.TryParseExact", "Encoding.UTF8.GetString", "double.IsFinite",
+        "string.IsNullOrEmpty", "string.Equals", "char.IsAsciiLetter", "Path.GetFullPath", "Path.GetExtension", "Path.GetDirectoryName", "Path.Combine",
+        "Path.TrimEndingDirectorySeparator", "Path.GetFileName", "Directory.Exists", "File.Exists", "File.GetAttributes", "OperatingSystem.IsWindows",
+        "RevitCommandPolicy.RepositoryRoot", "SkillParser.Parse", "ArgumentException.ThrowIfNullOrEmpty", "ArgumentOutOfRangeException.ThrowIfNegativeOrZero",
+        "Encoding.UTF8.GetBytes", "BitConverter.ToInt32", "BoundedInput.GetFileType", "BoundedInput.NativeLStat", "BoundedInput.NativeFStat", "BoundedInput.call",
+    };
+
     // P7-42: the CLI files Execute's calls into GltfExportCommand.OutputProblem, BoundedInput.ReadText, SkillPackLookup.Load and
     // IntentPlan.InternalDiagnostic lead to, comment-stripped and string-blanked, joined by newlines (read once from the
     // repository root: the first ancestor of the test binary holding global.json, as Program.cs finds it).
@@ -2786,14 +2806,6 @@ internal static class GeneratePrototypesTests
         var root = directory.FullName;
         return executeFollowedCode = string.Join("\n", ExecuteFollowedFiles.Select(file => ApplyIntentTests.CodeOf(File.ReadAllText(Path.Combine(root, "interfaces", "cli", file)))));
     }
-
-    static readonly HashSet<string> ExecuteExternalCalls = new(StringComparer.Ordinal)
-    {
-        "Console.WriteLine", "Console.Error.WriteLine", "GltfExportCommand.OutputProblem", "GltfExporter.WriteNew", "Convert.ToHexString",
-        "SHA256.HashData", "JsonSerializer.Serialize", "File.Delete", "SkillPackLookup.Load", "PrototypePipeline.Run",
-        "PrototypePipelineSerializer.Serialize", "BoundedInput.ReadText", "JsonDocument.Parse", "Array.Empty", "Array.IndexOf",
-        "SkillParser.IsId", "Guid.TryParseExact", "Encoding.UTF8.GetString", "IntentPlan.InternalDiagnostic", "double.IsFinite",
-    };
 
     // P7-38 / P7-40: static reachability over comment-stripped, string-blanked C# (sections 14 to 16). Not a parser.
     // A declaration is name( or name<...>( preceded by whitespace and a type-ending token (not return / throw / new / ...),
@@ -2812,6 +2824,17 @@ internal static class GeneratePrototypesTests
     //   - a name not followed by ( (bare or T.-qualified) that names a method in scope (a method group passed or assigned),
     //     or a delegate field or property: that method or declarator;
     //   - a delegate declarator (name = / += / ??= / => / { get; ... } = ...) is followed through its right-hand side.
+    // P7-42:
+    //   - a name (called or not) that is a field or property of an enclosing type (CodeMap.IsField) is also followed through
+    //     every assignment of it outside its declaration: name = / += / ??= inside a member of that type (not a local
+    //     declaration), this.name = inside it, or T.name = / A.B.T.name = anywhere (a delegate armed in a static constructor
+    //     or a method and invoked as name?.Invoke( or name(); the same for T.name);
+    //   - a receiver chain A.B.name( is an instance (followed as any other receiver) when its last declared type is not its
+    //     last segment (GenerateCommand.Result.Items.Count() ) or, with no declared type, when A is a field or property of an
+    //     enclosing type (Result.Items.Count() ); otherwise as above;
+    //   - type-argument lists nest to any depth and hold tuples (Run<Dictionary<string, List<int>>>(, Run<(int, string)>();
+    //   - an unqualified call with no body in the read code is allowed when the caller lists Type.Member for its innermost
+    //     enclosing type (an extern declaration, a delegate parameter), else unresolved.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -2820,8 +2843,21 @@ internal static class GeneratePrototypesTests
     };
     static readonly HashSet<string> DeclarationBlockers = new(StringComparer.Ordinal) { "return", "throw", "new", "await", "else", "in", "is", "as", "case", "yield", "not", "and", "or", "when", "goto" };
     static readonly HashSet<string> KeywordTypes = new(StringComparer.Ordinal) { "string", "int", "long", "double", "float", "decimal", "bool", "char", "byte", "short", "uint", "ulong", "object" };
-    // An optional type-argument list (one nesting level): Foo<T>(, Foo<List<int>, string>(.
-    const string TypeArguments = @"(?:\s*<(?:[\w\s,.?\[\]]|<[\w\s,.?\[\]]*>)*>)?";
+    // An optional type-argument list: Foo<T>(, Foo<List<int>, string>( and (P7-42) any nesting and tuples,
+    // Foo<Dictionary<string, List<(int, string)>>>( (balanced < > and ( ) over names, whitespace , . ? [ ]).
+    const string TypeArguments = @"(?:\s*<(?>[\w\s,.?\[\]]+|(?<ta><)|(?<-ta>>)|(?<tp>\()|(?<-tp>\)))*(?(ta)(?!))(?(tp)(?!))>)?";
+
+    // P7-42: whether the token before index ends a type, so the name at index is declared there (a local, field, property or
+    // parameter): whitespace before the name, a letter / digit / _ / > / ] / ? (not the > of =>), not a statement keyword.
+    static bool AfterType(string code, int index)
+    {
+        var (last, word, spaced) = Before(code, index);
+        if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or '?') || DeclarationBlockers.Contains(word)) return false;
+        if (last != '>') return true;
+        var j = index - 1;
+        while (char.IsWhiteSpace(code[j])) j--;
+        return !(j > 0 && code[j - 1] == '=');
+    }
 
     // The index of the bracket closing the one at open, or -1.
     static int Closing(string code, int open, char opening, char closing)
@@ -2887,7 +2923,10 @@ internal static class GeneratePrototypesTests
     sealed class CodeMap
     {
         readonly int[] enclosing;
+        readonly int[] parens;
         readonly Dictionary<int, int> parent = new();
+        readonly Dictionary<(string, string), bool> fields = new();
+        readonly Dictionary<(string, string), List<(int Start, int End)>> assignments = new();
         readonly Dictionary<string, List<(int Start, int End)>> methods = new(StringComparer.Ordinal);
         readonly Dictionary<string, List<(int Start, int End)>> declarators = new(StringComparer.Ordinal);
 
@@ -2895,6 +2934,9 @@ internal static class GeneratePrototypesTests
         {
             Code = code;
             enclosing = new int[code.Length + 1];
+            // P7-42: the parenthesis depth before each index.
+            parens = new int[code.Length + 1];
+            for (var i = 0; i < code.Length; i++) parens[i + 1] = parens[i] + (code[i] == '(' ? 1 : code[i] == ')' ? -1 : 0);
             var stack = new Stack<int>();
             for (var i = 0; i <= code.Length; i++)
             {
@@ -2999,6 +3041,52 @@ internal static class GeneratePrototypesTests
         // The member spans of name in the types called type.
         public List<(int Start, int End)> MembersOf(string type, string name, bool withDeclarators) =>
             Methods(name).Concat(withDeclarators ? Declarators(name) : Enumerable.Empty<(int Start, int End)>()).Where(d => MemberOf(d.Start) == type).ToList();
+
+        // P7-42: whether name is declared as a field or property of a type called type: an occurrence directly in that type's
+        // body, outside parentheses (not a parameter), after a type-ending token (AfterType), followed by ; , = { or =>.
+        public bool IsField(string type, string name)
+        {
+            if (fields.TryGetValue((type, name), out var known)) return known;
+            var found = false;
+            var declarator = new System.Text.RegularExpressions.Regex(@"\G\s*(?:;|,|=(?![=>])|\{|=>)");
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + name + @"\b"))
+            {
+                if (MemberOf(m.Index) != type || parens[m.Index] > parens[enclosing[m.Index] + 1] || !AfterType(Code, m.Index)) continue;
+                if (declarator.Match(Code, m.Index + m.Length).Success) { found = true; break; }
+            }
+            return fields[(type, name)] = found;
+        }
+
+        // P7-42: the assignments of the field or property name of type outside its declaration, as [name, end of the
+        // right-hand side): name = / += / ??= inside a member of type that is not a local declaration, this.name = inside
+        // type, or T.name = / A.B.T.name = anywhere.
+        public List<(int Start, int End)> FieldAssignments(string type, string name)
+        {
+            if (assignments.TryGetValue((type, name), out var cached)) return cached;
+            var found = new List<(int Start, int End)>();
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + name + @"\s*(?:\+|\?\?)?=(?![=>])"))
+            {
+                if (Before(Code, m.Index).Last == '.')
+                {
+                    var dot = m.Index - 1;
+                    while (Code[dot] != '.') dot--;
+                    var receiver = Receiver(Code, dot);
+                    if (receiver is null || (receiver == "this" ? !Scope(m.Index).Types.Contains(type) : receiver.Split('.')[^1] != type)) continue;
+                }
+                else
+                {
+                    if (AfterType(Code, m.Index)) continue;
+                    var (types, member) = Scope(m.Index);
+                    if (member < 0 || !types.Contains(type)) continue;
+                }
+                var end = StatementEnd(Code, m.Index + m.Length);
+                if (end >= 0) found.Add((m.Index, end + 1));
+            }
+            return assignments[(type, name)] = found;
+        }
+
+        // P7-42: the enclosing types of index (innermost first, once each) that declare name as a field or property.
+        public List<string> FieldTypes(string name, int index) => Scope(index).Types.Distinct().Where(type => IsField(type, name)).ToList();
     }
 
     // The receiver chain of a member access whose dot is at dot: "A.B.C" when it is a chain of names (null for an instance:
@@ -3047,26 +3135,36 @@ internal static class GeneratePrototypesTests
                 var dot = at - 1;
                 while (code[dot] != '.') dot--;
                 var receiver = Receiver(code, dot);
-                var type = receiver?.Split('.')[^1];
-                if (receiver is null || (char.IsLower(receiver[0]) && !KeywordTypes.Contains(receiver.Split('.')[0])))
+                // P7-42: the last declared type of the chain, and whether the chain is an instance (see Reach).
+                var segments = receiver?.Split('.') ?? Array.Empty<string>();
+                var typed = Array.FindLastIndex(segments, map.IsType);
+                var instance = receiver is null || (char.IsLower(receiver[0]) && !KeywordTypes.Contains(segments[0]))
+                    || (typed >= 0 && typed < segments.Length - 1) || (typed < 0 && map.FieldTypes(segments[0], at).Count > 0);
+                if (instance)
                 {
                     if (call) found.Add((name, map.Types.Values.Select(t => t.Name).Distinct().SelectMany(t => map.MembersOf(t, name, false)).ToList(), null));
                 }
-                else if (type is not null && map.IsType(type))
+                else if (typed >= 0)
                 {
+                    var type = segments[^1];
                     var targets = map.MembersOf(type, name, true);
+                    if (map.IsField(type, name)) targets.AddRange(map.FieldAssignments(type, name));
                     if (call && targets.Count == 0) found.Add((type + "." + name, none, type + "." + name));
                     else found.Add((type + "." + name, targets, null));
                 }
                 else if (call && external is not null && !external.Contains(receiver + "." + name)) found.Add((receiver + "." + name, none, receiver + "." + name));
                 continue;
             }
+            // P7-42: a field or property of an enclosing type is followed through its assignments too.
+            var assigned = map.FieldTypes(name, at).SelectMany(type => map.FieldAssignments(type, name)).ToList();
             if (call)
             {
-                var targets = map.Visible(name, at, true, true);
-                found.Add((name, targets, targets.Count == 0 ? name : null));
+                var targets = map.Visible(name, at, true, true).Concat(assigned).ToList();
+                var enclosing = map.Scope(at).Types;
+                var allowed = external is not null && enclosing.Count > 0 && external.Contains(enclosing[0] + "." + name);
+                found.Add((name, targets, targets.Count == 0 && !allowed ? name : null));
             }
-            else found.Add((name, map.Visible(name, at, true, false), null));
+            else found.Add((name, map.Visible(name, at, true, false).Concat(assigned).ToList(), null));
         }
         return found;
     }
