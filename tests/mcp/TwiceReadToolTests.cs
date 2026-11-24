@@ -434,6 +434,18 @@ internal static class TwiceReadToolTests
             var there = Builders(File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs")));
             Check(here.Length == 2 && here.All(there.Contains),
                 "P5-36: the four-pack fixture's Manifest and Sidecar builders are the same text as in tests/cli/SkillListTests.cs section 16 (duplicated on purpose) | " + Short(string.Join(" / ", here)));
+            // The drift-hash provenance paragraph (above the DriftLine pins) is the same text in both files.
+            static string Provenance(string source)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n').Select(line => line.Trim()).ToArray();
+                var start = Array.FindIndex(lines, line => line.StartsWith("// Provenance (P5-36;", StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.EndsWith("are the same on every OS.", StringComparison.Ordinal));
+                return start < 0 || end < 0 ? "" : string.Join("\n", lines[start..(end + 1)]);
+            }
+            var provenance = Provenance(File.ReadAllText(Path.Combine(root, "tests", "mcp", "TwiceReadToolTests.cs")));
+            Check(provenance.Length > 0 && provenance.Contains("45318167428", StringComparison.Ordinal)
+                && provenance == Provenance(File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs"))),
+                "P5-36: the drift-hash provenance paragraph is the same text (same runs and OSes) in both files | " + Short(provenance));
         }
         foreach (var (packId, code, municipality) in new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") })
         {
@@ -581,10 +593,12 @@ internal static class TwiceReadToolTests
         });
 
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited. Provenance
-        // (P5-36, the same text in tests/cli/SkillListTests.cs): pinned after the P5-34 red probe run 44911652955;
-        // observed as the prefix of the two-drift line by the P5-36 probe run P536_RUN on Linux (ubuntu-latest, the one CI
-        // OS where tests/cli and tests/mcp both run); bytes-only, so the same on every OS.
+        // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited.
+        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs
+        // and tests/mcp/TwiceReadToolTests.cs): first pinned after the P5-34 red probe run 44911652955; both files' drift lines
+        // were re-observed byte for byte, as the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli
+        // on macOS in run 45316035463, tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they
+        // are the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
         Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
         {
@@ -601,9 +615,9 @@ internal static class TwiceReadToolTests
         // P5-36: two drifted packs. xx.p534mb.pack's sidecar note is edited after pinning too; the refusal is the first lock
         // issue in (pack id, code, detail) order (xx.p534ma.pack, the line above) with the further-issues suffix
         // " (+1 more lock issue(s))" appended to its detail (JurisdictionRegistry.LockRefused). The text carries the '+' as
-        // the JSON escape \u002B (System.Text.Json's default encoder; observed by the P5-36 probe run 45316035463).
+        // the JSON escape \u002B (System.Text.Json's default encoder; observed by the P5-36 probe runs 45316035463 and 45318167428).
         File.WriteAllText(Path.Combine(skills, PackB, "jurisdiction.json"), Sidecar(CodeB, PackB, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
-        const string TwoDriftLine = "P536_PROBE_TWO_DRIFT";
+        const string TwoDriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it (\\u002B1 more lock issue(s))\"}";
         Phase("two drifted packs", new (string, JsonObject, string[], string, bool)[]
         {
             ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], TwoDriftLine, false),
