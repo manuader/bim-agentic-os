@@ -71,6 +71,7 @@ using Bim.Core;
 //      SkillListCommand.WriteDiagnostic(envelope) once; documented deltas CommandDeltaP531 and ToolDeltaP531, reversed,
 //      give the pre-P5-31 SkillListCommand.cs and SkillListTool.cs byte for byte (SHA-256, "\n" line endings), so the
 //      P5-21/P5-22/P5-29 code read by the earlier pins is otherwise unchanged.
+//      P5-41: the command is read with CommandDeltaP541 (Run's catch, oracle 19) reversed first, then CommandDeltaP533.
 //  14. P5-32 selection twice-read: over a generated package with a real code pack (xx.p532) and a stub code pack
 //      (xx.p532s) and an outside lock pinning both, jurisdiction-resolve --country/--municipality and --code/--allow-stub
 //      under --lock run twice in process (APP_CONTEXT_BASE_DIRECTORY override, restored; negative control
@@ -90,6 +91,7 @@ using Bim.Core;
 //      (both verbs); on Linux skill-list with stdout >/dev/full exits 1 with empty stderr. Static: both Run bodies pinned;
 //      documented deltas CommandDeltaP533 and ResolveDeltaP533 reversed give the pre-P5-33 files (SHA-256), and section 13
 //      reads SkillListCommand.cs with CommandDeltaP533 reversed; RejectingWriter is declared only in the shared file.
+//      P5-41: SkillListCommand.cs is read with CommandDeltaP541 (Run's catch, oracle 19) reversed: the P5-33 text.
 //  16. P5-34 ambiguous, conflict and drifted-lock twice-read: over a generated package whose skills hold xx.p534a.pack and
 //      xx.p534b.pack (distinct codes, both Fixture Country / Fixture Town: alias_overlap) and xx.p534d.one and
 //      xx.p534d.two (both claiming code xx.p534d, Twin Town: claim_duplicate), all pinned in an outside lock,
@@ -153,6 +155,16 @@ using Bim.Core;
 //      diagnostic, and with both seams null a listing and a root_missing refusal keep their bytes. Static:
 //      SkillListCommand.cs is unchanged by P5-39 (SHA-256, "\n") and Run's catch is the one unguarded
 //      IntentPlan.Internal("skill-list", error) call.
+//      P5-41 (the stated limit lifted): Run's catch wraps IntentPlan.Internal in a try whose fallback reads only types, so
+//      two levels (and three) through either seam exit 1 with exactly the typed skill_list_internal_error line and
+//      nothing escaping Run (also with a rejecting stdout, stderr or both: one attempt per stream); the diagnostic is
+//      "skill-list internal error: System.InvalidOperationException: <type of the exception that reached Run> (its Message
+//      getter threw <type>)" once (the fallback goes through IntentPlan.Internal again, so the internal-error fragment
+//      keeps its one copy in IntentPlan.cs). The probe's original exception type cannot be named there: List's catch (not P5-41's to edit) already lost
+//      it, so the diagnostic states the getter types instead (19b). The one-level and readable-message diagnostics are
+//      unchanged (19a). Static (19d): CommandDeltaP541 (Run's catch: the one-line catch becomes the guarded block),
+//      reversed, gives the P5-39 file byte for byte (the P5-39 SHA-256 kept), and sections 13 and 15 read the file with
+//      it reversed first (documented delta); Run's new catch is pinned whitespace-insensitively.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -2093,24 +2105,40 @@ internal static class SkillListTests
         }
         Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null again");
 
-        // 19b. PINNED AS MEASURED (a stated limit): two levels escape Run unhandled. Run's catch calls IntentPlan.Internal
-        // once, unguarded, so when the exception that left List has a throwing Message getter too, that second getter's
-        // exception leaves Run and the exit code is never set. Containing it needs a change inside Run's catch, which
-        // would rewrite the P5-31/P5-33 pinned bytes read by sections 13 and 15 (P5-39 may not edit those sections).
+        // 19b. P5-41 (the P5-39 MEASURED LIMIT flipped): two levels no longer escape Run. P5-39 measured (CI run
+        // 45552500501, Linux/Windows/macOS) the second getter's InvalidOperationException leaving Run with the exit code
+        // untouched; Run's catch now guards IntentPlan.Internal and its fallback reads only types. With two levels, List's
+        // catch reads the probe exception's Message, whose getter throws a MessageGetterThrowsException: that is what
+        // leaves List and reaches Run, whose IntentPlan.Internal then throws the InvalidOperationException of its getter.
+        // The diagnostic names both of those types; the probe's own type (DoubleMessageGetterThrowsException) is lost in
+        // List's catch already, so it is stated here, not printed. Three levels reach Run the same way, one level deeper.
         foreach (var seam in new[] { "ListingWorkProbe", "LoadedProbe" })
         {
-            if (seam == "ListingWorkProbe") Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new DoubleMessageGetterThrowsException();
-            else Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new DoubleMessageGetterThrowsException();
-            (int Exit, string Out, string Err, string Thrown) run;
-            try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"])); }
-            finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; Bim.Cli.SkillListCommand.LoadedProbe = null; }
-            // Measured (CI run 45552500501, Linux/Windows/macOS): the exception that escapes Run is the SECOND getter's
-            // InvalidOperationException — Run's catch reads the Message of what left List (the first getter's exception),
-            // and that read throws in turn.
-            Check(run.Thrown == "System.InvalidOperationException: " + MessageGetterThrowsException.GetterMessage && run.Exit == 0 && run.Out.Length == 0 && run.Err.Length == 0,
-                "MEASURED LIMIT: " + seam + " throwing an exception whose Message getter throws an exception whose Message getter throws too escapes Run unhandled as the second getter's InvalidOperationException, exit code untouched, nothing printed (→ a future P5 row)", D(run));
+            foreach (var (depth, reached, make) in new (string, Type, Func<Exception>)[]
+            {
+                ("two levels", typeof(MessageGetterThrowsException), () => new DoubleMessageGetterThrowsException()),
+                ("three levels", typeof(DoubleMessageGetterThrowsException), () => new TripleMessageGetterThrowsException()),
+            })
+            {
+                var diagnostic = "skill-list internal error: System.InvalidOperationException: " + reached.FullName + " (its Message getter threw " + (depth == "two levels" ? "System.InvalidOperationException" : typeof(MessageGetterThrowsException).FullName) + ")";
+                foreach (var (label, rejectOut, rejectError) in new (string, bool, bool)[] { ("working streams", false, false), ("a rejecting stdout", true, false), ("a rejecting stderr", false, true), ("both streams rejecting", true, true) })
+                {
+                    var outWriter = rejectOut ? new RejectingWriter(new IOException("stdout P5-41")) : null;
+                    var errorWriter = rejectError ? new RejectingWriter(new ObjectDisposedException("stderr P5-41")) : null;
+                    if (seam == "ListingWorkProbe") Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw make();
+                    else Bim.Cli.SkillListCommand.LoadedProbe = _ => throw make();
+                    (int Exit, string Out, string Err, string Thrown) run;
+                    try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"]), outWriter, errorWriter); }
+                    finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; Bim.Cli.SkillListCommand.LoadedProbe = null; }
+                    var attempts = (outWriter?.Attempts ?? 0) + (errorWriter?.Attempts ?? 0);
+                    Check(run.Exit == 1 && run.Thrown.Length == 0 && attempts == (rejectOut ? 1 : 0) + (rejectError ? 1 : 0)
+                        && (rejectOut || run.Out == InternalLine + newline) && (rejectError || run.Err == diagnostic + newline),
+                        "P5-41: " + seam + " throwing a " + depth + " Message-getter exception (" + label + "): exit 1, the typed internal-error line, the diagnostic " + JsonSerializer.Serialize(diagnostic)
+                        + " once, nothing escapes Run (P5-39 MEASURED LIMIT lifted), one attempt per rejecting stream", D(run) + " attempts " + attempts.ToString(CultureInfo.InvariantCulture));
+                }
+            }
         }
-        Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null after the measured limit");
+        Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null after the two- and three-level runs");
 
         // 19c. With both seams null the bytes are unchanged (in process).
         foreach (var (label, arguments, exit, part) in new (string, string[], int, string)[]
@@ -2130,14 +2158,36 @@ internal static class SkillListTests
         // IntentPlan.Internal("skill-list", error) call (the statement that can throw a second time).
         static string Squeeze(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", "");
         var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
-        var commandSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
+        var currentSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
+        // P5-41 documented delta: the P5-39 file is the current file with CommandDeltaP541 reversed (only Run's catch).
+        var commandSource = ReverseDelta(currentSource, CommandDeltaP541) ?? "";
         Check(Sha256(commandSource) == CommandP539Sha256 && commandSource.Length == CommandP539Length,
-            "SkillListCommand.cs is the P5-35-era file byte for byte (\"\\n\"): P5-39 changes no product code there",
-            Sha256(commandSource) + " " + commandSource.Length.ToString(CultureInfo.InvariantCulture));
+            "SkillListCommand.cs with the P5-41 delta (Run's catch) reversed is the P5-39 file byte for byte (\"\\n\"): P5-41 changes nothing else there",
+            commandSource.Length == 0 ? "a P5-41 delta text does not occur exactly once" : Sha256(commandSource) + " " + commandSource.Length.ToString(CultureInfo.InvariantCulture));
         var runBody = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(commandSource, blankStrings: false), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
         Check(runBody.Contains("catch(Exceptionerror){envelope=IntentPlan.Internal(\"skill-list\",error);}", StringComparison.Ordinal),
-            "Run's catch is one unguarded IntentPlan.Internal(\"skill-list\", error) assignment", runBody);
+            "the P5-39 text's Run catch is one unguarded IntentPlan.Internal(\"skill-list\", error) assignment", runBody);
+        var currentRun = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(currentSource, blankStrings: false), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
+        Check(currentRun == "IntentEnvelopeenvelope;try{envelope=Execute(args);}catch(Exceptionerror){try{envelope=IntentPlan.Internal(\"skill-list\",error);}"
+                + "catch(Exceptionunreadable){envelope=IntentPlan.Internal(\"skill-list\",newInvalidOperationException(error.GetType().FullName+\"(itsMessagegetterthrew\"+unreadable.GetType().FullName+\")\"));}}"
+                + "WriteDiagnostic(envelope);try{(envelopewith{Diagnostic=null}).Print();}catch(Exception){Environment.ExitCode=1;}",
+            "P5-41: Run's catch guards IntentPlan.Internal; its fallback calls IntentPlan.Internal again over an InvalidOperationException built from types only (no Message read; the internal-error fragment stays only in IntentPlan.cs)", currentRun);
     }
+
+    // P5-41 documented delta (new text, P5-39 text), "\n" line endings: Run's catch only.
+    static readonly (string New, string Old)[] CommandDeltaP541 =
+    {
+        ("        catch (Exception error)\n"
+            + "        {\n"
+            + "            // P5-41: an exception whose Message getter throws (what List lets escape when the one it caught had a throwing\n"
+            + "            // getter too) makes IntentPlan.Internal throw here; the fallback reads only types and reports through\n"
+            + "            // IntentPlan.Internal an InvalidOperationException naming the exception that reached Run and the type its\n"
+            + "            // Message getter threw: the same typed line, exit 1.\n"
+            + "            try { envelope = IntentPlan.Internal(\"skill-list\", error); }\n"
+            + "            catch (Exception unreadable) { envelope = IntentPlan.Internal(\"skill-list\", new InvalidOperationException(error.GetType().FullName + \" (its Message getter threw \" + unreadable.GetType().FullName + \")\")); }\n"
+            + "        }\n",
+            "        catch (Exception error) { envelope = IntentPlan.Internal(\"skill-list\", error); }\n"),
+    };
 
     // P5-39: SkillListCommand.cs ("\n" line endings), unchanged by P5-39 (the P5-33 text section 15 reads with its delta).
     const string CommandP539Sha256 = "57b8ac0d87151dbc7b0037a6f7a4a6174cc4b2e73cf9161f32c0e6877e9de02a";
@@ -2173,6 +2223,15 @@ internal static class SkillListTests
         public DoubleMessageGetterThrowsException(string message) : base(message) { }
         public DoubleMessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
         public override string Message => throw new MessageGetterThrowsException();
+    }
+
+    // P5-41: three levels: an exception whose Message getter throws DoubleMessageGetterThrowsException.
+    sealed class TripleMessageGetterThrowsException : Exception
+    {
+        public TripleMessageGetterThrowsException() { }
+        public TripleMessageGetterThrowsException(string message) : base(message) { }
+        public TripleMessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
+        public override string Message => throw new DoubleMessageGetterThrowsException();
     }
 
     // P5-35 documented delta (new text, P5-33 text), "\n" line endings.
@@ -2400,7 +2459,8 @@ internal static class SkillListTests
         static string Squeeze(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", "");
         var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
         var resolvePath = Path.Combine(root, "interfaces", "cli", "JurisdictionResolveCommand.cs");
-        var commandSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
+        // P5-41 documented delta: the command is read with CommandDeltaP541 reversed (the P5-39 text; section 19 pins Run's new catch).
+        var commandSource = File.Exists(commandPath) ? ReverseDelta(File.ReadAllText(commandPath).ReplaceLineEndings("\n"), CommandDeltaP541) ?? "" : "";
         // P5-35 documented delta: the file is read with ResolveDeltaP535 reversed (the P5-33 text; section 17 pins the new body).
         var resolveSource = File.Exists(resolvePath) ? ReverseDelta(File.ReadAllText(resolvePath).ReplaceLineEndings("\n"), ResolveDeltaP535) ?? "" : "";
         var runBody = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(commandSource), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
@@ -2632,7 +2692,8 @@ internal static class SkillListTests
         var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
         var toolPath = Path.Combine(root, "interfaces", "mcp", "SkillListTool.cs");
         // P5-33: the pins below read the command with the documented P5-33 delta reversed (the P5-31 file; "" if it does not reverse).
-        var commandSource = ReverseDelta(File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "", CommandDeltaP533) ?? "";
+        // P5-41: CommandDeltaP541 (Run's catch) is reversed first, giving the P5-39 (= P5-33) text, then CommandDeltaP533.
+        var commandSource = ReverseDelta(ReverseDelta(File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "", CommandDeltaP541) ?? "", CommandDeltaP533) ?? "";
         var toolSource = File.Exists(toolPath) ? File.ReadAllText(toolPath).ReplaceLineEndings("\n") : "";
         var interfaces = Path.Combine(root, "interfaces");
         var sources = Directory.GetFiles(interfaces, "*.cs", SearchOption.AllDirectories)
