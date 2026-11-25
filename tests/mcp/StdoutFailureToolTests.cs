@@ -278,7 +278,7 @@ internal static class StdoutFailureToolTests
                 ("a leading newline", "\nfirst P5-39"),
                 ("two newlines in a row", "a\n\nb P5-39"),
                 ("U+0085 NEL", "a\u0085b P5-39"),
-                ("U+2028 LINE SEPARATOR", "a b P5-39"),
+                ("U+2028 LINE SEPARATOR", "a\u2028b P5-39"),
                 ("no line break at all", "plain P5-39"),
             })
             {
