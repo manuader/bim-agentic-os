@@ -499,6 +499,10 @@ internal static class GenerateTypologyToolTests
     // mcp-pipe-capacity-macOS notice and the step's notice of the capacity PASS line. BareGrepPipes scans the P3-38 step
     // alone and flags an unguarded grep anywhere in a pipeline or inside $(...). Each capacity run must finish within
     // CapacityRunMs (the 1.5 s settle plus a stated slack); the budget check keeps only non-redundant comparisons.
+    // P3-46. BareGrepPipes masks quoted text (a `)` or `}` inside a double-quoted argument no longer ends the command) and
+    // accepts `|| true` after the whole pipeline for a grep inside it; a grep piped inside $(...) has its own self-tests.
+    // The notice-grep check runs over the names this section's checks printed in the run, not literal samples; each
+    // capacity run's margin under CapacityRunMs is printed in the capacity notice and the budget check.
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -507,12 +511,16 @@ internal static class GenerateTypologyToolTests
     // (one attempt, the same exception) and forwards byte-exact as a plain writer.
     static void StdioStderrRun(string root, string work, string dotnet, Func<string, JsonObject> call, Action<bool, string> check)
     {
-        void Check(bool condition, string name) => check(condition, "generate_typology P3-34 stdio stderr: " + name);
+        // P3-46: every name this section's checks print (after the prefix), in order, for the notice-grep check below.
+        var names = new List<string>();
+        void Check(bool condition, string name) { names.Add(name); check(condition, "generate_typology P3-34 stdio stderr: " + name); }
         static string Short(string text) => text.Length > 400 ? text[..400] + "..." : text;
         static string Hex(string text) => Convert.ToHexString(SHA256.HashData(new UTF8Encoding(false).GetBytes(text))).ToLowerInvariant();
         static string? TextOf(JsonObject? response) => response?["result"]?["content"]?[0]?["text"]?.GetValue<string>();
         static bool? IsErrorOf(JsonObject? response) => response?["result"]?["isError"]?.GetValue<bool>();
         var nl = Environment.NewLine;
+        // P3-46: the names of the checks the macOS step's notice grep must post (the closed-pipe cases and the capacity check).
+        var noticed = new HashSet<string>(StringComparer.Ordinal);
         var scratch = Path.Combine(work, "p3-34-generate-typology-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(scratch);
         try
@@ -760,7 +768,10 @@ internal static class GenerateTypologyToolTests
                 var r = Server(hook, closeStderr, take?.Invoke());
                 if (!r.InTime) late.Add(key);
                 if (take is null && r.InTime) whole[key] = r.Out;
-                Check(oracle(r), label + " | " + os + " " + D(r));
+                var caseName = label + " | " + os + " " + D(r);
+                // P3-46: the two closed-pipe cases (stderr forwarded to the pipe the reader closed) are the notice's measured fact.
+                if (key is "unguarded-pipe" or "guarded-pipe") noticed.Add(caseName);
+                Check(oracle(r), caseName);
             }
             Check(runs == CaseCount && late.Count == 0 && clock.ElapsedMilliseconds <= TotalMs,
                 "P3-36 every process case ran through the launch helper within its limit and the total deadline | runs " + runs.ToString(CultureInfo.InvariantCulture)
@@ -839,21 +850,25 @@ internal static class GenerateTypologyToolTests
             static string N(long value) => value.ToString(CultureInfo.InvariantCulture);
             // P3-42: the measured figures as an Actions notice on every OS (tests/mcp's output reaches the Linux and
             // Windows logs; the macOS step tees it), so the Linux capacity is visible without the log.
-            Console.WriteLine("::notice title=mcp-pipe-capacity-" + os + "::P3-42 measured pipe capacity on " + os + ": " + N(small.Bytes) + " bytes in 1 KiB writes, "
-                + N(large.Bytes) + " bytes in 1 MiB writes; capacity runs " + N(small.Ms) + " + " + N(large.Ms) + " ms of the " + N(CapacityMs) + " ms budget");
+            // P3-46: the margin of each run under the CapacityRunMs bound is printed (notice and budget check).
+            var margin = N(CapacityRunMs - small.Ms) + " + " + N(CapacityRunMs - large.Ms) + " ms margin under the " + N(CapacityRunMs) + " ms per-run bound";
+            var capacityNotice = "::notice title=mcp-pipe-capacity-" + os + "::P3-42 measured pipe capacity on " + os + ": " + N(small.Bytes) + " bytes in 1 KiB writes, "
+                + N(large.Bytes) + " bytes in 1 MiB writes; capacity runs " + N(small.Ms) + " + " + N(large.Ms) + " ms of the " + N(CapacityMs) + " ms budget; P3-46 " + margin;
+            Console.WriteLine(capacityNotice);
             // P3-42: a 1 MiB write moves what fits into the pipe before it blocks on Linux and macOS, so 0 there is a
             // failure; Windows keeps a write larger than the anonymous pipe's free buffer pending whole (P3-40 measured 0).
             var largeFloor = OperatingSystem.IsWindows() ? large.Bytes >= 0 : large.Bytes > 0;
-            Check(small.Settled && large.Settled && small.Bytes > 0 && largeFloor && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
-                "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + N(small.Bytes) + " bytes in 1 KiB writes and "
+            var capacityName = "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + N(small.Bytes) + " bytes in 1 KiB writes and "
                 + N(large.Bytes) + " bytes in 1 MiB writes before the writer blocked, at most PipeBufferBound " + N(PipeBufferBound)
                 + ", and the success cut leaves " + N(Length("success") - CutBytes) + " bytes unread; P3-42 the 1 MiB count is "
                 + (OperatingSystem.IsWindows() ? ">= 0 on Windows (a write larger than the anonymous pipe's free buffer stays pending whole, so 0 is valid)" : "> 0 on " + os + " (a blocking write moves what fits into the pipe first)")
-                + " | settled " + small.Settled + "/" + large.Settled + " logs [" + small.Log + "] [" + large.Log + "]");
+                + " | settled " + small.Settled + "/" + large.Settled + " logs [" + small.Log + "] [" + large.Log + "]";
+            noticed.Add(capacityName);
+            Check(small.Settled && large.Settled && small.Bytes > 0 && largeFloor && measured <= PipeBufferBound && Length("success") - CutBytes > measured, capacityName);
             Check(capacityElapsed <= CapacityMs && small.Ms <= CapacityRunMs && large.Ms <= CapacityRunMs,
                 "P3-42 the two capacity runs count toward an explicit " + N(CapacityMs / 1000) + " s budget besides the cases' " + N(TotalMs / 1000) + " s (each fill at most "
                 + N(FillMs / 1000) + " s, every wait stopped at the budget); P3-44 each run within " + N(CapacityRunMs) + " ms (the " + N(SettleMs) + " ms settle plus "
-                + N(CapacityRunMs - SettleMs) + " ms slack) | " + N(small.Ms) + " + " + N(large.Ms) + " = " + N(capacityElapsed) + " ms on " + os);
+                + N(CapacityRunMs - SettleMs) + " ms slack) | " + N(small.Ms) + " + " + N(large.Ms) + " = " + N(capacityElapsed) + " ms on " + os + "; P3-46 " + margin);
 
             // ---- P3-40: every process kill in this file is contained (the CLI helper's as Server's) ----
             // The process may exit, or the kill be denied, between the timeout and the kill: InvalidOperationException or
@@ -916,6 +931,14 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("each run within " + S(CapacityRunMs) + " s (the " + S(SettleMs) + " s settle plus " + S(CapacityRunMs - SettleMs) + " s slack", StringComparison.Ordinal)
                 && paragraph.Contains("P3-42 relay282 CI red 45521841849, green 45523306595", StringComparison.Ordinal),
                 "P3-44 docs/contracts P3-34 paragraph: Windows figures labelled measured, the macOS duplicate capacity notice stated, the per-run bound and the P3-42 runs | " + Short(paragraph));
+            // P3-46: the grep scan's or-true and quoting rules and its remaining limit, the printed margin, the notice grep
+            // tested against the printed names, and the P3-44 runs.
+            Check(paragraph.Contains("an or-true guard after a whole pipeline guards every grep in it, and a `)` or `}` inside a double-quoted argument does not end the command", StringComparison.Ordinal)
+                && paragraph.Contains("only a literal or-true counts as a guard and a grep on a backslash-continued line counts as unguarded (both on the safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("the margin of each run under it is printed in the capacity notice and check", StringComparison.Ordinal)
+                && paragraph.Contains("the notice grep is tested against the PASS names the section's checks print in that run", StringComparison.Ordinal)
+                && paragraph.Contains("P3-44 relay286 CI red 45580685232, green 45583083273", StringComparison.Ordinal),
+                "P3-46 docs/contracts P3-34 paragraph: the grep scan's guard and quoting rules and limit, the printed per-run margin, the notice grep against the printed names and the P3-44 runs | " + Short(paragraph));
             var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var macStep = workflow.IndexOf("- name: MCP generate_typology stdio section 9 alone (macOS, P3-38)", StringComparison.Ordinal);
             var macTail = macStep < 0 ? "" : workflow[macStep..];
@@ -930,27 +953,87 @@ internal static class GenerateTypologyToolTests
             // and summary greps are guarded (`|| true`).
             // P3-44: BareGrepPipes scans the P3-38 step alone (up to the next step) and counts every grep that sits in a
             // pipeline (first, middle or last) or inside $(...) without its own `|| true`; such a grep fails the pipeline
-            // or the assignment when nothing matches. Comment lines are skipped and single-quoted text is blanked (a `|` in a
-            // pattern is not a pipe). Limits, both on the safe side (a guarded form rejected): a `|| true` after the whole
-            // pipeline does not count for a grep inside it, and a `)` or `}` inside a grep's double-quoted argument ends its
-            // command early.
+            // or the assignment when nothing matches.
+            // P3-46: each line is first masked (Mask): single-quoted text, double-quoted text outside a nested $(...),
+            // escaped characters and comments become inert, so a `|`, `)` or `}` inside a quoted argument is no operator and
+            // a grep inside quoted text is no command. From each grep the scan walks forward: nested groups are skipped, a
+            // `)` or `}` closing the grep's own group continues into the enclosing command (a group's or substitution's
+            // status is its last pipeline's), `;` before such a `}` continues too, a `|` makes it piped, `|| true` guards
+            // it (after the whole pipeline as well), and any other `||`, `;`, `&&`, `&` or the line end stops it (2>&1 is a
+            // redirection). Remaining limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep
+            // on a backslash-continued line counts as unguarded.
             var stepEnd = macTail.IndexOf("\n      - name: ", 1, StringComparison.Ordinal);
             var macStepText = stepEnd > 0 ? macTail[..stepEnd] : macTail;
+            static string Mask(string line)
+            {
+                var masked = line.ToCharArray();
+                var frames = new Stack<char>();
+                for (var i = 0; i < line.Length; i++)
+                {
+                    var c = line[i];
+                    var next = i + 1 < line.Length ? line[i + 1] : '\0';
+                    if (c == '\\' && i + 1 < line.Length) { masked[i] = masked[i + 1] = '_'; i++; continue; }
+                    if (frames.Count > 0 && frames.Peek() == '"')
+                    {
+                        if (c == '"') frames.Pop();
+                        else if (c == '$' && next == '(') { frames.Push('('); i++; }
+                        else masked[i] = '_';
+                        continue;
+                    }
+                    if (c == '\'')
+                    {
+                        var close = line.IndexOf('\'', i + 1);
+                        if (close < 0) close = line.Length;
+                        for (var j = i + 1; j < close; j++) masked[j] = '_';
+                        i = close;
+                        continue;
+                    }
+                    if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                    {
+                        for (var j = i; j < line.Length; j++) masked[j] = ' ';
+                        break;
+                    }
+                    if (c == '"') frames.Push('"');
+                    else if (c == '(') frames.Push('(');
+                    else if (c == ')' && frames.Count > 0) frames.Pop();
+                }
+                return new string(masked);
+            }
             static int BareGrepPipes(string text)
             {
                 var bare = 0;
                 foreach (var raw in text.Split('\n'))
                 {
-                    if (raw.TrimStart().StartsWith('#')) continue;
-                    var line = Regex.Replace(raw, "'[^']*'", "''");
+                    var line = Mask(raw.TrimEnd('\r'));
+                    var continued = line.TrimEnd().EndsWith('\\');
                     foreach (Match grep in Regex.Matches(line, @"(?<=^|[\s;|&({])grep\s"))
                     {
-                        var before = line[..grep.Index].TrimEnd();
-                        var end = Regex.Match(line[grep.Index..], @"\|\||\||;|&&|\)|\}");
-                        var guarded = end.Success && end.Value == "||" && line[(grep.Index + end.Index + 2)..].TrimStart().StartsWith("true", StringComparison.Ordinal);
-                        var piped = (end.Success && end.Value == "|") || (before.EndsWith('|') && !before.EndsWith("||", StringComparison.Ordinal));
-                        var substituted = before.LastIndexOf("$(", StringComparison.Ordinal) > before.LastIndexOf(')');
-                        if (!guarded && (piped || substituted)) bare++;
+                        var before = line[..grep.Index];
+                        var open = new Stack<bool>();
+                        for (var i = 0; i < before.Length; i++)
+                        {
+                            if (before[i] == '(') open.Push(i > 0 && before[i - 1] == '$');
+                            else if (before[i] == ')' && open.Count > 0) open.Pop();
+                        }
+                        var substituted = open.Contains(true);
+                        var piped = Regex.IsMatch(before, @"(?<!\|)\|\s*(?:(?<!\$)\(\s*|\{\s*)*$");
+                        var guarded = false;
+                        var depth = 0;
+                        for (var i = grep.Index + 4; i < line.Length; i++)
+                        {
+                            var c = line[i];
+                            var next = i + 1 < line.Length ? line[i + 1] : '\0';
+                            if (c is '(' or '{') { depth++; continue; }
+                            if (c is ')' or '}') { if (depth > 0) depth--; continue; }
+                            if (depth > 0) continue;
+                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*true(?![\w-])"); break; }
+                            if (c == '|') { piped = true; continue; }
+                            if (c == '&' && i > 0 && line[i - 1] is '>' or '<') continue;
+                            if (c == '&') break;
+                            if (c == ';') { if (line[(i + 1)..].TrimStart().StartsWith('}')) continue; break; }
+                        }
+                        if (continued) guarded = false;
+                        if (!guarded && (piped || substituted || continued)) bare++;
                     }
                 }
                 return bare;
@@ -969,6 +1052,26 @@ internal static class GenerateTypologyToolTests
                 (Pad + NoticeGrep + " | sed 's/^//'", 0),
                 (Pad + "grep -q 'a|b' \"$out\"", 0),
                 (Pad + "# grep x | cut", 0),
+                // P3-46: an or-true after the whole pipeline guards a grep inside it (also after a brace group).
+                (Pad + "tail -n 5 \"$out\" | grep PASS | cut -c1-9 || true", 0),
+                (Pad + "{ grep PASS \"$out\"; } | cut -c1-9 || true", 0),
+                // P3-46: a brace group's last grep is part of the outer pipeline.
+                (Pad + "{ grep PASS \"$out\"; } | cut -c1-9", 1),
+                // P3-46: a ) or } inside a double-quoted argument does not end the grep's command.
+                (Pad + "grep -E \"a)b\" \"$out\" | cut -c1-9", 1),
+                (Pad + "grep -E \"a}b\" \"$out\" | cut -c1-9", 1),
+                (Pad + "grep -E \"a)b\" \"$out\" | cut -c1-9 || true", 0),
+                (Pad + "n=$(grep -c \"a)b\" \"$out\")", 1),
+                // P3-46: a grep piped inside $(...), unguarded, guarded inside, guarded after the assignment.
+                (Pad + "n=$(tail -n 5 \"$out\" | grep -c PASS)", 1),
+                (Pad + "n=$(grep PASS \"$out\" | wc -l)", 1),
+                (Pad + "n=$(tail -n 5 \"$out\" | grep -c PASS || true)", 0),
+                (Pad + "n=$(grep PASS \"$out\" | wc -l) || true", 0),
+                // P3-46: grep inside quoted text is no command; 2>&1 does not end it; a comment is no guard; a continued line is unguarded.
+                (Pad + "echo \"a grep x | cut\"", 0),
+                (Pad + "grep PASS \"$out\" 2>&1 | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" | cut -c1-9 # || true", 1),
+                (Pad + "grep PASS \"$out\" \\", 1),
             };
             var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim()).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
@@ -979,15 +1082,18 @@ internal static class GenerateTypologyToolTests
                 + N(selfTests.Length) + " self-tests) | bare greps " + N(BareGrepPipes(macStepText)) + ", failed self-tests [" + string.Join(" ; ", failedSelfTests) + "]");
             // P3-44: the notice grep matches the capacity check's PASS line and the closed-pipe lines, not the P3-40 contract
             // check (its name also says "measured pipe capacity"); the macOS duplicate capacity notice is stated in the step.
+            // P3-46: tested against the real PASS lines: every name this section's checks printed in this run (the PASS
+            // prefix as SectionNineOnly and tests/mcp print it) matches exactly when it is one of the three noticed checks
+            // (the two closed-pipe cases and the capacity check), and the printed capacity notice does not match.
             var noticePattern = new Regex(Regex.Match(NoticeGrep, "grep -E '([^']*)'").Groups[1].Value);
             const string PassPrefix = "PASS generate_typology P3-34 stdio stderr: ";
-            Check(noticePattern.IsMatch(PassPrefix + "P3-40 measured pipe capacity on macOS: an unread stdout pipe took 65536 bytes in 1 KiB writes")
-                && noticePattern.IsMatch(PassPrefix + "the real process over stdio, Document's own catch-all (UnguardedWorkProbe) forced + the real stderr pipe closed by the reader (the write forwarded to it): nothing escapes, exit 0, one JSON-RPC line, isError with the typed internal-error line (no exception message), the diagnostic attempted exactly once and the closed pipe's write did not throw (measured on macOS)")
-                && !noticePattern.IsMatch(PassPrefix + "P3-40 docs/contracts P3-34 paragraph: measured pipe capacity with sources, close-before-request order, contained kills, macOS artifact and single builds | P3-34: a write to the closed stderr pipe")
-                && !noticePattern.IsMatch(PassPrefix + "P3-42 docs/contracts P3-34 paragraph: Windows figures (4096 / 0), P3-40 runs, 1 MiB floor on Linux and macOS, capacity notices and budget | the real process over stdio, the closed pipe's write did not throw")
-                && !noticePattern.IsMatch("::notice title=mcp-pipe-capacity-macOS::P3-42 measured pipe capacity on macOS: 65536 bytes")
+            var misnoticed = names.Where(n => noticePattern.IsMatch(PassPrefix + n) != noticed.Contains(n)).Select(n => Short(n)).ToList();
+            Check(noticed.Count == 3 && noticed.All(names.Contains) && names.Count > noticed.Count + 10 && misnoticed.Count == 0
+                && names.Count(n => n.Contains("docs/contracts", StringComparison.Ordinal)) >= 5
+                && !noticePattern.IsMatch(capacityNotice)
                 && macStepText.Contains("# P3-44: macOS posts its capacity twice", StringComparison.Ordinal),
-                "P3-44 .github/workflows/ci.yml macOS section 9: the notice grep matches the capacity PASS line and the closed-pipe lines only (not the P3-40 or P3-42 contract checks); the duplicate macOS capacity notice is stated | pattern " + noticePattern);
+                "P3-44 .github/workflows/ci.yml macOS section 9: the notice grep matches the capacity PASS line and the closed-pipe lines only (not the contract checks); the duplicate macOS capacity notice is stated; P3-46 tested against the "
+                + N(names.Count) + " PASS names printed in this run (" + N(noticed.Count) + " noticed) | pattern " + noticePattern + " misnoticed [" + string.Join(" ; ", misnoticed) + "]");
         }
         finally
         {
