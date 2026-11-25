@@ -944,14 +944,19 @@ def justify_main():
 # (Text("Ln", x, y, ...)). Two rows match when their quoted names (follow_main's point labels in LABELS dropped, since
 # FollowPoints has no label column; NESTED spells a printed top insert as the C# insert path) and their full number
 # lists (the trailing // comment dropped) are equal, each number equal as a double (Python repr and C# "R" both
-# round-trip, so equality is exact). A label TEXT matches a generated row whose numbers start with its x, y (a decoy
-# row DECOYS, whose numbers are exactly x, y, or a placed cell, whose centre comes first). Every generated row must be
+# round-trip, so equality is exact). A label TEXT matches the generated row LABEL_ROWS names for its handle (P6-48; a
+# decoy row DECOYS, whose numbers are exactly x, y, or a placed cell, whose centre comes first), so a label moved onto
+# another cell's centre fails; every LABEL_ROWS handle must have its label TEXT. Every generated row must be
 # committed (except the rows printed for the record, listed in UNUSED with the reason, which must not be), every
 # committed row must be produced by the generator ("not produced by the generator"), and no committed row may appear
 # twice; then planted copies of the C# file (an extra row, a row with one number more, a renamed row, a moved label)
 # must each fail. Any failure exits with status 1. CI runs it (P6-46, ifc job; the reason is in the test header).
+# P6-48: the output ends with a "differing rows: " line naming every row a failure is about ("none" when equal; CI's
+# run with the wheel's C extensions annotates it) and a summary line with ezdxf's C-extension state and numpy's version.
 LABELS = {"insert", "end", "start", "center", "mid", "v0", "v1", "v2", "v3"}
 DECOYS = {"T1", "T2[0,0]", "T3[1,1]"}
+# P6-48: the generated row each label TEXT of Drawing() sits on, by handle: L1-L4 at placed cell centres, L5-L7 decoys.
+LABEL_ROWS = {"L1": "R1[1,2]", "L2": "S1[2,0]", "L3": "M1[1,1]", "L4": "N1[0,1]", "L5": "T1", "L6": "T2[0,0]", "L7": "T3[1,1]"}
 # Not committed: the tilted T2/T3 cells other than the decoy label positions, and the heavy POLYLINE LH (not modelled
 # by DxfReader; MinsertEzdxfTests pins that nothing of it is placed).
 UNUSED = {"T2[0,1]", "T2[1,0]", "T2[1,1]", "T3[0,0]", "T3[0,1]", "T3[1,0]", "LH"}
@@ -1005,39 +1010,57 @@ def _committed_rows(source):
     return rows, [t for t in TABLES if t not in found]
 
 
+def _name(names, numbers):
+    return " ".join(names) if names else repr(numbers)
+
+
 def _compare(generated, committed):
+    # (failures, rows matched, unused rows, the names of the rows the failures are about, in order)
     rows, missing = committed
     failures = ["table not found: " + t for t in missing]
+    differing = ["table " + t for t in missing]
     keys = {}
     for kind, where, names, numbers in rows:
         if kind == "row":
             keys.setdefault((names, numbers), []).append(where)
-    failures += ["committed twice: " + ", ".join(w) for w in keys.values() if len(w) > 1]
-    labels = [numbers for kind, _, _, numbers in rows if kind == "label"]
+    for (names, numbers), w in keys.items():
+        if len(w) > 1:
+            failures.append("committed twice: " + ", ".join(w))
+            differing.append(_name(names, numbers))
+    labels = [(names[0], numbers) for kind, _, names, numbers in rows if kind == "label"]
+    handles = [h for h, _ in labels]
+    for h in LABEL_ROWS:
+        if h not in handles:
+            failures.append("label TEXT not found: " + h + " (LABEL_ROWS " + LABEL_ROWS[h] + ")")
+            differing.append(h)
     produced = set()
     matched = unused = 0
     for line, names, numbers in generated:
         if names and names[0] in DECOYS:
-            found = numbers in labels
+            found = any(LABEL_ROWS.get(h) == names[0] and n == numbers for h, n in labels)
         else:
             found = (names, numbers) in keys
             produced.add((names, numbers))
         if any(name in UNUSED for name in names):
             unused += 1
-            if found or numbers in labels:
+            if found or any(n == numbers for _, n in labels):
                 failures.append("listed as unused but committed: " + line)
+                differing.append(_name(names, numbers))
         elif found:
             matched += 1
         else:
             failures.append("not committed: " + line)
+            differing.append(_name(names, numbers))
     for kind, where, names, numbers in rows:
         if kind == "row":
             ok = (names, numbers) in produced
         else:
-            ok = len(numbers) == 2 and any(n[:2] == numbers and (gnames[0] in DECOYS or "[" in gnames[0]) for _, gnames, n in generated if gnames)
+            target = LABEL_ROWS.get(names[0])
+            ok = len(numbers) == 2 and handles.count(names[0]) == 1 and any(gnames[0] == target and n[:2] == numbers for _, gnames, n in generated if gnames)
         if not ok:
             failures.append("not produced by the generator: " + where + " " + repr(names) + " " + repr(numbers))
-    return failures, matched, unused
+            differing.append(names[0] if kind == "label" else _name(names, numbers))
+    return failures, matched, unused, list(dict.fromkeys(differing))
 
 
 def _self_tests(generated, source):
@@ -1070,14 +1093,17 @@ def _self_tests(generated, source):
 
 
 def check_main(cs_path):
+    import numpy  # an ezdxf dependency; its version is printed with the result (P6-48)
+
     generated = _generated_rows()
     source = open(cs_path, encoding="utf-8").read()
     committed = _committed_rows(source)
-    failures, matched, unused = _compare(generated, committed)
+    failures, matched, unused, differing = _compare(generated, committed)
     failures += _self_tests(generated, source)
     for failure in failures:
         print(failure)
-    print("ezdxf " + ezdxf.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, "
+    print("differing rows: " + (", ".join(differing) if differing else "none"))
+    print("ezdxf " + ezdxf.__version__ + " (C extensions used: " + str(ezdxf.options.use_c_ext) + "), numpy " + numpy.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, "
           + str(len(committed[0])) + " committed rows all produced unless listed, " + str(len(failures)) + " failures")
     return 1 if failures else 0
 

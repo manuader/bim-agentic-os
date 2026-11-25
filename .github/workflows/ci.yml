@@ -70,17 +70,31 @@ jobs:
       - name: ezdxf 1.4.2 generator constant check, two-way (P6-46)
         run: |
           python -m venv .tools/ezdxf
-          .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2
+          # P6-48: numpy pinned to the version the constants were generated with (2.5.5 was resolved unpinned).
+          .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3
           .tools/ezdxf/bin/python -m pip check
-          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'ezdxf', ezdxf.__version__)")"
-          diag=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1 | tail -n 1) || true
-          echo "::notice title=ezdxf-check-c-ext::with the wheel's C extensions: $diag"
+          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
+          # P6-48: with the wheel's C extensions a few rows differ in the last bits (notice only); the run names them.
+          cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || true
+          echo "::notice title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
           # The constants were made by the pure-Python ezdxf of a v1.4.2 source checkout, so the C extensions are disabled.
           out="$RUNNER_TEMP/ezdxf-check.txt"
           status=0
           EZDXF_DISABLE_C_EXT=1 .tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check > "$out" 2>&1 || status=$?
           if [ "$status" -ne 0 ]; then level=error; else level=notice; fi
-          tail -n 10 "$out" | cut -c1-900 | sed "s/^/::$level title=ezdxf-check::/"
+          # P6-48: every output line but the caught self-tests is annotated, 20 lines an annotation (GitHub keeps 10 per
+          # step and level, so at most 9 here); the count of any lines left over is printed in the last one.
+          grep -v '^self-test planted .*: caught (' "$out" | cut -c1-900 | awk -v level="$level" '
+            { gsub(/\r/, ""); gsub(/%/, "%25"); lines[NR] = $0 }
+            END {
+              chunks = int((NR + 19) / 20); shown = chunks > 9 ? 9 : chunks
+              for (c = 0; c < shown; c++) {
+                msg = ""; last = (c + 1) * 20 > NR ? NR : (c + 1) * 20
+                for (i = c * 20 + 1; i <= last; i++) msg = msg (msg == "" ? "" : "%0A") lines[i]
+                printf "::%s title=ezdxf-check lines %d-%d of %d::%s\n", level, c * 20 + 1, last, NR, msg
+              }
+              if (NR > shown * 20) printf "::%s title=ezdxf-check::%d more output lines not annotated (lines %d-%d of %d)\n", level, NR - shown * 20, shown * 20 + 1, NR, NR
+            }'
           exit "$status"
       - name: Evaluate real IFC and enforce portable acceptance
         shell: pwsh
