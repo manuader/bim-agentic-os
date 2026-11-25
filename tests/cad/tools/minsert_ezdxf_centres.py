@@ -1,6 +1,6 @@
-"""Offline generator of the ezdxf cross-check constants in tests/cad/MinsertEzdxfTests.cs (P6-30).
+"""Generator of the ezdxf cross-check constants in tests/cad/MinsertEzdxfTests.cs (P6-30).
 
-Not run in CI. Needs ezdxf (MIT, https://github.com/mozman/ezdxf); the constants in the test were produced with
+Needs ezdxf (MIT, https://github.com/mozman/ezdxf); the constants in the test were produced with
 ezdxf 1.4.2 (tag v1.4.2, commit 8240df5793daf2fd7db95d118a78e17ec92043ec) on Python 3 with numpy 2.5.3:
 
     PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py
@@ -8,9 +8,10 @@ ezdxf 1.4.2 (tag v1.4.2, commit 8240df5793daf2fd7db95d118a78e17ec92043ec) on Pyt
 (PyPI was blocked where the constants were generated, so ezdxf was imported from a source checkout of tag v1.4.2;
 `pip install ezdxf==1.4.2` works equally where PyPI is reachable.)
 
-P6-44: `... minsert_ezdxf_centres.py --check [path to MinsertEzdxfTests.cs]` runs every section and compares each
-printed constant row with the committed C# constants (exact doubles); exit status 1 on any difference. Offline only:
-the reason is pinned in the header of tests/cad/MinsertEzdxfTests.cs.
+P6-44: `... minsert_ezdxf_centres.py --check [path to MinsertEzdxfTests.cs]` runs every section and compares the
+printed constant rows with the committed C# constants both ways (P6-46: whole rows, exact doubles, planted
+self-tests); exit status 1 on any difference. P6-46: CI runs it (engineering-gates ifc job: pip install ezdxf==1.4.2,
+EZDXF_DISABLE_C_EXT=1), as recorded in the header of tests/cad/MinsertEzdxfTests.cs.
 
 It builds, with ezdxf's own API, the block RECT and the INSERT/MINSERT entities that MinsertEzdxfTests.Drawing()
 writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
@@ -937,65 +938,142 @@ def justify_main():
             print("//   " + name + " " + handle + " group 10 vs placement p1: " + r(max(abs(g.x - p.x), abs(g.y - p.y))))
 
 
-# P6-44: --check compares every printed constant tuple with the committed tests/cad/MinsertEzdxfTests.cs. A printed
-# line that starts with "(" is a constant row: its quoted names (except the point labels in LABELS) and its numbers
-# (the trailing // comment dropped) must appear in one line of the C# file, each name on that line (alone or as the
-# first step of an insert path, e.g. J3 in "J3>JI") and the numbers as a contiguous run of that line's numbers, each
-# equal as a double (Python repr and C# "R" both round-trip, so equality is exact). DECOYS are matched by their numbers
-# only (Drawing() writes them as label TEXTs L5..L7). Rows printed for the record are listed in UNUSED with the reason;
-# any other unmatched row, or an UNUSED row that is matched, fails the check (exit status 1). Offline only, like the
-# generator (the reason is pinned in the test header).
+# P6-44/P6-46: --check compares the constant rows the generator prints with the committed
+# tests/cad/MinsertEzdxfTests.cs, both ways. A printed line that starts with "(" is a generated row; a committed row is
+# a row of one of the C# tables in TABLES (one tuple per line between "Name =" and "};") or a label TEXT of Drawing()
+# (Text("Ln", x, y, ...)). Two rows match when their quoted names (follow_main's point labels in LABELS dropped, since
+# FollowPoints has no label column; NESTED spells a printed top insert as the C# insert path) and their full number
+# lists (the trailing // comment dropped) are equal, each number equal as a double (Python repr and C# "R" both
+# round-trip, so equality is exact). A label TEXT matches a generated row whose numbers start with its x, y (a decoy
+# row DECOYS, whose numbers are exactly x, y, or a placed cell, whose centre comes first). Every generated row must be
+# committed (except the rows printed for the record, listed in UNUSED with the reason, which must not be), every
+# committed row must be produced by the generator ("not produced by the generator"), and no committed row may appear
+# twice; then planted copies of the C# file (an extra row, a row with one number more, a renamed row, a moved label)
+# must each fail. Any failure exits with status 1. CI runs it (P6-46, ifc job; the reason is in the test header).
 LABELS = {"insert", "end", "start", "center", "mid", "v0", "v1", "v2", "v3"}
 DECOYS = {"T1", "T2[0,0]", "T3[1,1]"}
 # Not committed: the tilted T2/T3 cells other than the decoy label positions, and the heavy POLYLINE LH (not modelled
 # by DxfReader; MinsertEzdxfTests pins that nothing of it is placed).
 UNUSED = {"T2[0,1]", "T2[1,0]", "T2[1,1]", "T3[0,0]", "T3[0,1]", "T3[1,0]", "LH"}
+# follow_main prints the top insert J3 for the ATTRIBs of the nested INSERT JI in J3's block JHOLD; FollowPoints writes
+# the insert path J3>JI.
+NESTED = {"J3": "J3>JI"}
+TABLES = ("Cells", "Axes", "BulgeOutlines", "ChainOutlines", "ZOutlines", "LeafPoints", "FollowPoints", "AlignedPoints", "JustifiedPoints")
 _NUMBER = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?(?![\w.])")
 _QUOTED = re.compile(r'"([^"]*)"')
+_TABLE = re.compile(r"^\s*private static readonly .*\b(\w+) =\s*$")
+_LABEL = re.compile(r'^\s*\+ Text\("(L\d+)", ')
 
 
-def _row(line):
+def _row(line, labels=True):
     body = line.split("//", 1)[0]
-    names = [q for q in _QUOTED.findall(body) if q not in LABELS]
-    numbers = [float(n) for n in _NUMBER.findall(_QUOTED.sub("", body))]
+    names = tuple(NESTED.get(q, q) for q in _QUOTED.findall(body) if labels or q not in LABELS)
+    numbers = tuple(float(n) for n in _NUMBER.findall(_QUOTED.sub("", body)))
     return names, numbers
 
 
-def _named(name, cnames):
-    return any(c == name or c.startswith(name + ">") for c in cnames)
-
-
-def _contains(run, numbers):
-    n = len(run)
-    return any(numbers[k:k + n] == run for k in range(len(numbers) - n + 1))
-
-
-def check_main(cs_path):
-    out = io.StringIO()
-    with contextlib.redirect_stdout(out):
-        for section in (main, bulge_main, chain_main, z_main, leaf_main, follow_main, align_main, justify_main):
+def _generated_rows():
+    rows = []
+    for section in (main, bulge_main, chain_main, z_main, leaf_main, follow_main, align_main, justify_main):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
             section()
-    committed = [_row(line) for line in open(cs_path, encoding="utf-8").read().splitlines()]
-    matched, unused, failures = 0, 0, []
-    for line in out.getvalue().splitlines():
-        if not line.startswith("("):
+        for line in out.getvalue().splitlines():
+            names, numbers = _row(line, labels=section is not follow_main)
+            if line.startswith("(") and numbers:
+                rows.append((line, names, numbers))
+    return rows
+
+
+def _committed_rows(source):
+    # (kind, where, names, numbers): kind "row" for a table row, "label" for a label TEXT; plus the tables not found.
+    rows, found, table = [], set(), None
+    for k, line in enumerate(source.splitlines(), 1):
+        m = _TABLE.match(line)
+        if m and m.group(1) in TABLES:
+            table = m.group(1)
+            found.add(table)
             continue
-        names, numbers = _row(line)
-        if not numbers:
+        if table is not None:
+            if line.strip() == "};":
+                table = None
+            elif line.strip().startswith("("):
+                rows.append(("row", table + " line " + str(k)) + _row(line))
             continue
-        wanted = [] if names and names[0] in DECOYS else names
-        found = any(all(_named(name, cnames) for name in wanted) and _contains(numbers, cnumbers) for cnames, cnumbers in committed)
+        if _LABEL.match(line):
+            rows.append(("label", "Drawing() line " + str(k)) + _row(line))
+    return rows, [t for t in TABLES if t not in found]
+
+
+def _compare(generated, committed):
+    rows, missing = committed
+    failures = ["table not found: " + t for t in missing]
+    keys = {}
+    for kind, where, names, numbers in rows:
+        if kind == "row":
+            keys.setdefault((names, numbers), []).append(where)
+    failures += ["committed twice: " + ", ".join(w) for w in keys.values() if len(w) > 1]
+    labels = [numbers for kind, _, _, numbers in rows if kind == "label"]
+    produced = set()
+    matched = unused = 0
+    for line, names, numbers in generated:
+        if names and names[0] in DECOYS:
+            found = numbers in labels
+        else:
+            found = (names, numbers) in keys
+            produced.add((names, numbers))
         if any(name in UNUSED for name in names):
             unused += 1
-            if found:
+            if found or numbers in labels:
                 failures.append("listed as unused but committed: " + line)
         elif found:
             matched += 1
         else:
             failures.append("not committed: " + line)
+    for kind, where, names, numbers in rows:
+        if kind == "row":
+            ok = (names, numbers) in produced
+        else:
+            ok = len(numbers) == 2 and any(n[:2] == numbers and (gnames[0] in DECOYS or "[" in gnames[0]) for _, gnames, n in generated if gnames)
+        if not ok:
+            failures.append("not produced by the generator: " + where + " " + repr(names) + " " + repr(numbers))
+    return failures, matched, unused
+
+
+def _self_tests(generated, source):
+    # Planted copies of the C# file that the check must fail, each with the failure it must report.
+    plants = [
+        ("an extra JustifiedPoints row", '        ("K2", "TG", ', '        ("K9", "TZ", 1.0, 2.0, 3.0, 4.0),\n        ("K2", "TG", ', "not produced by the generator: JustifiedPoints"),
+        ("a Cells row with one number more", "-124.99999999999977, 3948.5571585149864 }),", "-124.99999999999977, 3948.5571585149864, 0.0 }),", "not produced by the generator: Cells"),
+        ("an Axes row with its last number dropped", "new[] { -0.8, 0.0, 0.6 }),", "new[] { -0.8, 0.0 }),", "not committed: (0.6, 0.0, 0.8)"),
+        ("a renamed JustifiedPoints row", '        ("K1", "TA", ', '        ("K2", "TA", ', 'not committed: ("K1", "TA"'),
+        ("a moved decoy label", 'Text("L5", -40600.0, ', 'Text("L5", -40600.5, ', 'not committed: ("T1"'),
+        ("a LeafPoints row with a swapped label", '        ("Q1", "LA", "start", ', '        ("Q1", "LA", "end", ', 'not committed: ("Q1", "LA", "start"'),
+        ("a duplicated JustifiedPoints row", '        ("K1", "TG", ', '        ("K1", "TG", 50325.59735516724, 20323.954543849297, 50325.59735516724, 20323.954543849297),\n        ("K1", "TG", ', "committed twice: JustifiedPoints"),
+    ]
+    failures = []
+    for label, old, new, expected in plants:
+        if source.count(old) != 1:
+            failures.append("self-test " + label + ": the planted text is not found exactly once: " + old)
+            continue
+        planted = _compare(generated, _committed_rows(source.replace(old, new)))[0]
+        caught = any(f.startswith(expected) for f in planted)
+        print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (" + str(len(planted)) + " failures)")
+        if not caught:
+            failures.append("self-test " + label + ": not caught as " + expected + "; got " + " | ".join(planted))
+    return failures
+
+
+def check_main(cs_path):
+    generated = _generated_rows()
+    source = open(cs_path, encoding="utf-8").read()
+    committed = _committed_rows(source)
+    failures, matched, unused = _compare(generated, committed)
+    failures += _self_tests(generated, source)
     for failure in failures:
         print(failure)
-    print("ezdxf " + ezdxf.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, " + str(len(failures)) + " failures")
+    print("ezdxf " + ezdxf.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, "
+          + str(len(committed[0])) + " committed rows all produced unless listed, " + str(len(failures)) + " failures")
     return 1 if failures else 0
 
 
