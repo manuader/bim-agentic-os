@@ -108,7 +108,9 @@ using Bim.Core;
 //      P5-38: that pin compares whole builder bodies of this section (mutant self-test: a builder grown by a line fails
 //      it); an invalid code (xx.p538.bad: jurisdiction_invalid on the valid lock) prints the drift line over the drifted
 //      lock (drift before validation); the escaped '+' (\u002B, JsonSerializer's default encoder) of the two-drift line is
-//      pinned as the current encoder behaviour.
+//      pinned as the current encoder behaviour. P5-40: a raw stdout byte scan of real processes (selection and code
+//      selection over the two drifted packs) finds the pinned line's ASCII bytes with \u002B and no '+' byte; the
+//      provenance addendum below the paragraph names the P5-38 runs (pinned equal in both files by tests/mcp).
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1403,6 +1405,10 @@ internal static class SkillListTests
         // first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as
         // the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463,
         // tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they are the same on every OS.
+        // Provenance addendum (P5-40; the same in both files): the P5-38 runs re-printed no drift line. Red run
+        // 45485947608 failed only the P5-38 builder mutant self-test (tests/mcp annotations, Linux and Windows) and green
+        // run 45489441146 passed every drift pin (tests/cli on Linux, Windows and macOS, tests/mcp on Linux and Windows):
+        // the lines were matched byte for byte there, not re-printed, as passing checks print no annotation.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534a.pack\",\"detail\":\"pinned 1.2.3 sha256 265f1320b449f7ad1f1f6d8b938c27b8fc26703a0e2dc80f7c617c0e3b387616, found 1.2.3 sha256 b1bc3d968f3b9d73675700431bd8e5c52f980af5b4cab8ba8de4adecdeeef637; an explicit lock update is required to accept it\"}";
         var drifted = JurisdictionRegistry.LoadLocked(skills, lockPath);
         Check(drifted.Registry is null && drifted.Refusal is { } driftRefusal && Failed(driftRefusal) == DriftLine,
@@ -1439,6 +1445,32 @@ internal static class SkillListTests
             && TwoDriftLine.Contains("(\\u002B1 more", StringComparison.Ordinal) && !TwoDriftLine.Contains('+'),
             "P5-38: the two-drift detail holds a raw '+' and JsonSerializer's default encoder prints it as \\u002B (the pinned line has no '+')",
             twoDrifted.Refusal?.ToString() ?? "<no refusal>");
+        // P5-40: a raw stdout scan of real processes (bytes, no decoding): for the selection and the code selection over the
+        // two drifted packs, stdout is exactly the pinned line and the newline as ASCII bytes, holds the six bytes +
+        // and no '+' byte (0x2B), exit 1, stderr empty.
+        (int Exit, byte[] Out, string Err) RawChild(string[] arguments)
+        {
+            var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+            start.ArgumentList.Add(packageDll);
+            foreach (var argument in arguments) start.ArgumentList.Add(argument);
+            using var process = Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnet);
+            using var buffer = new MemoryStream();
+            var stdout = process.StandardOutput.BaseStream.CopyToAsync(buffer);
+            var stderr = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(120000)) { process.Kill(true); return (-1, Array.Empty<byte>(), "<timed out>"); }
+            process.WaitForExit();
+            stdout.Wait();
+            return (process.ExitCode, buffer.ToArray(), stderr.Result);
+        }
+        var rawExpected = Encoding.ASCII.GetBytes(TwoDriftLine + Environment.NewLine);
+        var rawEscape = Encoding.ASCII.GetBytes("(\\u002B1 more");
+        foreach (var (label, selection) in new[] { ("selection", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }), ("code selection", new[] { "--code", DuplicateCode }) })
+        {
+            var raw = RawChild(new[] { "jurisdiction-resolve" }.Concat(selection).Concat(new[] { "--lock", lockPath }).ToArray());
+            Check(raw.Exit == 1 && raw.Err.Length == 0 && raw.Out.AsSpan().SequenceEqual(rawExpected) && raw.Out.AsSpan().IndexOf((byte)'+') < 0 && raw.Out.AsSpan().IndexOf(rawEscape) >= 0,
+                "P5-40: two drifted packs, " + label + ": a real process's raw stdout bytes are the pinned line, carry \\u002B and no '+' byte",
+                "exit " + raw.Exit.ToString(CultureInfo.InvariantCulture) + " " + raw.Out.Length.ToString(CultureInfo.InvariantCulture) + " bytes " + Convert.ToHexString(raw.Out.AsSpan(0, Math.Min(raw.Out.Length, 300))) + " stderr " + raw.Err);
+        }
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
