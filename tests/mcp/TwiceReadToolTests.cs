@@ -394,7 +394,11 @@ internal static class TwiceReadToolTests
     // selection (controls: --code xx.p534mb succeeds and an unclaimed code is jurisdiction_unknown on the valid lock, both
     // are the drift line over the drifted lock); with xx.p534mb.pack drifted too the text is xx.p534ma.pack's line with the
     // literal " (+1 more lock issue(s))" suffix (packaged CLI, in-process and packaged MCP, twice each); the fixture
-    // builders duplicate tests/cli/SkillListTests.cs section 16 on purpose and are pinned as the same text.
+    // builders duplicate tests/cli/SkillListTests.cs section 16 on purpose and are pinned as the same text. P5-38: the
+    // pin compares whole builder bodies within the two sections (mutant self-test: a builder grown by a line fails it);
+    // an invalid code (xx.p538.bad: jurisdiction_invalid on the valid lock) is the drift line over the drifted lock (drift
+    // before validation); the escaped '+' is pinned as the current encoder behaviour (text \u002B, raw server line
+    // \\u002B); the provenance paragraph's words are pinned literally across its reflow.
     static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
@@ -421,19 +425,78 @@ internal static class TwiceReadToolTests
         static string Sidecar(string code, string pack, string municipality, string note) =>
             "{\"jurisdiction_version\":1,\"code\":\"" + code + "\",\"pack\":\"" + pack + "\",\"country_names\":[\"Fixture Country\"],\"municipality_names\":[\"" + municipality + "\"],\"stub\":false,\"note\":\"" + note + "\"}\n";
         {
-            static string[] Builders(string source)
+            // P5-38: the pin compares whole builder bodies: each builder's header line through the line that ends its
+            // expression with ';' (lines trimmed, joined by "\n"), read only inside the four-pack section (here Ambiguity,
+            // there section 16 AmbiguityTwiceRead, up to the method's closing brace), so a builder grown by a line differs and
+            // section 14's identical Manifest cannot stand in for section 16's. ShallowPinned is the P5-36 pin (header +
+            // next line anywhere in the file), kept only to prove the grown Manifest mutant below passed it.
+            static string[] Section(string source, string method)
             {
-                var lines = source.ReplaceLineEndings("\n").Split('\n').Select(line => line.Trim()).ToArray();
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var start = Array.FindIndex(lines, line => line.Trim().StartsWith("static void " + method + "(", StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start + 1, line => line.TrimEnd() == "    }");
+                return start < 0 || end < 0 ? Array.Empty<string>() : lines[start..end];
+            }
+            static bool IsHeader(string line) =>
+                line.Trim() is "static string Manifest(string id) =>" or "static string Sidecar(string code, string pack, string municipality, string note) =>";
+            static string[] Builders(string source, string method)
+            {
+                var lines = Section(source, method);
                 var found = new List<string>();
-                for (var at = 0; at + 1 < lines.Length; at++)
-                    if (lines[at] == "static string Manifest(string id) =>" || lines[at] == "static string Sidecar(string code, string pack, string municipality, string note) =>")
-                        found.Add(lines[at] + " " + lines[at + 1]);
+                for (var at = 0; at < lines.Length; at++)
+                {
+                    if (!IsHeader(lines[at])) continue;
+                    var body = new List<string> { lines[at].Trim() };
+                    var next = at + 1;
+                    while (next < lines.Length && !body[^1].EndsWith(';')) body.Add(lines[next++].Trim());
+                    found.Add(string.Join("\n", body) + (body[^1].EndsWith(';') ? "" : "\n<unterminated>"));
+                }
                 return found.ToArray();
             }
-            var here = Builders(File.ReadAllText(Path.Combine(root, "tests", "mcp", "TwiceReadToolTests.cs")));
-            var there = Builders(File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs")));
-            Check(here.Length == 2 && here.All(there.Contains),
-                "P5-36: the four-pack fixture's Manifest and Sidecar builders are the same text as in tests/cli/SkillListTests.cs section 16 (duplicated on purpose) | " + Short(string.Join(" / ", here)));
+            // The P5-36 pin: header + next line anywhere in each file, here's two contained in there's.
+            static bool ShallowPinned(string mcpSource, string cliSource)
+            {
+                static string[] Shallow(string source)
+                {
+                    var lines = source.ReplaceLineEndings("\n").Split('\n');
+                    return Enumerable.Range(0, Math.Max(0, lines.Length - 1)).Where(at => IsHeader(lines[at])).Select(at => lines[at].Trim() + " " + lines[at + 1].Trim()).ToArray();
+                }
+                var here = Shallow(mcpSource);
+                var there = Shallow(cliSource);
+                return here.Length == 2 && here.All(there.Contains);
+            }
+            var hereSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "TwiceReadToolTests.cs"));
+            var thereSource = File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs"));
+            static bool Pinned(string mcpSource, string cliSource)
+            {
+                var here = Builders(mcpSource, "Ambiguity");
+                return here.Length == 2 && here.SequenceEqual(Builders(cliSource, "AmbiguityTwiceRead"));
+            }
+            Check(Pinned(hereSource, thereSource),
+                "P5-36/P5-38: the four-pack fixture's Manifest and Sidecar builders are the same whole bodies as in tests/cli/SkillListTests.cs section 16 (duplicated on purpose) | "
+                + Short(string.Join(" / ", Builders(hereSource, "Ambiguity"))) + " | there " + Short(string.Join(" / ", Builders(thereSource, "AmbiguityTwiceRead"))));
+            // P5-38 mutant self-test: a copy of tests/cli/SkillListTests.cs whose section-16 builder grew by one line (the
+            // terminating ';' moved to an added `+ "..."` line) must fail the pin, for the Sidecar and for the Manifest.
+            static string Grown(string cliSource, string header)
+            {
+                var lines = cliSource.ReplaceLineEndings("\n").Split('\n').ToList();
+                var section = lines.FindIndex(line => line.Trim().StartsWith("static void AmbiguityTwiceRead(", StringComparison.Ordinal));
+                var at = section < 0 ? -1 : lines.FindIndex(section, line => line.Trim() == header);
+                if (at < 0 || !lines[at + 1].TrimEnd().EndsWith(';')) return "";
+                lines[at + 1] = lines[at + 1].TrimEnd()[..^1];
+                lines.Insert(at + 2, "            + \"\";");
+                return string.Join("\n", lines);
+            }
+            foreach (var header in new[] { "static string Sidecar(string code, string pack, string municipality, string note) =>", "static string Manifest(string id) =>" })
+            {
+                var mutant = Grown(thereSource, header);
+                Check(mutant.Length > 0 && mutant != thereSource.ReplaceLineEndings("\n") && !Pinned(hereSource, mutant),
+                    "P5-38 mutant self-test: the builder pin fails when section 16's " + header + " body grows by a line");
+            }
+            // Depth: the grown Manifest mutant passed the P5-36 pin (section 14's identical Manifest stood in for it; red run
+            // 45485947608 failed exactly this self-test before the whole-body pin), while the real sources pass both.
+            Check(ShallowPinned(hereSource, thereSource) && ShallowPinned(hereSource, Grown(thereSource, "static string Manifest(string id) =>")),
+                "P5-38 depth: the P5-36 header + next line pin passes the grown Manifest mutant the whole-body pin refuses");
             // The drift-hash provenance paragraph (above the DriftLine pins) is the same text in both files.
             static string Provenance(string source)
             {
@@ -446,6 +509,15 @@ internal static class TwiceReadToolTests
             Check(provenance.Length > 0 && provenance.Contains("45318167428", StringComparison.Ordinal)
                 && provenance == Provenance(File.ReadAllText(Path.Combine(root, "tests", "cli", "SkillListTests.cs"))),
                 "P5-36: the drift-hash provenance paragraph is the same text (same runs and OSes) in both files | " + Short(provenance));
+            // P5-38: the paragraph was reflowed (line breaks only): its words, with the comment markers removed and runs of
+            // whitespace collapsed, are still the P5-36 text, literally.
+            const string ProvenanceText = "Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs and tests/mcp/TwiceReadToolTests.cs): "
+                + "first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as the prefix of their "
+                + "two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463, tests/mcp on Linux and Windows in run "
+                + "45318167428; they hash fixture bytes only, so they are the same on every OS.";
+            var words = string.Join(" ", provenance.Split('\n').Select(line => line.StartsWith("//", StringComparison.Ordinal) ? line[2..] : line)
+                .SelectMany(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries)));
+            Check(words == ProvenanceText, "P5-38: the reflowed provenance paragraph keeps the P5-36 words exactly | " + Short(words));
         }
         foreach (var (packId, code, municipality) in new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") })
         {
@@ -576,6 +648,10 @@ internal static class TwiceReadToolTests
         // P5-36 controls for the drifted-lock phases: --code xx.p534mb succeeds and an unclaimed code is jurisdiction_unknown.
         const string OtherOverlapCodeSuccessLine = "{\"status\":\"succeeded\",\"code\":\"xx.p534mb\",\"pack\":\"xx.p534mb.pack\",\"version\":\"1.2.3\",\"stub\":false}";
         const string UnclaimedCode = "xx.p536m-unclaimed";
+        // P5-38: a code that is not a jurisdiction code (two labels after the country) is jurisdiction_invalid on the valid
+        // lock (JurisdictionRegistry.SelectAny), so the drift line it prints over the drifted lock comes from the load.
+        const string InvalidCode = "xx.p538.bad";
+        const string InvalidCodeLine = "{\"status\":\"failed\",\"code\":\"jurisdiction_invalid\",\"subject\":\"xx.p538.bad\",\"detail\":\"jurisdiction code such as ar.caba expected\"}";
         {
             var unclaimed = JurisdictionRegistry.LoadLocked(skills, lockPath).Registry?.Select(new ProjectJurisdiction(UnclaimedCode));
             Check(unclaimed?.Refusal is { } refusal && refusal.Code == JurisdictionCodes.JurisdictionUnknown && unclaimed.Claim is null,
@@ -588,17 +664,17 @@ internal static class TwiceReadToolTests
             ("ambiguous by metadata (claim duplicate)", Args(("country", "Fixture Country"), ("municipality", "Twin Town")), ["--country", "Fixture Country", "--municipality", "Twin Town", "--lock", lockPath], AmbiguousDuplicateByMetadataLine, false),
             ("code route success on an overlapping pack", Args(("code", CodeA)), ["--code", CodeA, "--lock", lockPath], OverlapCodeSuccessLine, false),
             ("P5-36 control: code route success on the other overlapping pack", Args(("code", CodeB)), ["--code", CodeB, "--lock", lockPath], OtherOverlapCodeSuccessLine, false),
+            ("P5-38 control: an invalid code", Args(("code", InvalidCode)), ["--code", InvalidCode, "--lock", lockPath], InvalidCodeLine, false),
             ("conflict: code with a mismatched country", Args(("code", CodeA), ("country", "Other Country")), ["--code", CodeA, "--country", "Other Country", "--lock", lockPath], UsageLine, true),
             ("conflict: code with a mismatched municipality", Args(("code", CodeA), ("country", "Fixture Country"), ("municipality", "Other Town")), ["--code", CodeA, "--country", "Fixture Country", "--municipality", "Other Town", "--lock", lockPath], UsageLine, true),
         });
 
         File.WriteAllText(Path.Combine(skills, PackA, "jurisdiction.json"), Sidecar(CodeA, PackA, "Fixture Town", "edited after pinning"), new UTF8Encoding(false));
         // The hashes are bim-skill-pack-sha256-v1 of the xx.p534ma.pack fixture bytes as pinned and as edited.
-        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs
-        // and tests/mcp/TwiceReadToolTests.cs): first pinned after the P5-34 red probe run 44911652955; both files' drift lines
-        // were re-observed byte for byte, as the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli
-        // on macOS in run 45316035463, tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they
-        // are the same on every OS.
+        // Provenance (P5-36; this paragraph is the same in tests/cli/SkillListTests.cs and tests/mcp/TwiceReadToolTests.cs):
+        // first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as
+        // the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463,
+        // tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they are the same on every OS.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
         Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
         {
@@ -610,6 +686,8 @@ internal static class TwiceReadToolTests
             ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], DriftLine, false),
             ("P5-36 control: a code that succeeded on the valid lock", Args(("code", CodeB)), ["--code", CodeB, "--lock", lockPath], DriftLine, false),
             ("P5-36 control: an unclaimed code", Args(("code", UnclaimedCode)), ["--code", UnclaimedCode, "--lock", lockPath], DriftLine, false),
+            // P5-38: drift before validation: an invalid code (jurisdiction_invalid on the valid lock) is the drift line.
+            ("P5-38: an invalid code", Args(("code", InvalidCode)), ["--code", InvalidCode, "--lock", lockPath], DriftLine, false),
         });
 
         // P5-36: two drifted packs. xx.p534mb.pack's sidecar note is edited after pinning too; the refusal is the first lock
@@ -623,6 +701,32 @@ internal static class TwiceReadToolTests
             ("selection", Args(("country", "Fixture Country"), ("municipality", "Fixture Town")), ["--country", "Fixture Country", "--municipality", "Fixture Town", "--lock", lockPath], TwoDriftLine, false),
             ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], TwoDriftLine, false),
         });
+
+        // P5-38: the escaped '+' is the current encoder behaviour, pinned (no encoder change without a product task). The
+        // refusal detail holds a raw '+'; the verb serializes the envelope with JsonSerializer defaults
+        // (JavaScriptEncoder.Default escapes '+' as \u002B), so the tool text carries the six characters \u002B and no
+        // '+'; McpServer's envelope (UnsafeRelaxedJsonEscaping) writes that text's backslash as \\, so the raw packaged
+        // server line carries \\u002B and no '+'. Twice in process and twice on one packaged server.
+        {
+            const string Suffix = " (+1 more lock issue(s))";
+            var refusal = JurisdictionRegistry.LoadLocked(skills, lockPath).Refusal;
+            Check(refusal is { } twoDrift && twoDrift.Code == JurisdictionCodes.SkillLockDrift && twoDrift.Detail.EndsWith(Suffix, StringComparison.Ordinal)
+                && JsonSerializer.Serialize(Suffix) == "\" (\\u002B1 more lock issue(s))\"" && JsonSerializer.Serialize("+") == "\"\\u002B\""
+                && TwoDriftLine.Contains("(\\u002B1 more", StringComparison.Ordinal) && !TwoDriftLine.Contains('+'),
+                "P5-38: the two-drift detail holds a raw '+' and JsonSerializer's default encoder writes it as \\u002B (the pinned line has no '+') | " + (refusal?.ToString() ?? "<no refusal>"));
+            var request = Args(("country", "Fixture Country"), ("municipality", "Fixture Town"));
+            for (var turn = 1; turn <= 2; turn++)
+            {
+                var response = InProcess(Line(request.DeepClone().AsObject()), true);
+                Check(IsResult(response) && Text(response) == TwoDriftLine && Text(response).Contains("(\\u002B1 more", StringComparison.Ordinal) && !Text(response).Contains('+'),
+                    "P5-38: two drifted packs in-process call #" + turn.ToString(CultureInfo.InvariantCulture) + " text carries \\u002B, no '+' | " + Short(response.ToJsonString()));
+            }
+            var raw = McpProcess(Line(request.DeepClone().AsObject()) + "\n" + Line(request.DeepClone().AsObject()) + "\n")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r')).ToArray();
+            Check(raw.Length == 2 && raw.All(l => l.Contains("(\\\\u002B1 more", StringComparison.Ordinal) && !l.Contains('+')
+                    && JsonNode.Parse(l) is JsonObject parsed && Text(parsed) == TwoDriftLine),
+                "P5-38: two drifted packs on one packaged server, twice: each raw line carries \\\\u002B and no '+', its text is the pinned line | " + Short(string.Join(" / ", raw)));
+        }
     }
 
     static void CopyDirectory(string source, string target)

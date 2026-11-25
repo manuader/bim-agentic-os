@@ -541,12 +541,18 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a method of a primary-constructor class", declaration + "\nsealed class C(int n) { void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("the pinned read in a new-modifier (hiding) method", declaration + "\nclass C : B { public new void M() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("an unrelated field-initializer lambda closed before the pinned read", declaration + "\nstatic readonly Action Unrelated = () => { };\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
-                    // P3-39 documented limit (BracedInitializerArguments): a constructor initializer whose arguments hold
-                    // braces (`: this(new[] { n })`, `: base(() => { })`) splits the constructor header at that '{', so the
-                    // constructor body is not seen as method-like and a local function there is NOT caught. Pinned as the
-                    // current verdict (clean) so a change in either direction is noticed; no production seam read sits in one.
-                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", true),
-                    ("LIMIT BracedInitializerArguments: a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", true),
+                    // P3-41: the P3-39 limit BracedInitializerArguments is removed: a constructor initializer whose arguments
+                    // hold braces (`: this(new[] { n })`, `: base(() => { })`, even with a ';' inside) no longer splits the
+                    // constructor header. New-modifier (hiding) methods with a tuple or ref/ref readonly return type.
+                    ("the read moved into a local function inside a constructor with a this(new[] { n }) initializer (planted)", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { return; }) initializer", declaration + "\nclass C : B { public C() : base(() => { return; }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning a tuple (planted)", declaration + "\nclass C : B { public new (int, int) M() { void Later() { " + read + " } Later(); return (0, 0); } }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning ref int (planted)", declaration + "\nclass C : B { int f; public new ref int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
+                    ("the read moved into a local function inside a protected new static method returning ref readonly int", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
+                    ("the pinned read in a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { try { " + read + " } catch (Exception) { throw; } } C(int[] a) { } }\n", true),
+                    ("the pinned read in a new-modifier method returning a tuple", declaration + "\nclass C : B { public new (int, int) M() { try { " + read + " } catch (Exception) { throw; } return (0, 0); } }\n", true),
+                    ("the pinned read in a new-modifier method returning ref int", declaration + "\nclass C : B { int f; public new ref int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
                 };
                 // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
                 // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
@@ -601,9 +607,11 @@ internal static class InternalErrorDelegationTests
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
-            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls, 2 pinned limits) for each
-            // of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new seams: 772.
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 772, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls; its 2 pinned limits are
+            // now planted) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 planted, 3 clean controls)
+            // for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new
+            // seams: 835.
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 835, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
@@ -800,11 +808,26 @@ internal static class InternalErrorDelegationTests
             {
                 if (depth > 0) { depth--; continue; }
                 if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
-                var start = i == 0 ? 0 : code.LastIndexOfAny(new[] { ';', '{', '}' }, i - 1) + 1;
-                if (MethodBody(code[start..i]) && ++bodies == 2) return true;
+                if (MethodBody(code[HeaderStart(code, i)..i]) && ++bodies == 2) return true;
             }
         }
         return false;
+    }
+
+    // P3-41: where the header of the '{' at index starts: after the previous ';', '{' or '}' that is not inside a
+    // parenthesised group closed before the '{' (so braces and ';' in `: this(new[] { n })` or `: base(() => { return; })`
+    // arguments do not split a constructor header). Outside such a group it is the previous ';', '{' or '}' as before.
+    static int HeaderStart(string code, int index)
+    {
+        var parens = 0;
+        for (var i = index - 1; i >= 0; i--)
+        {
+            var c = code[i];
+            if (c == ')') parens++;
+            else if (c == '(') parens--;
+            else if (parens <= 0 && (c == ';' || c == '{' || c == '}')) return i + 1;
+        }
+        return 0;
     }
 
     // P3-33: true when the header of a '{' (the literal-blanked, comment-stripped text since the previous ';', '{' or
@@ -822,14 +845,18 @@ internal static class InternalErrorDelegationTests
     // `: base(new object())` does not hide the constructor), and `new` disqualifies a header only as object creation:
     // `new` followed by [modifiers] type name( is the hiding modifier of a method (`public new void M()`). Checked
     // operators (`operator checked +`), primary-constructor type members and field/property-initializer lambdas already
-    // matched. Limit (BracedInitializerArguments): initializer arguments holding braces split the header and are missed.
+    // matched. P3-41: initializer arguments holding braces no longer split the header (HeaderStart; limit
+    // BracedInitializerArguments removed): a trailing `) : base(...)`/`) : this(...)` with balanced parentheses is first
+    // reduced to `) : base()`/`) : this()`. The hiding `new` also accepts a tuple return type (`new (int, int) M()`) and a
+    // `ref`/`ref readonly` return (`new ref int M()`).
     static bool MethodBody(string header)
     {
+        header = System.Text.RegularExpressions.Regex.Replace(header, @"\)\s*:\s*(base|this)\s*\((?>[^()]+|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*$", ") : $1()");
         var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
         var head = constraint.Success ? header[..constraint.Index] : header;
         var test = System.Text.RegularExpressions.Regex.Replace(head, @"\)\s*:\s*(?:base|this)\s*\([^{};]*\)\s*$", ")");
         if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\b(?:class|struct|record|interface|enum|namespace)\b")) return false;
-        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*[\w.]+(?:<[^(){};]*>)?(?:\[[\s,]*\]|\?)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
+        if (System.Text.RegularExpressions.Regex.IsMatch(test, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*(?:ref\s+(?:readonly\s+)?)?(?:\([^(){};]*\)|[\w.]+(?:<[^(){};]*>)?)(?:\[[\s,]*\]|\?)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
         if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
         if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
         var match = System.Text.RegularExpressions.Regex.Match(header,
