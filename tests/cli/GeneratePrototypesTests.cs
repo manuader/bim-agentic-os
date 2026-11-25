@@ -2772,7 +2772,7 @@ internal static class GeneratePrototypesTests
         if (executes.Count != 1) { problems.Add("Execute declared " + executes.Count.ToString(CultureInfo.InvariantCulture) + " times as a member of GenerateCommand, not once"); return problems; }
         var (reached, unresolved) = Reach(map, executes, ExecuteExternalCalls);
         foreach (var name in unresolved)
-            problems.Add("Execute reaches " + name + "(, declared as no method, local function or delegate in GenerateWrite.cs, GenerateCommand.cs or the followed files and not a listed external call (a parameter that is no Func / Action or that no caller passes, or a class the pin cannot read)");
+            problems.Add("Execute reaches " + (name.Contains('(') ? name : name + "(") + ", declared as no method, local function or delegate in GenerateWrite.cs, GenerateCommand.cs or the followed files and not a listed external call (a parameter that is no followed delegate type, of a lambda or that no caller passes, or a class the pin cannot read)");
         foreach (var (name, start, end) in reached)
         {
             var helper = code[start..end];
@@ -2858,6 +2858,18 @@ internal static class GeneratePrototypesTests
     //     parameter of another type called, it is unresolved;
     //   - a field is not followed from where a parameter or a local of an enclosing block shadows it, and an assignment of
     //     such a local is not a field assignment (CodeMap.Shadowed); a tuple type (A a, B b) Name ends a type (AfterType).
+    // P7-46:
+    //   - Parameter also sees the parameters of expression-bodied methods and local functions (followed like block-bodied
+    //     ones) and of lambdas (x => / (x, y) => / typed); a lambda's parameter called is unresolved naming that limit (whoever
+    //     invokes the lambda passes its arguments, not followed);
+    //   - followed delegate parameter types are Func, Action, Predicate, Comparison, Converter and delegate types declared
+    //     in the read code; any other parameter called is unresolved naming its type and method;
+    //   - Arguments also takes a type member's calls through this. / base. / any instance receiver (every instance call of
+    //     that name, over-approximated) and the calls of a local or field the method group is assigned to (f = M; f( /
+    //     f?.Invoke(); any other method-group use (passed on, a method-group local used other than called) is a gap,
+    //     unresolved whenever the parameter is referenced;
+    //   - a local declared after the use does not shadow the field there (Shadowed: fail closed, the field is followed).
+    //   An unresolved label is name( [why] when the reach knows why; ExecuteWriteProblems prints it as is.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -3173,60 +3185,165 @@ internal static class GeneratePrototypesTests
         // position and whether its type is a Func<...> or Action delegate. Null when name is no such parameter (an
         // expression-bodied member's or a lambda's parameter is not seen; a generic method's neither: its call stays
         // unresolved).
-        public (string Method, string? Type, int Member, int Position, bool Delegate)? Parameter(string name, int index)
+        // P7-46: also the parameters of an expression-bodied method or local function (name(...) => body, generic or not) and
+        // of a lambda (x => body, (x, y) => body, typed or not, block or expression bodied) whose body encloses index, the
+        // innermost declaring one winning. A lambda's parameter is reported as such (Lambda: its arguments, passed by
+        // whoever invokes the lambda, are not followed, so References names that limit when it is called). Delegate is true
+        // for Func<...>, Action, Predicate<...>, Comparison<...>, Converter<...> and a delegate type declared in the code
+        // (IsDelegateType); Kind is the parameter's declared type ("" for an untyped lambda parameter).
+        public (string Method, string? Type, int Member, int Position, bool Delegate, bool Lambda, string Kind)? Parameter(string name, int index)
         {
+            (string Method, string? Type, int Member, int Position, bool Delegate, bool Lambda, string Kind)? best = null;
+            var bestStart = -1;
             for (var b = enclosing[index]; b >= 0 && !Types.ContainsKey(b); b = parent[b])
             {
                 var j = b - 1;
                 while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
                 if (j < 0 || Code[j] != ')') continue;
-                var open = Opening(Code, j, '(', ')');
-                if (open < 1) continue;
-                var k = open - 1;
-                while (k >= 0 && char.IsWhiteSpace(Code[k])) k--;
-                var end = k + 1;
-                while (k >= 0 && (char.IsLetterOrDigit(Code[k]) || Code[k] == '_')) k--;
-                var method = Code[(k + 1)..end];
-                if (method.Length == 0 || char.IsDigit(method[0]) || CallKeywords.Contains(method)) continue;
-                var (last, word, spaced) = Before(Code, k + 1);
-                if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) continue;
-                var parameters = Split(Code, open + 1, j, true);
-                for (var p = 0; p < parameters.Count; p++)
-                {
-                    var parameter = System.Text.RegularExpressions.Regex.Match(Code[parameters[p].Start..parameters[p].End],
-                        @"^(?:\[[^\]]*\]\s*)*(?:(?:this|params|ref|out|in|scoped)\s+)*(?<type>.*?)\s*\b(?<name>[A-Za-z_]\w*)\s*(?:=.*)?$",
-                        System.Text.RegularExpressions.RegexOptions.Singleline);
-                    if (!parameter.Success || parameter.Groups["name"].Value != name || parameter.Groups["type"].Value.Length == 0) continue;
-                    var (types, member) = Scope(k + 1);
-                    var isDelegate = System.Text.RegularExpressions.Regex.IsMatch(parameter.Groups["type"].Value, @"^(?:System\s*\.\s*)?(?:Func\s*<|Action\b)");
-                    return (method, types.Count > 0 ? types[0] : null, member, p, isDelegate);
-                }
+                if (Head(j) is not { Method: { } method } head) continue;
+                var p = head.Parameters.FindIndex(x => x.Name == name && x.Type.Length > 0);
+                if (p < 0) continue;
+                var (types, member) = Scope(head.NameStart);
+                best = (method, types.Count > 0 ? types[0] : null, member, p, IsDelegateType(head.Parameters[p].Type), false, head.Parameters[p].Type);
+                bestStart = b;
+                break;
             }
-            return null;
+            foreach (var arrow in Arrows())
+            {
+                if (arrow.BodyStart <= bestStart || index < arrow.BodyStart || index >= arrow.BodyEnd) continue;
+                var p = arrow.Parameters.FindIndex(x => x.Name == name && (arrow.Method is null || x.Type.Length > 0));
+                if (p < 0) continue;
+                var kind = arrow.Parameters[p].Type;
+                if (arrow.Method is null) best = ("", null, -1, p, false, true, kind);
+                else
+                {
+                    var (types, member) = Scope(arrow.NameStart);
+                    best = (arrow.Method, types.Count > 0 ? types[0] : null, member, p, IsDelegateType(kind), false, kind);
+                }
+                bestStart = arrow.BodyStart;
+            }
+            return best;
+        }
+
+        // P7-46: the head of a parameter list whose ) is at close: the declared method / local function name (null for a
+        // lambda's list or anything else that is no declaration), the index of that name and the (type, name) of each
+        // parameter (type "" when untyped; a name that is no identifier is kept as "").
+        readonly Dictionary<int, (string? Method, int NameStart, List<(string Type, string Name)> Parameters)?> heads = new();
+        (string? Method, int NameStart, List<(string Type, string Name)> Parameters)? Head(int close)
+        {
+            if (!heads.TryGetValue(close, out var head)) heads[close] = head = ReadHead(close);
+            return head;
+        }
+        (string? Method, int NameStart, List<(string Type, string Name)> Parameters)? ReadHead(int close)
+        {
+            var open = Opening(Code, close, '(', ')');
+            if (open < 0) return null;
+            var parameters = new List<(string Type, string Name)>();
+            foreach (var item in Split(Code, open + 1, close, true))
+            {
+                var parameter = System.Text.RegularExpressions.Regex.Match(Code[item.Start..item.End],
+                    @"^(?:\[[^\]]*\]\s*)*(?:(?:this|params|ref|out|in|scoped)\s+)*(?<type>.*?)\s*\b(?<name>[A-Za-z_]\w*)\s*(?:=.*)?$",
+                    System.Text.RegularExpressions.RegexOptions.Singleline);
+                parameters.Add(parameter.Success ? (parameter.Groups["type"].Value, parameter.Groups["name"].Value) : ("", ""));
+            }
+            var k = open - 1;
+            while (k >= 0 && char.IsWhiteSpace(Code[k])) k--;
+            // A generic declaration: name<T, U>(.
+            if (k >= 0 && Code[k] == '>' && !(k > 0 && Code[k - 1] == '='))
+            {
+                var angle = Opening(Code, k, '<', '>');
+                if (angle > 0) { k = angle - 1; while (k >= 0 && char.IsWhiteSpace(Code[k])) k--; }
+            }
+            var end = k + 1;
+            while (k >= 0 && (char.IsLetterOrDigit(Code[k]) || Code[k] == '_')) k--;
+            var method = Code[(k + 1)..end];
+            if (method.Length == 0 || char.IsDigit(method[0]) || CallKeywords.Contains(method)) return (null, open, parameters);
+            var (last, word, spaced) = Before(Code, k + 1);
+            if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) return (null, open, parameters);
+            return (method, k + 1, parameters);
+        }
+
+        // P7-46: every => of the code with its head and body [BodyStart, BodyEnd): an expression-bodied method or local
+        // function (Method set, body up to its ;), or a lambda (Method null; x => or (...) =>, body a block or an expression
+        // up to a , ; or closing bracket at its depth). An identifier after a type (an expression-bodied property, a
+        // declaration pattern) or after a dot (an enum switch arm) is no lambda.
+        List<(string? Method, int NameStart, List<(string Type, string Name)> Parameters, int BodyStart, int BodyEnd)>? arrows;
+        List<(string? Method, int NameStart, List<(string Type, string Name)> Parameters, int BodyStart, int BodyEnd)> Arrows()
+        {
+            if (arrows is not null) return arrows;
+            arrows = new();
+            foreach (System.Text.RegularExpressions.Match a in System.Text.RegularExpressions.Regex.Matches(Code, @"(?<![=!<>])=>"))
+            {
+                var j = a.Index - 1;
+                while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+                if (j < 0) continue;
+                (string? Method, int NameStart, List<(string Type, string Name)> Parameters)? head = null;
+                if (Code[j] == ')') head = Head(j);
+                else if (char.IsLetterOrDigit(Code[j]) || Code[j] == '_')
+                {
+                    var k = j;
+                    while (k >= 0 && (char.IsLetterOrDigit(Code[k]) || Code[k] == '_')) k--;
+                    var name = Code[(k + 1)..(j + 1)];
+                    if (char.IsDigit(name[0]) || CallKeywords.Contains(name) || name is "class" or "struct" or "notnull" or "unmanaged" or "init" or "null" or "true" or "false"
+                        || Before(Code, k + 1).Last == '.' || AfterType(Code, k + 1)) continue;
+                    head = (null, k + 1, new List<(string Type, string Name)> { ("", name) });
+                }
+                if (head is not { } h) continue;
+                var start = a.Index + 2;
+                while (start < Code.Length && char.IsWhiteSpace(Code[start])) start++;
+                int end;
+                if (start < Code.Length && Code[start] == '{') end = Closing(Code, start, '{', '}');
+                else if (h.Method is not null) end = StatementEnd(Code, start);
+                else
+                {
+                    end = -1;
+                    var depth = 0;
+                    for (var i = start; i < Code.Length && end < 0; i++)
+                    {
+                        if (Code[i] is '(' or '{' or '[') depth++;
+                        else if (Code[i] is ')' or '}' or ']') { if (--depth < 0) end = i - 1; }
+                        else if (Code[i] is ';' or ',' && depth == 0) end = i - 1;
+                    }
+                }
+                if (end >= start) arrows.Add((h.Method, h.NameStart, h.Parameters, start, end + 1));
+            }
+            return arrows;
+        }
+
+        // P7-46: whether a parameter type is a delegate the reach follows: Func<...>, Action, Predicate<...>,
+        // Comparison<...>, Converter<...> (System. or not, nullable or not) or a type declared in the code as
+        // delegate R Name( / Name<.
+        readonly Dictionary<string, bool> delegateTypes = new(StringComparer.Ordinal);
+        public bool IsDelegateType(string type)
+        {
+            var t = System.Text.RegularExpressions.Regex.Replace(type, @"\s+", "");
+            if (delegateTypes.TryGetValue(t, out var known)) return known;
+            var bare = System.Text.RegularExpressions.Regex.Replace(t, @"^(?:global::)?System\.", "");
+            var found = System.Text.RegularExpressions.Regex.IsMatch(bare, @"^(?:(?:Func|Predicate|Comparison|Converter)<|Action(?:<|\??$))");
+            var head = System.Text.RegularExpressions.Regex.Match(bare, @"^(?:[A-Za-z_]\w*\.)*(?<name>[A-Za-z_]\w*)");
+            if (!found && head.Success)
+                found = System.Text.RegularExpressions.Regex.IsMatch(Code, @"\bdelegate\s+[^;{}()=]*?\b" + head.Groups["name"].Value + @"\s*[<(]");
+            return delegateTypes[t] = found;
         }
 
         // P7-44: the arguments passed for the parameter name (named name: or at position) by every call of method outside its
         // declarations: a local function's calls in its own member, a type member's unqualified calls inside its type and its
         // Type.method( / A.B.Type.method( calls anywhere.
-        public List<(int Start, int End)> Arguments(string method, string? type, int member, string name, int position)
+        // P7-46: also a type member's calls through this. / base. and any other instance receiver (IsInstance: every such
+        // call of that name, whatever its type, so over-approximated), and the calls of a local or field a method group of
+        // method is assigned to (f = method; / var f = Type.method;, then f(, f.Invoke( or f?.Invoke(; a local's in its
+        // member after the assignment, a field's anywhere). Every other use of method as a method group (passed on, in a
+        // conditional, a local alias used other than called) is a gap, returned so the caller rejects it loudly.
+        public (List<(int Start, int End)> Found, List<string> Gaps) Arguments(string method, string? type, int member, string name, int position)
         {
             var found = new List<(int Start, int End)>();
+            var gaps = new List<string>();
             var declared = Methods(method).Select(d => d.Start).ToHashSet();
-            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + method + TypeArguments + @"\s*\("))
+            var callOpen = new System.Text.RegularExpressions.Regex(@"\G" + TypeArguments + @"\s*\(");
+            void Take(int open)
             {
-                if (declared.Contains(m.Index)) continue;
-                var (callTypes, callMember) = Scope(m.Index);
-                if (Before(Code, m.Index).Last == '.')
-                {
-                    var dot = m.Index - 1;
-                    while (Code[dot] != '.') dot--;
-                    var receiver = Receiver(Code, dot);
-                    if (member >= 0 || type is null || receiver is null || receiver.Split('.')[^1] != type) continue;
-                }
-                else if (member >= 0 ? callMember != member : type is null || !callTypes.Contains(type)) continue;
-                var open = m.Index + m.Length - 1;
                 var close = Closing(Code, open, '(', ')');
-                if (close < 0) continue;
+                if (close < 0) return;
                 var arguments = Split(Code, open + 1, close, false);
                 var named = new System.Text.RegularExpressions.Regex(@"^" + name + @"\s*:(?!:)\s*");
                 var at = arguments.FindIndex(a => named.IsMatch(Code[a.Start..a.End]));
@@ -3234,13 +3351,91 @@ internal static class GeneratePrototypesTests
                 else if (position < arguments.Count && !arguments.Take(position + 1).Any(a => System.Text.RegularExpressions.Regex.IsMatch(Code[a.Start..a.End], @"^[A-Za-z_]\w*\s*:(?!:)")))
                     found.Add(arguments[position]);
             }
-            return found;
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + method + @"\b"))
+            {
+                if (declared.Contains(m.Index)) continue;
+                var (callTypes, callMember) = Scope(m.Index);
+                var from = m.Index;
+                if (Before(Code, m.Index).Last == '.')
+                {
+                    var dot = m.Index - 1;
+                    while (Code[dot] != '.') dot--;
+                    var receiver = Receiver(Code, dot);
+                    if (member >= 0 || type is null) continue;
+                    if (!(receiver is "this" or "base" ? callTypes.Contains(type) : IsInstance(this, receiver, m.Index) || receiver!.Split('.')[^1] == type)) continue;
+                    from = ExpressionStart(m.Index);
+                }
+                else if (member >= 0 ? callMember != member : type is null || !callTypes.Contains(type)) continue;
+                var call = callOpen.Match(Code, m.Index + m.Length);
+                if (call.Success) { Take(call.Index + call.Length - 1); continue; }
+                // A method group: nameof(method) names it only; alias = method; is followed through the alias's calls.
+                var (last, _, _) = Before(Code, from);
+                if (last == '(' && Before(Code, Code.LastIndexOf('(', from - 1)).Word == "nameof") continue;
+                var alias = Alias(from, m.Index + m.Length);
+                if (alias is null)
+                {
+                    gaps.Add(method + " used as a method group (passed on or assigned other than alias = " + method + ";), so the arguments for its parameter " + name + " are not all seen");
+                    continue;
+                }
+                var (aliasName, aliasAt) = alias.Value;
+                var (_, aliasMember) = Scope(aliasAt);
+                var local = aliasMember >= 0 && (AfterType(Code, aliasAt) || Shadowed(aliasName, aliasAt));
+                foreach (System.Text.RegularExpressions.Match use in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + aliasName + @"\b"))
+                {
+                    if (use.Index == aliasAt) continue;
+                    if (local && (use.Index < aliasAt || Scope(use.Index).Member != aliasMember || Before(Code, use.Index).Last == '.')) continue;
+                    var invoke = System.Text.RegularExpressions.Regex.Match(Code[(use.Index + use.Length)..Math.Min(Code.Length, use.Index + use.Length + 40)], @"^\s*(?:\(|\??\s*\.\s*Invoke\s*\()");
+                    if (invoke.Success) Take(use.Index + use.Length + invoke.Length - 1);
+                    else if (local) gaps.Add(aliasName + " (a local holding the method group " + method + ") used other than called, so the arguments for " + name + " are not all seen");
+                }
+            }
+            return (found, gaps);
+        }
+
+        // P7-46: the start of the receiver chain ending at the member name at index (A.B.name: the index of A).
+        int ExpressionStart(int index)
+        {
+            var s = index;
+            while (true)
+            {
+                var j = s - 1;
+                while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+                if (j < 1 || Code[j] != '.' || Code[j - 1] == '?') return s;
+                j--;
+                while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+                var e = j + 1;
+                while (j >= 0 && (char.IsLetterOrDigit(Code[j]) || Code[j] == '_')) j--;
+                if (e == j + 1) return s;
+                s = j + 1;
+            }
+        }
+
+        // P7-46: the alias a method group [from, to) is assigned to as a whole statement (alias = / += / ??= group ; or ,), as
+        // (name, index of the name), or null.
+        (string Name, int At)? Alias(int from, int to)
+        {
+            var after = to;
+            while (after < Code.Length && char.IsWhiteSpace(Code[after])) after++;
+            if (after >= Code.Length || Code[after] is not (';' or ',')) return null;
+            var j = from - 1;
+            while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+            if (j < 1 || Code[j] != '=' || Code[j - 1] is '=' or '!' or '<' or '>') return null;
+            j--;
+            if (Code[j] == '+') j--;
+            else if (j >= 1 && Code[j] == '?' && Code[j - 1] == '?') j -= 2;
+            while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
+            var end = j + 1;
+            while (j >= 0 && (char.IsLetterOrDigit(Code[j]) || Code[j] == '_')) j--;
+            var alias = Code[(j + 1)..end];
+            if (alias.Length == 0 || char.IsDigit(alias[0]) || CallKeywords.Contains(alias)) return null;
+            return (alias, j + 1);
         }
 
         // P7-44: whether a parameter or local named name is in scope at index (so name there is not a field): the parameter
         // declared at index itself, a parameter of an enclosing method or local function (Parameter), or a declaration after
         // a type (AfterType; not after out / ref) followed by = ; , or in, directly in a block enclosing index inside the same
-        // member.
+        // member. P7-46: only a local declared at or before index (one declared later in the block leaves the field
+        // followed), and Parameter also sees expression-bodied members' and lambdas' parameters.
         public bool Shadowed(string name, int index)
         {
             // A parameter's own declaration (inside parentheses, after a type, followed by , ) or =) is not the field.
@@ -3248,11 +3443,13 @@ internal static class GeneratePrototypesTests
                 && new System.Text.RegularExpressions.Regex(@"\G\s*(?:,|\)|=(?![=>]))").Match(Code, index + name.Length).Success) return true;
             var blocks = new HashSet<int>();
             for (var b = enclosing[index]; b >= 0 && !Types.ContainsKey(b); b = parent[b]) blocks.Add(b);
-            if (blocks.Count == 0) return false;
             if (Parameter(name, index) is not null) return true;
+            if (blocks.Count == 0) return false;
             var local = new System.Text.RegularExpressions.Regex(@"\G\s*(?:=(?![=>])|;|,|in\b)");
             foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + name + @"\b"))
             {
+                // P7-46: a local declared after index does not shadow the field at index (fail closed: the field is followed).
+                if (m.Index > index) break;
                 if (!blocks.Contains(enclosing[m.Index]) || !AfterType(Code, m.Index) || Before(Code, m.Index).Word is "out" or "ref") continue;
                 if (local.Match(Code, m.Index + m.Length).Success) return true;
             }
@@ -3281,7 +3478,21 @@ internal static class GeneratePrototypesTests
         }
     }
 
+    // P7-42 / P7-46: whether the receiver chain of a member access at index is an instance (see Reach): null (?., a call
+    // result), a lowercase first segment that is no keyword type (this, a local, a parameter), a chain whose last declared
+    // type is not its last segment, or, with no declared type, a first segment that is a field or property of an
+    // enclosing type.
+    static bool IsInstance(CodeMap map, string? receiver, int index)
+    {
+        if (receiver is null) return true;
+        var segments = receiver.Split('.');
+        var typed = Array.FindLastIndex(segments, map.IsType);
+        return (char.IsLower(receiver[0]) && !KeywordTypes.Contains(segments[0]))
+            || (typed >= 0 && typed < segments.Length - 1) || (typed < 0 && map.FieldTypes(segments[0], index).Count > 0);
+    }
+
     // The references of the text [start, end): (label, the spans it reaches, an unresolved label or null).
+    // P7-46: an unresolved label is name( or name( [why], the reason naming the parameter's kind and the limit hit.
     static List<(string Name, List<(int Start, int End)> Targets, string? Unresolved)> References(CodeMap map, int start, int end, IReadOnlySet<string>? external)
     {
         var code = map.Code;
@@ -3309,9 +3520,7 @@ internal static class GeneratePrototypesTests
                 // P7-42: the last declared type of the chain, and whether the chain is an instance (see Reach).
                 var segments = receiver?.Split('.') ?? Array.Empty<string>();
                 var typed = Array.FindLastIndex(segments, map.IsType);
-                var instance = receiver is null || (char.IsLower(receiver[0]) && !KeywordTypes.Contains(segments[0]))
-                    || (typed >= 0 && typed < segments.Length - 1) || (typed < 0 && map.FieldTypes(segments[0], at).Count > 0);
-                if (instance)
+                if (IsInstance(map, receiver, at))
                 {
                     if (call) found.Add((name, map.Types.Values.Select(t => t.Name).Distinct().SelectMany(t => map.MembersOf(t, name, false)).ToList(), null));
                 }
@@ -3329,10 +3538,26 @@ internal static class GeneratePrototypesTests
             // P7-44: a parameter of an enclosing method or local function (CodeMap.Parameter): a Func / Action parameter,
             // called or passed on, is followed to the arguments its callers pass for it; called with no such argument, or
             // any other parameter called, it is unresolved.
+            // P7-46: a lambda's parameter (its arguments are not followed) or a parameter of a type that is no followed
+            // delegate (IsDelegateType), called, is unresolved naming why; a method-group use of the parameter's method
+            // that hides callers (Arguments' gaps) is unresolved whenever the parameter is referenced.
             if (map.Parameter(name, at) is { } parameter)
             {
-                var passed = parameter.Delegate ? map.Arguments(parameter.Method, parameter.Type, parameter.Member, name, parameter.Position) : none;
-                found.Add((name, passed, call && passed.Count == 0 ? name : null));
+                if (parameter.Lambda)
+                {
+                    found.Add((name, none, call ? name + "( [a parameter of a lambda" + (parameter.Kind.Length > 0 ? " typed " + parameter.Kind : "")
+                        + ": whoever invokes the lambda passes its arguments, which the reach does not follow]" : null));
+                    continue;
+                }
+                if (!parameter.Delegate)
+                {
+                    found.Add((name, none, call ? name + "( [a " + parameter.Kind + " parameter of " + parameter.Method
+                        + ": not a Func, Action, Predicate, Comparison, Converter or a delegate type declared in the read code, so not followed]" : null));
+                    continue;
+                }
+                var (passed, gaps) = map.Arguments(parameter.Method, parameter.Type, parameter.Member, name, parameter.Position);
+                found.Add((name, passed, call && passed.Count == 0 ? name + "( [the " + parameter.Kind + " parameter of " + parameter.Method + ": no caller passes it]" : null));
+                foreach (var gap in gaps) found.Add((name, none, name + "( [the " + parameter.Kind + " parameter of " + parameter.Method + ": " + gap + "]"));
                 continue;
             }
             // P7-42: a field or property of an enclosing type is followed through its assignments too.
@@ -3541,6 +3766,15 @@ internal static class GeneratePrototypesTests
     //      after if (on) and a local of the same name in another method still leave the field followed;
     //   k. GltfExporter.WriteNew is followed into GltfExporter.cs (not listed in ExecuteExternalCalls): a stdout write in it
     //      and in the wrap lambda WriteGltf passes to it are rejected.
+    //   P7-46:
+    //   l. Stat's Func argument is followed through this.Stat(, an instance receiver input.Stat( and a local the method group
+    //      Stat is assigned to (var f = Stat; f(...), f = Stat; f?.Invoke(...)): a stdout lambda passed so is rejected; Stat
+    //      passed on as a method group, or a method-group local passed on, is unresolved naming the gap;
+    //   m. a Predicate<int> parameter and a parameter of a delegate type declared in the code are followed to their callers'
+    //      lambdas (stdout rejected); a called parameter of a type the code does not declare is unresolved naming its type;
+    //   n. a field used before a local of the same name is declared in the same block stays followed (stdout rejected);
+    //   o. the Func parameter of an expression-bodied method or local function is followed (stdout rejected); a lambda's
+    //      parameter (untyped or typed), called, is unresolved naming that limit.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -3708,6 +3942,66 @@ internal static class GeneratePrototypesTests
             var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command, followed);
             if (reason is null) Check(problems.Count == 0, "P7-44 shadow self-test: Execute pin accepts " + label, Problems(problems));
             else Check(problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-44 shadow self-test: " + label + " is still rejected for " + reason, Problems(problems));
+        }
+
+        // P7-46 (l): Stat's Func argument is followed through a this. or instance receiver and through a local the method
+        // group Stat is assigned to (var f = Stat; f(...) / f?.Invoke(...)); Stat passed on as a method group is rejected
+        // loudly (unresolved, naming the gap). (m) A Predicate<T> parameter and one of a delegate type declared in the code
+        // are followed; a parameter of a type the code does not declare, called, is unresolved naming its type. (n) A local
+        // declared after the use does not shadow the field there. (o) Expression-bodied methods' and local functions'
+        // parameters are followed like block-bodied ones; a lambda's parameter, called, is unresolved naming that limit.
+        // Each mutant edits the followed code (BoundedInput.cs) or GenerateWrite.cs and names its expected problem. The stdout
+        // lambda sits in a caller Execute does not reach (Noisy, Loud), so only the followed argument reaches it; a local
+        // function's callers share its member, so (o)'s local-function stdout lambda is in Poke and the reason names test.
+        // The lambdas' parameter is sink, a name the followed code does not use: a lambda x => ... directly in a type body is
+        // also a declarator of x, which Stat's local status would reach (labelled status) besides call.
+        const string StdoutLambda = "sink => { Console.WriteLine(); return 0; }";
+        const string Poke = "Poke(path); var bytes = ReadBytes(path, MaxBytes, share);";
+        const string StatParameter = "Execute reaches call( [the Func<byte[], int> parameter of Stat: ";
+        var reachMutants = new (string Label, bool Followed, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(l) a stdout lambda passed via this.Stat(", true, new[] { (RequireRegular, "static bool Noisy(out int mode) => this.Stat(" + StdoutLambda + ", out mode); static void RequireUnixRegular(") },
+                Through + "call"),
+            ("(l) a stdout lambda passed via an instance receiver input.Stat(", true, new[] {
+                (RequireRegular, "static bool Noisy(Reader input, out int mode) => input.Stat(" + StdoutLambda + ", out mode); static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) a stdout lambda passed via var f = Stat; f(...)", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; return f(" + StdoutLambda + ", out mode); } static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) a stdout lambda passed via f = Stat; f?.Invoke(...) of a declared local", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { StatCall f; f = Stat; return f?.Invoke(" + StdoutLambda + ", out mode) ?? false; } static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) Stat passed on as a method group", true, new[] { (RequireRegular, "static bool Noisy(out int mode) => Relay(Stat, out mode); static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group"),
+            ("(l) a method-group local passed on instead of called", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; return Relay(f, out mode); } static void RequireUnixRegular(") }, StatParameter + "f (a local holding the method group Stat) used other than called"),
+            ("(m) a stdout lambda passed for a Predicate<int> parameter", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(sink => true); } static void Loud() { Probe(sink => { Console.WriteLine(); return true; }); } static void Probe(Predicate<int> test) { test(1); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(m) a stdout lambda passed for a parameter of a delegate type declared in the code", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "delegate bool Probing(int value); static void Poke(string path) { Probe(sink => true); } static void Loud() { Probe(sink => { Console.WriteLine(); return true; }); } static void Probe(Probing test) { test(1); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(m) a called parameter of a delegate type the code does not declare", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(sink => true); } static void Probe(Notifier test) { test(1); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a Notifier parameter of Probe: not a Func, Action, Predicate"),
+            ("(n) a field used before a local of the same name is declared in the same block", false, new[] { (AfterParsed, Parsed + "Fire();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Fire() { Echo?.Invoke(); Action Echo = () => { }; Echo(); } static void Fail(") }, Through + "Echo"),
+            ("(o) a stdout lambda passed for a Func parameter of an expression-bodied method", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Probe(() => 0); static void Loud() { Probe(() => { Console.WriteLine(); return 0; }); } static int Probe(Func<int> test) => test(); static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(o) a stdout lambda passed for a Func parameter of an expression-bodied local function", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { int Probe(Func<int> test) => test(); Probe(() => { Console.WriteLine(path); return 0; }); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(o) a lambda's parameter called", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test(); run(() => 0); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a parameter of a lambda: whoever invokes the lambda passes its arguments"),
+            ("(o) a typed lambda's parameter called", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = (Func<int> test) => test(); run(() => 0); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a parameter of a lambda typed Func<int>: "),
+        };
+        foreach (var (label, onFollowed, edits, reason) in reachMutants)
+        {
+            var mutated = Mutate(onFollowed ? followed : write, edits);
+            var problems = mutated is null ? new List<string>() : onFollowed ? ExecuteWriteProblems(write, command, mutated) : ExecuteWriteProblems(mutated, command, followed);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-46 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
