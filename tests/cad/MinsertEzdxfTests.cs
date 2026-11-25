@@ -460,6 +460,17 @@ internal static class MinsertEzdxfTests
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
                     "p6-43 reader options self-test: " + label + " in CadCommand.cs is caught",
                     drifted == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(drifted) ?? "not caught");
+            // P6-45 self-tests: what must not fail the pin. A // and a /* */ comment naming DxfReadOptions and DxfReader.
+            // beside the read, and the read statement reformatted over several lines.
+            foreach (var (label, tolerated) in new[]
+            {
+                ("a // comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, "// DxfReader.Parse with DxfReadOptions(MaxInputBytes) (pinned by tests/cad)\n            " + CliDxfRead, StringComparison.Ordinal)),
+                ("a /* */ comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, CliDxfRead + " /* not DxfReader.ReadFile, no other DxfReadOptions */", StringComparison.Ordinal)),
+                ("the read statement reformatted over several lines", cadCommand.Replace(CliDxfRead, "if (format == \"dxf\")\n                drawing = DxfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new DxfReadOptions( MaxInputBytes ));", StringComparison.Ordinal)),
+            })
+                c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
+                    "p6-45 reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
+                    tolerated == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(tolerated) ?? "tolerated");
         }
         catch (Exception error)
         {
