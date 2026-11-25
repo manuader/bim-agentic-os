@@ -2201,9 +2201,14 @@ static class MirrorDriftLoopChecks
 
     // P2-43: the kept name says the requested value is the declared ratio of the default only when it is; otherwise it
     // shows the requested value alone.
+    // P2-44: every number of both branches is formatted with InvariantCulture, so the text a red carries does not depend
+    // on the current culture (negative values, which a lever that never ran leaves behind, would show its negative sign);
+    // the planted MacRequestedTextCulture pin runs both branches under a culture whose negative sign is '~'.
     static string MacRequestedText(MacSendBufferCounts c) => c.RequestedLowered == (long)c.LoweredDefault * LoweredNumerator / LoweredDenominator
-        ? c.RequestedLowered + " = " + LoweredNumerator + "/" + LoweredDenominator + " of default " + c.LoweredDefault
-        : c.RequestedLowered.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        ? MacNumber(c.RequestedLowered) + " = " + MacNumber(LoweredNumerator) + "/" + MacNumber(LoweredDenominator) + " of default " + MacNumber(c.LoweredDefault)
+        : MacNumber(c.RequestedLowered);
+
+    static string MacNumber(long value) => value.ToString(CultureInfo.InvariantCulture);
 
     static MacCheckNames MacNames(MacSendBufferCounts c) => new(
         MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + MacRequestedText(c) + ")",
