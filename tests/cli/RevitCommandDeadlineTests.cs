@@ -910,6 +910,15 @@ internal static class RevitCommandDeadlineTests
             : "::warning::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
                 + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
 
+    // P1-47: a CliInputsSummary.Line under another title (its prefix only; the names after it are left as they are).
+    static string Retitled(string line, string title)
+    {
+        var warning = "::warning::" + CliInputsSummary.Title + ": ";
+        if (line.StartsWith(warning, StringComparison.Ordinal)) return "::warning::" + title + ": " + line[warning.Length..];
+        var plain = CliInputsSummary.Title + ": ";
+        return line.StartsWith(plain, StringComparison.Ordinal) ? title + ": " + line[plain.Length..] : line;
+    }
+
     // ---- P1-45: the step-wide FAIL summary line and the runtime warning's level and place ----
     // (a) Static, on the comment- and literal-stripped tests/cli/Program.cs: its Check records every FAIL name of the
     // step in failedNames, and the step-wide summary line is printed exactly once, from the finally block, so a
@@ -1033,9 +1042,18 @@ internal static class RevitCommandDeadlineTests
             ("the summary line printed before the finally block", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "    " + StepPrint + "\n} finally {\n}", StringComparison.Ordinal)),
             ("the summary line named only in a comment", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "} finally {\n}", StringComparison.Ordinal)),
             ("no finally block at all", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "}\n" + StepPrint, StringComparison.Ordinal)),
+            // P1-47: the pin reads the LAST '} finally {' and wants the print inside that final block.
+            ("two finally blocks, the summary line printed from the first only", CleanProgram + "try {\n    Check(true,\"b\");\n} finally {\n    Cleanup();\n}\n"),
+            ("the summary line printed after the final block closes", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "} finally {\n}\n" + StepPrint, StringComparison.Ordinal)),
         };
         foreach (var (label, source) in stepMutants)
             check(source != CleanProgram && StepSummaryProblems(source).Length > 0, "P1-45 step summary mutation self-test: " + label + " is flagged", "no problem flagged");
+        // P1-47: an earlier try/finally (a nested helper's cleanup) before the step's own one is fine when the print sits
+        // in the last, final block.
+        var earlierFinally = "try {\n    Prepare();\n} finally {\n    Release();\n}\n" + CleanProgram;
+        check(StepSummaryProblems(earlierFinally).Length == 0,
+            "P1-47 step summary mutation self-test: an earlier finally block before the final one that prints the summary line passes",
+            string.Join("; ", StepSummaryProblems(earlierFinally)));
 
         var stepNames = Enumerable.Range(1, 12).Select(k => "P1-45 synthetic step failure " + N(k)).ToList();
         stepNames[5] = "P1-45 synthetic step failure 6 with a '%' and a\nsecond line";
@@ -1053,6 +1071,22 @@ internal static class RevitCommandDeadlineTests
             && longLine.StartsWith("::warning::" + CliInputsSummary.Title + ": 400 FAIL: #1 ", StringComparison.Ordinal) && longLine.EndsWith(" more", StringComparison.Ordinal),
             "P1-45 step summary: a list past one annotation's length keeps the count and the first names and ends with the number left out",
             N(longLine.Length) + " chars; tail " + longLine[Math.Max(0, longLine.Length - 60)..]);
+        // P1-47: the exact count left out. Each of these items is "; #k P1-45 synthetic long step failure k" + 40 'x'
+        // (#1 without "; "); #1..#36 fill 2932 of the 3000-char cap and #37 would pass it, so 364 are left out.
+        var shownTail = "#36 P1-45 synthetic long step failure 36" + new string('x', 40);
+        check(longLine.EndsWith(shownTail + "; +364 more", StringComparison.Ordinal) && !longLine.Contains("#37 ", StringComparison.Ordinal)
+            && longLine.Length == ("::warning::" + CliInputsSummary.Title + ": 400 FAIL: ").Length + 2932 + "; +364 more".Length,
+            "P1-47 step summary: the cap self-test pins the exact '; +364 more' count (#1..#36 listed, 2932 of the 3000-char cap)",
+            N(longLine.Length) + " chars; tail " + longLine[Math.Max(0, longLine.Length - 80)..]);
+
+        // P1-47: P1-43's FailSummary shares CliInputsSummary.Line's escape and cap (its own title in place of the step's),
+        // so a long deadline FAIL list is cut the same way.
+        var deadlineLong = FailSummary(longNames);
+        check(deadlineLong == Retitled(longLine, SummaryTitle) && deadlineLong.StartsWith("::warning::" + SummaryTitle + ": 400 FAIL: #1 ", StringComparison.Ordinal)
+            && deadlineLong.EndsWith("; +364 more", StringComparison.Ordinal) && FailSummary(stepNames) == Retitled(stepLine, SummaryTitle)
+            && FailSummary(Array.Empty<string>()) == SummaryTitle + ": 0 FAIL",
+            "P1-47 summary self-test: P1-43 FailSummary is CliInputsSummary.Line under its own title (same % CR LF escape, same cap and '; +N more')",
+            N(deadlineLong.Length) + " chars; tail " + deadlineLong[Math.Max(0, deadlineLong.Length - 60)..]);
 
         // ---- P1-45 (b): the runtime annotation's level and place ----
         // The step that runs cli-inputs (scripts/verify.ps1) also runs the gates that print ::notice:: lines (tests/mcp,
@@ -1422,6 +1456,40 @@ internal static class RevitCommandDeadlineTests
         check(MemberBody(straySource, "public string? Send(", true) == strayMember && MemberBody(StripCode(straySource), "public string? Send(") == StripCode(strayMember),
             "P1-45 MemberBody self-test: a stray ')' never takes the bracket depth below 0, so a '=>' in a later parameter list is not the member's (raw and stripped)",
             (MemberBody(straySource, "public string? Send(", true) ?? "null") + " ; " + (MemberBody(StripCode(straySource), "public string? Send(") ?? "null"));
+
+        // P1-47: raw text skips a signature occurrence any character of which lies in a comment or a literal, not only its
+        // first: in `Pick(@"x")` the '@' opens a verbatim literal, while `Pick(@string s)` is a verbatim identifier (code).
+        const string PickMember = "static string Pick(@string s) { return s + \"}\"; }";
+        var pickSource = "class T\n{\n    static string A() { return Pick(@\"x\"); }\n    " + PickMember + "\n    static string B() { return \"\"; }\n}\n";
+        check(MemberBody(pickSource, "Pick(@", true) == PickMember,
+            "P1-47 MemberBody self-test: raw text skips a signature whose later character lies in a literal ('@' of @\"x\") and reads the member",
+            MemberBody(pickSource, "Pick(@", true) ?? "null");
+        var tailInComment = "class T\n{\n    static void G() /* note */ { }\n}\n";
+        check(MemberBody(tailInComment, "G() /*", true) is null && MemberBody(tailInComment, "G() ", true) == "G() /* note */ { }",
+            "P1-47 MemberBody self-test: raw text never reads a signature whose tail lies in a comment (the code part alone still reads)",
+            (MemberBody(tailInComment, "G() /*", true) ?? "null") + " ; " + (MemberBody(tailInComment, "G() ", true) ?? "null"));
+
+        // P1-47: on members with interpolated literals the raw path and the stripped path read the same member:
+        // StripCode(MemberBody(raw)) == MemberBody(StripCode(source)). (The paths stay two: CodeMask cannot run on
+        // StripCode output, whose interpolated literals have lost their '$'.)
+        var interpolated = new (string Label, string Member)[]
+        {
+            ("a hole holding a call and a format", "static string I1(int x) { return $\"{F(x):N2} ({x})\"; }"),
+            ("escaped braces and a hole holding a brace literal", "static string I2(bool b) { return $\"{{a}} {(b ? \"}\" : \"{\")} }}\"; }"),
+            ("a verbatim interpolated literal over lines", "static string I3(int x) { return $@\"a {x}\n)}}{{ {Wrap(x)}\"; }"),
+            ("a raw interpolated literal with two-dollar holes", "static string I4(int y) { return $$\"\"\"{ {{y}} }( {{G(() => { return y; })}}\"\"\"; }"),
+            ("a hole holding a lambda block", "static string I5(int z) { var s = $\"{H(() => { if (z > 0) { return \"}\"; } return \"{\"; })}\"; return s; }"),
+        };
+        foreach (var (label, member) in interpolated)
+        {
+            var source = "class T\n{\n    " + member + "\n    static string After() { return \"\"; }\n}\n";
+            var signature = member[..(member.IndexOf('(') + 1)];
+            var raw = MemberBody(source, signature, true);
+            var stripped = MemberBody(StripCode(source), signature);
+            check(raw == member && stripped is not null && StripCode(raw) == stripped,
+                "P1-47 MemberBody self-test: raw and stripped paths read the same member with " + label,
+                (raw ?? "null") + " ; " + (stripped ?? "null"));
+        }
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----
