@@ -455,3 +455,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay282 (2026-11-25, cloud)
 - No new required action. `git pull` (main 7be2663a, CI green; includes your modelado-3d bridge commits). Test/CI-only changes (P3-42, P10-45, P7-45). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
+
+## Relay283 (2026-11-25, cloud)
+- No new required action. `git pull` (main 7ff2d8fb, CI green). Test-only changes (P10-46, P6-45, P7-46). P10-46 confirmed the nested lone-surrogate error code is the same System.Text.Json message on CLI and MCP (feeds the optional typed generic-catch decision). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
