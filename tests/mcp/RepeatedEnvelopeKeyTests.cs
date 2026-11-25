@@ -795,7 +795,7 @@ internal static class RepeatedEnvelopeKeyTests
                 try { response = server.Handle(line) ?? "none"; }
                 catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
                 var made = sends - before;
-                var ok = response == expected;
+                var ok = response == expected && made == 0;
                 measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 200 ? response[..200] + "..." : response));
                 if (!ok) failing.Add(label);
             }
@@ -878,7 +878,6 @@ internal static class RepeatedEnvelopeKeyTests
                     var made = argumentSends - before;
                     // P10-46: every case is listed (ok or FAIL), not only the failing ones.
                     var ok = response == expected && made == expectedSends;
-                    if (ok) continue;
                     measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 400 ? response[..400] + "..." : response));
                     if (!ok) failing.Add(label);
                 }
