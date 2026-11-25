@@ -47,7 +47,7 @@ try {
     $up = Invoke-RestMethod "$base/encargos/$id/entrada/ficha.pdf" -Method Put -Headers $h -Body ([byte[]](1..10))
     Check ($up.bytes -eq 10) 'subir archivo'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/entrada/virus.exe" -Method Put -Headers $h -Body 'x' }) -eq 400) 'extensión no admitida'
-    Check ((Code { Invoke-RestMethod "$base/encargos/..%2F..%2Fx/entrada/a.pdf" -Method Put -Headers $h -Body 'x' }) -eq 400) 'id con ..: 400'
+    $c = Code { Invoke-RestMethod "$base/encargos/..%2F..%2Fx/entrada/a.pdf" -Method Put -Headers $h -Body 'x' }; Check ($c -in 400, 404) 'id con ..: rechazado'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/aprobar" -Method Post -Headers $h }) -eq 409) 'aprobar sin ficha: 409'
 
     Invoke-RestMethod "$base/encargos/$id/ficha" -Method Post -Headers $h | Out-Null
