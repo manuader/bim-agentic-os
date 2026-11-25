@@ -1121,7 +1121,7 @@ try {
         }
     }
     # P7-41: the cleanup report and P7-33/P7-39 source pins read the PowerShell AST of script text (reformatting, comments
-    # and string literals do not matter): header = which of P7-39/P7-41/P7-43 open a line of the leading comment block;
+    # and string literals do not matter): header = which P7 ids open a line of the leading comment block (P7-49: n >= 39);
     # outer = Write-PackageCleanupWarnings calls inside the finally of a top-level try; loop/asserts/unlabelled = foreach
     # ($tool in ... $p737Ranked ...) loops, the Assert commands in them and those whose message does not use $caseLabel or
     # uses $tool.Tool; casefinally = finally blocks calling Remove-PackageCaseDirectory 'P7-33' $p733Case; wrapper =
@@ -1132,6 +1132,9 @@ try {
     # statement is a one-command pipeline `Remove-Item ...`, its void cast `[void](Remove-Item ...)` or `$null = Remove-Item
     # ...` (any other wrapper, or a longer pipeline, does not count), and $work must be bound (static parameter binder) to
     # Remove-Item's -LiteralPath or -Path: named, abbreviated, alias or positional; $work given to -Filter etc. does not count.
+    # P7-49: header = every '# P7-<n>: ' line with n >= 39 of the leading comment block (the P4 lines belong to another pin);
+    # $work may also be an element of an array path argument (literal or @() of one); a splatted Remove-Item or one with any
+    # static binding error (unknown or ambiguous parameter, extra positional) does not count.
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -1143,7 +1146,8 @@ try {
         foreach ($token in $tokens) {
             if ($token.Kind -eq [Management.Automation.Language.TokenKind]::NewLine) { continue }
             if ($token.Kind -ne [Management.Automation.Language.TokenKind]::Comment) { break }
-            foreach ($id in @('P7-39', 'P7-41', 'P7-43')) { if ($token.Text.StartsWith("# $($id): ") -and !$header.Contains($id)) { $header.Add($id) } }
+            # P7-49: every '# P7-<n>: ' line with n >= 39 (in order, once each); other tasks' header lines are not read.
+            if ($token.Text -cmatch '^# (P7-(\d+)): ' -and [int]$Matches[2] -ge 39 -and !$header.Contains($Matches[1])) { $header.Add($Matches[1]) }
         }
         $isCommand = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.CommandAst] -and $Node.GetCommandName() -eq $Name }
         $isVariable = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.VariableExpressionAst] -and $Node.VariablePath.UserPath -eq $Name }
@@ -1165,11 +1169,31 @@ try {
             if ($inner -is [Management.Automation.Language.PipelineAst] -and $inner.PipelineElements.Count -eq 1 -and $inner.PipelineElements[0] -is [Management.Automation.Language.CommandAst]) { return $inner.PipelineElements[0] }
             return $null
         }
+        # P7-49: a path argument names $work when it is $work, an array literal with $work as an element, or @() of one of
+        # those (one plain expression inside); $work reached through a scriptblock, a call or a subexpression does not count.
+        $namesWork = {
+            param($Value)
+            if (& $isVariable $Value 'work') { return !$Value.Splatted }
+            if ($Value -is [Management.Automation.Language.ArrayLiteralAst]) { return @($Value.Elements | Where-Object { (& $isVariable $_ 'work') -and !$_.Splatted }).Count -gt 0 }
+            if ($Value -is [Management.Automation.Language.ArrayExpressionAst] -and $Value.SubExpression.Statements.Count -eq 1) {
+                $only = $Value.SubExpression.Statements[0]
+                if ($only -is [Management.Automation.Language.PipelineAst] -and $only.PipelineElements.Count -eq 1 -and $only.PipelineElements[0] -is [Management.Automation.Language.CommandExpressionAst] -and !$only.PipelineElements[0].Redirections.Count) {
+                    $inner = $only.PipelineElements[0].Expression
+                    if ($inner -is [Management.Automation.Language.VariableExpressionAst] -or $inner -is [Management.Automation.Language.ArrayLiteralAst]) { return (& $namesWork $inner) }
+                }
+            }
+            return $false
+        }
+        # P7-49: a splatted Remove-Item (any @name argument) is refused, since the splat may carry or rebind the path, and
+        # so is one whose static binding reports any binding error (unknown or ambiguous parameter, extra positional).
         $removesWork = {
             param($Command)
             if ($null -eq $Command -or !(& $isCommand $Command 'Remove-Item')) { return $false }
-            $bound = [Management.Automation.Language.StaticParameterBinder]::BindCommand($Command, $true).BoundParameters
-            foreach ($name in @('LiteralPath', 'Path')) { if ($bound.ContainsKey($name) -and (& $isVariable $bound[$name].Value 'work')) { return $true } }
+            if (@($Command.CommandElements | Where-Object { $_ -is [Management.Automation.Language.VariableExpressionAst] -and $_.Splatted }).Count) { return $false }
+            $binding = [Management.Automation.Language.StaticParameterBinder]::BindCommand($Command, $true)
+            if ($binding.BindingExceptions.Count) { return $false }
+            $bound = $binding.BoundParameters
+            foreach ($name in @('LiteralPath', 'Path')) { if ($bound.ContainsKey($name) -and (& $namesWork $bound[$name].Value)) { return $true } }
             return $false
         }
         $outer = 0; $workReports = [Collections.Generic.List[object]]::new()
@@ -1989,16 +2013,22 @@ try {
                     # P7-47: the stand-in also records what it was bound to; each call must pass -LiteralPath (never -Path or
                     # a positional path) with the probe path.
                     $p747Received = [Collections.Generic.List[string]]::new()
+                    # P7-49: the one stand-in Remove-Item, defined in this helper's scope so Remove-PackageCaseDirectory called
+                    # from $Run finds it (dynamic scope); it records $Call and what it was bound to.
+                    function Invoke-P749StandIn([string]$Call, [scriptblock]$Run) {
+                        function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add($Call); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }
+                        & $Run
+                    }
                     $p743Into = [Collections.Generic.List[string]]::new(); $p743Before = $packageCleanupWarnings.Count
-                    $p743Warning = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-43 -Into'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
+                    $p743Warning = Invoke-P749StandIn 'P7-43 -Into' { Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
                     Assert ($p745Calls.Count -eq 1) "P7-45: the stand-in Remove-Item ran once for the -Into call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Warning -and $p743Into.Count -eq 1 -and $p743Into[0] -ceq $p743Warning -and $p743Warning.StartsWith('P7-43: ') -and $p743Warning.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p743Before) "P7-43: Remove-PackageCaseDirectory -Into collects a leftover (stand-in remover, any user) into the passed list only (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new): $p743Warning"
-                    $p743Silent = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-43 -Into -Silent'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
+                    $p743Silent = Invoke-P749StandIn 'P7-43 -Into -Silent' { Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
                     Assert ($p745Calls.Count -eq 2) "P7-45: the stand-in Remove-Item ran once for the -Into -Silent call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Silent -and $p743Into.Count -eq 1 -and $packageCleanupWarnings.Count -eq $p743Before -and (Test-Path -LiteralPath $p743Probe)) "P7-43: -Silent with -Into returns the warning and collects it nowhere (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new)"
                     # P7-45: -Silent without -Into returns the warning and leaves the default (run-wide) list untouched.
                     $p745Default = @($packageCleanupWarnings)
-                    $p745Silent = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-45 -Silent'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-45' $p743Probe -Silent }
+                    $p745Silent = Invoke-P749StandIn 'P7-45 -Silent' { Remove-PackageCaseDirectory 'P7-45' $p743Probe -Silent }
                     Assert ($p745Calls.Count -eq 3 -and $null -ne $p745Silent -and $p745Silent.StartsWith('P7-45: ') -and $p745Silent.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p745Default.Count -and ($packageCleanupWarnings -join "`n") -ceq ($p745Default -join "`n") -and $p743Into.Count -eq 1) "P7-45: -Silent without -Into returns the warning and leaves the default list untouched (stand-in calls $($p745Calls.Count), run-wide $($packageCleanupWarnings.Count - $p745Default.Count) new): $p745Silent"
                     $p747Want = "True|False|$p743Probe"
                     Assert ($p747Received.Count -eq 3 -and @($p747Received | Where-Object { $_ -cne $p747Want }).Count -eq 0) "P7-47: the stand-in Remove-Item received -LiteralPath with the probe path on each of its 3 calls (want $p747Want; got $($p747Received -join ' / '))"
