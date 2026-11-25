@@ -4175,6 +4175,84 @@ internal static class GeneratePrototypesTests
             "P7-48 declarator self-test: Declarators counts the expression-bodied property x => and no lambda head x =>",
             "declarators at [" + string.Join(", ", lambdaDeclarators.Select(d => d.Start.ToString(CultureInfo.InvariantCulture))) + "]");
 
+        // P7-50 (v): HeadClose takes a where only as a constraint (where T : at the head's bracket depth): a where inside an
+        // attribute or a default value, or a LINQ where after a call, opens no method head, so test is still M's parameter.
+        var headTexts = new (string Label, string Code)[]
+        {
+            ("a where inside an attribute", "class C { [Tag(where: 1)] static void M(Func<int> test) { test(); } }"),
+            ("a where as a default value", "class C { static void M(Func<int> test, int n = where) { test(); } }"),
+            ("a LINQ where after a call in a foreach head", "class C { static void M(Func<int> test) { foreach (var z in from z in Zs orderby Key(z.test) where z.Ok select z) { test(); } } }"),
+            ("a LINQ where after a call before a lambda", "class C { static void M(Func<int> test) { Run(from z in Zs orderby Key(z.test) where z.Ok select z, () => test()); } }"),
+            ("a where T : class, new() constraint", "class C { static void M<T>(Func<T> test) where T : class, new() { test(); } }"),
+            ("an expression-bodied method's where T : IComparable<T> constraint", "class C { static int M<T>(Func<T> test) where T : IComparable<T> => test(); }"),
+        };
+        foreach (var (label, text) in headTexts)
+        {
+            var parameter = new CodeMap(text).Parameter("test", text.LastIndexOf("test()", StringComparison.Ordinal));
+            Check(parameter is { Method: "M", Delegate: true, Lambda: false }, "P7-50 head self-test: " + label + " leaves test the delegate parameter of M",
+                parameter is { } found ? found.Method + " " + found.Kind : "<no parameter>");
+        }
+
+        // P7-50 (w): TypeArgumentsEnd takes a type-argument list followed by C#'s disambiguating tokens ( ) ] } : ; , . ? ==
+        // != | ^ & [ or {, or by a designation after is / case / out (patterns): a cast and a pattern are one list (Split does
+        // not cut them); a comparison with an operator, or followed by a name, is no list. Stated limit: a < b > (c) and
+        // a < b, c > (d) are a generic call, as C# itself parses them.
+        var angleTexts = new (string Label, string Code, bool List, int Items)[]
+        {
+            ("a cast (List<A, B>)x", "M((List<A, B>)x, y)", true, 2),
+            ("a declaration pattern is Dictionary<A, B> d", "M(x is Dictionary<A, B> d, y)", true, 2),
+            ("a case pattern case Dictionary<A, B> d", "M(case Dictionary<A, B> d: y)", true, 1),
+            ("a generic call N<A, B>(x)", "M(N<A, B>(x), y)", true, 2),
+            ("a comparison with an operator a < b + 1, c > (d)", "M(a < b + 1, c > (d))", false, 2),
+            ("a comparison a < b, c > d", "M(a < b, c > d)", false, 2),
+            ("a < b > (c), a generic call as C# parses it (the stated limit)", "M(a < b > (c))", true, 1),
+        };
+        foreach (var (label, text, list, items) in angleTexts)
+        {
+            var open = text.IndexOf('<');
+            var end = TypeArgumentsEnd(text, open);
+            var split = Split(text, text.IndexOf('(') + 1, text.LastIndexOf(')'), false).Count;
+            Check((list ? end == text.IndexOf('>', open) : end == -1) && split == items,
+                "P7-50 type-argument self-test: " + label + (list ? " is one type-argument list" : " is a comparison") + " and " + items.ToString(CultureInfo.InvariantCulture) + " argument(s)",
+                "end " + end.ToString(CultureInfo.InvariantCulture) + ", items " + split.ToString(CultureInfo.InvariantCulture));
+        }
+
+        // P7-50 (x): a lambda's or non-delegate parameter passed on wrapped ((test), test!, a cast, a conditional's branch, a
+        // side of ??) for a followed Func parameter is named like the bare one; (y) a field alias's name match is stated
+        // as over-approximated in its gap; (z) Stat as a method group in a conditional or after ?? stays a named gap.
+        const string PassedOnLambda = "Execute reaches test [a parameter of a lambda, passed on (not called)";
+        const string ProbeTail = " static int Probe(Func<int> act) => act(); static void RequireUnixRegular(";
+        var wrappedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(x) a lambda's parameter passed on parenthesized (test)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on null-forgiving test!", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(test!); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on as a conditional's branch", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(path.Length > 0 ? test : null); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on as a side of ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(test ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a Notifier parameter passed on through a cast (Func<int>)test", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe((Func<int>)test);" + ProbeTail) },
+                "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
+            ("(y) a field alias of Stat whose name a local elsewhere passes on", new[] {
+                (RequireRegular, "static StatCall StatAlias = Stat; static bool Noisy(out int mode) => StatAlias(sink => 0, out mode); static void Other() { int StatAlias = 0; Use(StatAlias); } static void RequireUnixRegular(") },
+                StatParameter + "StatAlias (a field holding the method group Stat) used other than called (a field alias is matched by name"),
+            ("(z) Stat as a method group in a conditional", new[] {
+                (RequireRegular, "static bool Noisy(bool on, out int mode) { StatCall f = on ? Stat : null; return f(sink => 0, out mode); } static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group (passed on, in a conditional ?: or ??"),
+            ("(z) Stat as a method group after ??", new[] {
+                (RequireRegular, "static bool Noisy(StatCall custom, out int mode) { var f = custom ?? Stat; return f(sink => 0, out mode); } static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group (passed on, in a conditional ?: or ??"),
+        };
+        foreach (var (label, edits, reason) in wrappedMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-50 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
         const string ThirteenCall = @"var\s+r\s*=\s*ForcedRun\s*\(\s*runMethod\s*,\s*seams\s*,\s*stdout\s*,\s*null\s*,\s*null\s*,\s*stage\s*,\s*args\s*\)\s*;";
         const string Thirteen = "var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);";
