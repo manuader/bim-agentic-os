@@ -44,6 +44,8 @@
 # another top-level try); the stand-in remover counts its calls; -Silent without -Into leaves the run-wide list untouched.
 # P7-47: [void](Remove-Item $work) and $null = Remove-Item $work are direct statements too; $work counts only as Remove-Item's
 # -LiteralPath/-Path argument (a -Filter mutant reads work 0); the stand-in checks it got -LiteralPath with the probe path.
+# P7-49: the header pin reads every P7 line from P7-39 on; $work as an element of an array path argument counts, a splatted
+# Remove-Item or one with binding errors does not; -Lit/-PSPath are self-tested; one stand-in; the contract paragraph is pinned.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1898,6 +1900,35 @@ try {
                         @{ Name = '$work passed to -Filter'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    Remove-Item -Filter $work -LiteralPath $other')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
                         @{ Name = '$work passed to -Exclude in a void cast'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    [void](Remove-Item -LiteralPath $other -Exclude $work)')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
                         @{ Name = '$null = $work removal piped on'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    $null = Remove-Item -LiteralPath $work | Out-Null')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
+                    # P7-49: $work as an element of an array path argument (array literal or @() of one) counts; any other
+                    # array, a splatted Remove-Item or one with binding errors does not; abbreviated and alias names bind;
+                    # the header pin reads every '# P7-<n>: ' line with n >= 39 (not P7-38, not other tasks' lines).
+                    $p749Work1 = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0'
+                    $p749Work0 = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0'
+                    foreach ($p749Case in @(
+                            @('$work first in an array -LiteralPath', '    Remove-Item -LiteralPath $work, $other', $p749Work1),
+                            @('$work in @() -LiteralPath', '    Remove-Item -LiteralPath @($work)', $p749Work1),
+                            @('$work second in a positional array', '    Remove-Item $other, $work -Recurse', $p749Work1),
+                            @('$work in @() of an array in a void cast', '    [void](Remove-Item -LiteralPath @($other, $work))', $p749Work1),
+                            @('array without $work', '    Remove-Item -LiteralPath $other, $other2', $p749Work0),
+                            @('@() without $work', '    Remove-Item -LiteralPath @($other)', $p749Work0),
+                            @('$work only through a scriptblock in @()', '    Remove-Item -LiteralPath @(& { $work })', $p749Work0),
+                            @('$work in an array given to -Exclude', '    Remove-Item -Exclude $work, $x -LiteralPath $other', $p749Work0),
+                            @('splatted Remove-Item', '    Remove-Item @workArgs', $p749Work0),
+                            @('splat with a positional $work', '    Remove-Item @workArgs $work', $p749Work0),
+                            @('splat after -LiteralPath $work', '    Remove-Item -LiteralPath $work @rest', $p749Work0),
+                            @('unknown parameter beside -LiteralPath $work', '    Remove-Item -LiteralPath $work -NoSuchSwitch', $p749Work0),
+                            @('extra positional beside -LiteralPath $work', '    Remove-Item -LiteralPath $work $extra', $p749Work0),
+                            @('ambiguous -P', '    Remove-Item -P $work', $p749Work0),
+                            @('abbreviated -Lit', '    Remove-Item -Lit $work', $p749Work1),
+                            @('abbreviated -lit: colon form', '    Remove-Item -lit:$work -Recurse', $p749Work1),
+                            @('alias -PSPath', '    Remove-Item -PSPath $work', $p749Work1),
+                            @('alias -LP', '    Remove-Item -LP $work', $p749Work1),
+                            @('abbreviated -Pa', '    Remove-Item -Pa $work', $p749Work1))) {
+                        $p741Mutants += @{ Name = "P7-49 $($p749Case[0])"; Pairs = @(, @('    Remove-Item -LiteralPath $work', $p749Case[1])); Want = $p749Case[2] }
+                    }
+                    $p741Mutants += @{ Name = 'P7-49 header lines from P7-39 on only'; Pairs = @(, @('# P7-41: AST pins', "# P7-41: AST pins`n# P7-38: below the range`n# P4-31: another task`n# P7-45: read`n# P7-41: repeated`n# P7-49: read")); Want = 'header P7-39,P7-41,P7-45,P7-49 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' }
+                    $p741Mutants += @{ Name = 'P7-49 header line after code is not read'; Pairs = @(, @('param([string]$Dotnet)', "param([string]`$Dotnet)`n# P7-45: after code")); Want = $p749Work1 }
                     foreach ($mutant in $p741Mutants) {
                         $text = $p741Text
                         foreach ($pair in $mutant.Pairs) {
@@ -1909,8 +1940,9 @@ try {
                         Assert ($got.Summary -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
                     }
                     $p741Own = [IO.File]::ReadAllText($PSCommandPath)
+                    $p749HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49'
                     $p741OwnPin = Get-P741CleanupPin $p741Own
-                    Assert ($p741OwnPin.Header -ceq 'P7-39,P7-41,P7-43' -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly P7-39,P7-41,P7-43 (the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    Assert ($p741OwnPin.Header -ceq $p749HeaderIds -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly $p749HeaderIds (P7-49: every P7 line from P7-39 on, the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
                     # P7-43: the call is located by its CommandAst extent (not its exact text), so reformatting it does not
                     # break the mutation.
                     if (@($p741OwnPin.WorkReports).Count -ne 1) { $failures.Add("P7-41 self-test: the outer finally report CommandAst could not be found to remove from a copy: $($p741OwnPin.Summary)") }
@@ -1934,7 +1966,7 @@ try {
                     $p743Own = [IO.File]::ReadAllText($PSCommandPath)
                     $p743Pin = Get-P741CleanupPin $p743Own
                     Assert ($p743Pin -is [Management.Automation.PSCustomObject] -and $null -eq $p743Pin.Error) "P7-43: Get-P741CleanupPin returns an object (no parse error): $p743Pin"
-                    Assert ($p743Pin.Header -ceq 'P7-39,P7-41,P7-43' -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists P7-39/P7-41/P7-43 and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header P7-39,P7-41,P7-43 outer 1 work 1)"
+                    Assert ($p743Pin.Header -ceq 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49' -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists P7-39 to P7-49 and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header P7-39,P7-41,P7-43,P7-45,P7-47,P7-49 outer 1 work 1)"
                     $p743Text = @('# P7-39: a', '# P7-41: b', '# P7-43: c', 'try {', '    $x = 1', '} finally {', '    Remove-Item -LiteralPath $work -Recurse',
                         '    Write-PackageCleanupWarnings `', '        -Warnings   $packageCleanupWarnings', '}') -join "`n"
                     $p743Synthetic = Get-P741CleanupPin $p743Text
@@ -1970,6 +2002,12 @@ try {
                     Assert ($p745Calls.Count -eq 3 -and $null -ne $p745Silent -and $p745Silent.StartsWith('P7-45: ') -and $p745Silent.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p745Default.Count -and ($packageCleanupWarnings -join "`n") -ceq ($p745Default -join "`n") -and $p743Into.Count -eq 1) "P7-45: -Silent without -Into returns the warning and leaves the default list untouched (stand-in calls $($p745Calls.Count), run-wide $($packageCleanupWarnings.Count - $p745Default.Count) new): $p745Silent"
                     $p747Want = "True|False|$p743Probe"
                     Assert ($p747Received.Count -eq 3 -and @($p747Received | Where-Object { $_ -cne $p747Want }).Count -eq 0) "P7-47: the stand-in Remove-Item received -LiteralPath with the probe path on each of its 3 calls (want $p747Want; got $($p747Received -join ' / '))"
+                    # P7-49: the three stand-in calls share one stand-in definition (one function Remove-Item in this script).
+                    $p749StandIns = @(([Management.Automation.Language.Parser]::ParseInput($p743Own, [ref]$null, [ref]$null)).FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-Item' }, $true)).Count
+                    Assert ($p749StandIns -eq 1) "P7-49: this script defines the stand-in Remove-Item once (found $p749StandIns definitions)"
+                    # P7-49: the contract paragraph for these pins exists once and cites the P7-47 green run.
+                    $p749Paragraphs = @([IO.File]::ReadAllLines((Join-Path $root 'docs/contracts/module-contracts.md')) | Where-Object { $_.StartsWith('P7-39..P7-', [StringComparison]::Ordinal) })
+                    Assert ($p749Paragraphs.Count -eq 1 -and $p749Paragraphs[0].StartsWith('P7-39..P7-49 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p749Paragraphs[0].Contains('green 45585297443') -and $p749Paragraphs[0].Contains('splat') -and $p749Paragraphs[0].Contains('binding error')) "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph citing green 45585297443 and the splat and binding error rules (found $($p749Paragraphs.Count): $(($p749Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / '))"
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
                 finally {
                     # P7-43: this block's own leftover goes to its own list and is reported here, not in the run-wide report.
