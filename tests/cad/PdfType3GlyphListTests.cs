@@ -721,6 +721,19 @@ internal static class PdfType3GlyphListTests
             var drifted = cadCommand.Replace("new PdfReadOptions(MaxBytes: MaxInputBytes)", "new PdfReadOptions(MaxBytes: MaxInputBytes, MaxWarnings: 5)", StringComparison.Ordinal);
             C(cadCommand.Length > 0 && CodeProblems(drifted, cadCommandPins, cadCommandAnchors) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
                 "p6-37 cli options self-test: an extra PdfReadOptions argument in CadCommand.cs is caught by name", CodeProblems(drifted, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            // P6-47 self-tests: the pins match stripped code with all whitespace removed (as the DXF reader-option pin in
+            // tests/cad/MinsertEzdxfTests.cs does), so the PDF read reformatted over several lines passes, and the same
+            // reformatted read with an extra PdfReadOptions argument is still caught by name.
+            const string pdfRead = "pdf = PdfReader.Parse(bytes, sourceFile, new PdfReadOptions(MaxBytes: MaxInputBytes));";
+            const string pdfReadSplit = "pdf = PdfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new PdfReadOptions( MaxBytes: MaxInputBytes ));";
+            var reformatted = cadCommand.Replace(pdfRead, pdfReadSplit, StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && reformatted != cadCommand && CodeProblems(reformatted, cadCommandPins, cadCommandAnchors) is null,
+                "p6-47 cli options self-test: the PDF read reformatted over several lines in CadCommand.cs does not fail the pin (whitespace-free match)",
+                reformatted == cadCommand ? "self-test anchor not found" : CodeProblems(reformatted, cadCommandPins, cadCommandAnchors) ?? "tolerated");
+            var reformattedDrift = cadCommand.Replace(pdfRead, pdfReadSplit.Replace("MaxBytes: MaxInputBytes )", "MaxBytes: MaxInputBytes, MaxWarnings: 5 )", StringComparison.Ordinal), StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && reformattedDrift != cadCommand && CodeProblems(reformattedDrift, cadCommandPins, cadCommandAnchors) is { } splitCaught && splitCaught.Contains("'" + pdfRead + "' x0", StringComparison.Ordinal),
+                "p6-47 cli options self-test: an extra PdfReadOptions argument in the reformatted PDF read is caught by name",
+                reformattedDrift == cadCommand ? "self-test anchor not found" : CodeProblems(reformattedDrift, cadCommandPins, cadCommandAnchors) ?? "not caught");
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
             // check names it as missing.

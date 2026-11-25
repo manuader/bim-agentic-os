@@ -483,6 +483,8 @@ internal static class MinsertEzdxfTests
                 ("a /* */ commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " /* " + CliDxfRead + " */", StringComparison.Ordinal), "the DXF read statement"),
                 ("a second DxfReader. call in code", cadCommand.Replace(CliDxfRead, CliDxfRead + " var again = DxfReader.Parse(bytes, sourceFile);", StringComparison.Ordinal), "'DxfReader.' x2"),
                 ("a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
+                // P6-47: the == exclusion of the MaxInputBytes= count does not drop a second assignment.
+                ("(P6-47) a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
             })
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
                     "p6-43 reader options self-test: " + label + " in CadCommand.cs is caught",
@@ -494,6 +496,8 @@ internal static class MinsertEzdxfTests
                 ("a // comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, "// DxfReader.Parse with DxfReadOptions(MaxInputBytes) (pinned by tests/cad)\n            " + CliDxfRead, StringComparison.Ordinal)),
                 ("a /* */ comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, CliDxfRead + " /* not DxfReader.ReadFile, no other DxfReadOptions */", StringComparison.Ordinal)),
                 ("the read statement reformatted over several lines", cadCommand.Replace(CliDxfRead, "if (format == \"dxf\")\n                drawing = DxfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new DxfReadOptions( MaxInputBytes ));", StringComparison.Ordinal)),
+                // P6-47: a comparison reads MaxInputBytes; it neither declares nor assigns it.
+                ("(P6-47) a MaxInputBytes == comparison in code", cadCommand.Replace(CliDxfRead, "var atCap = MaxInputBytes == bytes.Length; " + CliDxfRead, StringComparison.Ordinal)),
             })
                 c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
                     "p6-45 reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
