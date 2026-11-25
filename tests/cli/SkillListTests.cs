@@ -158,8 +158,9 @@ using Bim.Core;
 //      P5-41 (the stated limit lifted): Run's catch wraps IntentPlan.Internal in a try whose fallback reads only types, so
 //      two levels (and three) through either seam exit 1 with exactly the typed skill_list_internal_error line and
 //      nothing escaping Run (also with a rejecting stdout, stderr or both: one attempt per stream); the diagnostic is
-//      "skill-list internal error: <type of the exception that reached Run>: <Message threw <type its getter threw>>"
-//      once. The probe's original exception type cannot be named there: List's catch (not P5-41's to edit) already lost
+//      "skill-list internal error: System.InvalidOperationException: <type of the exception that reached Run> (its Message
+//      getter threw <type>)" once (the fallback goes through IntentPlan.Internal again, so the internal-error fragment
+//      keeps its one copy in IntentPlan.cs). The probe's original exception type cannot be named there: List's catch (not P5-41's to edit) already lost
 //      it, so the diagnostic states the getter types instead (19b). The one-level and readable-message diagnostics are
 //      unchanged (19a). Static (19d): CommandDeltaP541 (Run's catch: the one-line catch becomes the guarded block),
 //      reversed, gives the P5-39 file byte for byte (the P5-39 SHA-256 kept), and sections 13 and 15 read the file with
@@ -2119,7 +2120,7 @@ internal static class SkillListTests
                 ("three levels", typeof(DoubleMessageGetterThrowsException), () => new TripleMessageGetterThrowsException()),
             })
             {
-                var diagnostic = "skill-list internal error: " + reached.FullName + ": <Message threw " + (depth == "two levels" ? "System.InvalidOperationException" : typeof(MessageGetterThrowsException).FullName) + ">";
+                var diagnostic = "skill-list internal error: System.InvalidOperationException: " + reached.FullName + " (its Message getter threw " + (depth == "two levels" ? "System.InvalidOperationException" : typeof(MessageGetterThrowsException).FullName) + ")";
                 foreach (var (label, rejectOut, rejectError) in new (string, bool, bool)[] { ("working streams", false, false), ("a rejecting stdout", true, false), ("a rejecting stderr", false, true), ("both streams rejecting", true, true) })
                 {
                     var outWriter = rejectOut ? new RejectingWriter(new IOException("stdout P5-41")) : null;
@@ -2168,9 +2169,9 @@ internal static class SkillListTests
             "the P5-39 text's Run catch is one unguarded IntentPlan.Internal(\"skill-list\", error) assignment", runBody);
         var currentRun = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(currentSource, blankStrings: false), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
         Check(currentRun == "IntentEnvelopeenvelope;try{envelope=Execute(args);}catch(Exceptionerror){try{envelope=IntentPlan.Internal(\"skill-list\",error);}"
-                + "catch(Exceptionunreadable){envelope=newIntentEnvelope(JsonSerializer.Serialize(new{status=\"failed\",code=\"skill_list_internal_error\"}),1,\"skill-listinternalerror:\"+error.GetType().FullName+\":<Messagethrew\"+unreadable.GetType().FullName+\">\");}}"
+                + "catch(Exceptionunreadable){envelope=IntentPlan.Internal(\"skill-list\",newInvalidOperationException(error.GetType().FullName+\"(itsMessagegetterthrew\"+unreadable.GetType().FullName+\")\"));}}"
                 + "WriteDiagnostic(envelope);try{(envelopewith{Diagnostic=null}).Print();}catch(Exception){Environment.ExitCode=1;}",
-            "P5-41: Run's catch guards IntentPlan.Internal; its fallback builds the same typed line with exit 1 from types only (no Message read)", currentRun);
+            "P5-41: Run's catch guards IntentPlan.Internal; its fallback calls IntentPlan.Internal again over an InvalidOperationException built from types only (no Message read; the internal-error fragment stays only in IntentPlan.cs)", currentRun);
     }
 
     // P5-41 documented delta (new text, P5-39 text), "\n" line endings: Run's catch only.
@@ -2179,10 +2180,11 @@ internal static class SkillListTests
         ("        catch (Exception error)\n"
             + "        {\n"
             + "            // P5-41: an exception whose Message getter throws (what List lets escape when the one it caught had a throwing\n"
-            + "            // getter too) makes IntentPlan.Internal throw here; the fallback reads only types: the same typed line, exit 1,\n"
-            + "            // and a diagnostic naming the exception that reached Run and the type its Message getter threw.\n"
+            + "            // getter too) makes IntentPlan.Internal throw here; the fallback reads only types and reports through\n"
+            + "            // IntentPlan.Internal an InvalidOperationException naming the exception that reached Run and the type its\n"
+            + "            // Message getter threw: the same typed line, exit 1.\n"
             + "            try { envelope = IntentPlan.Internal(\"skill-list\", error); }\n"
-            + "            catch (Exception unreadable) { envelope = new IntentEnvelope(JsonSerializer.Serialize(new { status = \"failed\", code = \"skill_list_internal_error\" }), 1, \"skill-list internal error: \" + error.GetType().FullName + \": <Message threw \" + unreadable.GetType().FullName + \">\"); }\n"
+            + "            catch (Exception unreadable) { envelope = IntentPlan.Internal(\"skill-list\", new InvalidOperationException(error.GetType().FullName + \" (its Message getter threw \" + unreadable.GetType().FullName + \")\")); }\n"
             + "        }\n",
             "        catch (Exception error) { envelope = IntentPlan.Internal(\"skill-list\", error); }\n"),
     };
