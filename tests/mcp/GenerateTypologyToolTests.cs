@@ -489,6 +489,11 @@ internal static class GenerateTypologyToolTests
     // before-any-byte case closes stdout before the request is written (the server cannot have written first); every kill
     // in this file, the CLI helper's included, contains InvalidOperationException and Win32Exception (pinned); the macOS
     // step uploads its output and posts a notice and builds interfaces/mcp and tests/mcp once each (checked here).
+    // P3-42. The 1 MiB count must be above 0 on Linux and macOS (a blocking write there moves what fits into the pipe
+    // first); only Windows accepts 0 (a write larger than the anonymous pipe's free buffer stays pending whole). Every OS
+    // posts its measured capacity as an Actions notice (Linux and Windows through tests/mcp, macOS through section 9). The
+    // two capacity runs share an explicit CapacityMs budget besides the cases' TotalMs. The contract records the Windows
+    // figures and the P3-40 runs; the macOS step's notice grep is guarded so pipefail cannot fail it when nothing matches.
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -769,8 +774,16 @@ internal static class GenerateTypologyToolTests
             // PipeBufferBound and the success cut leaves more than that unread.
             const int SettleMs = 1500;
             const int FillMs = 30000;
-            (long Bytes, bool Settled, string Log) Capacity(int chunk)
+            // P3-42: both capacity runs (fill, kill, count) share CapacityMs, outside the 17 cases' TotalMs: each run fills
+            // for at most FillMs and every wait stops at the shared deadline, so section 9's process time stays within
+            // TotalMs + CapacityMs.
+            const int CapacityMs = 90000;
+            var capacityClock = Stopwatch.StartNew();
+            int CapacityLeft(int cap) => (int)Math.Max(0, Math.Min(cap, CapacityMs - capacityClock.ElapsedMilliseconds));
+            (long Bytes, bool Settled, string Log, long Ms) Capacity(int chunk)
             {
+                var began = capacityClock.ElapsedMilliseconds;
+                if (CapacityLeft(FillMs) <= 0) return (-1, false, "not run: the capacity budget is spent", 0);
                 var fillLog = Path.Combine(scratch, "fill-" + chunk.ToString(CultureInfo.InvariantCulture) + ".log");
                 var start = new ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
                 start.ArgumentList.Add(mcpDll);
@@ -786,7 +799,7 @@ internal static class GenerateTypologyToolTests
                 var still = Stopwatch.StartNew();
                 long seen = -1;
                 var settled = false;
-                while (watch.ElapsedMilliseconds < FillMs && !process.HasExited)
+                while (watch.ElapsedMilliseconds < FillMs && CapacityLeft(FillMs) > 0 && !process.HasExited)
                 {
                     var length = File.Exists(fillLog) ? new FileInfo(fillLog).Length : -1;
                     if (length != seen) { seen = length; still.Restart(); }
@@ -796,7 +809,7 @@ internal static class GenerateTypologyToolTests
                 var blocked = settled && !process.HasExited;
                 try { process.Kill(true); }
                 catch (Exception error) when (error is InvalidOperationException or System.ComponentModel.Win32Exception) { }
-                process.WaitForExit(PerCaseMs);
+                process.WaitForExit(Math.Max(1, CapacityLeft(PerCaseMs)));
                 var raw = process.StandardOutput.BaseStream;
                 var count = Task.Run(() =>
                 {
@@ -806,18 +819,32 @@ internal static class GenerateTypologyToolTests
                     while ((n = raw.Read(buffer, 0, buffer.Length)) > 0) total += n;
                     return total;
                 });
-                var counted = count.Wait(PerCaseMs);
+                var counted = count.Wait(Math.Max(1, CapacityLeft(PerCaseMs)));
                 var lines = File.Exists(fillLog) ? File.ReadAllLines(fillLog) : Array.Empty<string>();
-                return (counted ? count.Result : -1, blocked && counted, lines.Length.ToString(CultureInfo.InvariantCulture) + " log lines, last " + (lines.LastOrDefault() ?? "<none>"));
+                return (counted ? count.Result : -1, blocked && counted, lines.Length.ToString(CultureInfo.InvariantCulture) + " log lines, last " + (lines.LastOrDefault() ?? "<none>"),
+                    capacityClock.ElapsedMilliseconds - began);
             }
             var small = Capacity(1024);
             var large = Capacity(1 << 20);
+            var capacityElapsed = capacityClock.ElapsedMilliseconds;
             var measured = Math.Max(small.Bytes, large.Bytes);
-            Check(small.Settled && large.Settled && small.Bytes > 0 && large.Bytes >= 0 && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
-                "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + small.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 KiB writes and "
-                + large.Bytes.ToString(CultureInfo.InvariantCulture) + " bytes in 1 MiB writes before the writer blocked, at most PipeBufferBound " + PipeBufferBound.ToString(CultureInfo.InvariantCulture)
-                + ", and the success cut leaves " + (Length("success") - CutBytes).ToString(CultureInfo.InvariantCulture) + " bytes unread | settled " + small.Settled + "/" + large.Settled
-                + " logs [" + small.Log + "] [" + large.Log + "]");
+            static string N(long value) => value.ToString(CultureInfo.InvariantCulture);
+            // P3-42: the measured figures as an Actions notice on every OS (tests/mcp's output reaches the Linux and
+            // Windows logs; the macOS step tees it), so the Linux capacity is visible without the log.
+            Console.WriteLine("::notice title=mcp-pipe-capacity-" + os + "::P3-42 measured pipe capacity on " + os + ": " + N(small.Bytes) + " bytes in 1 KiB writes, "
+                + N(large.Bytes) + " bytes in 1 MiB writes; capacity runs " + N(small.Ms) + " + " + N(large.Ms) + " ms of the " + N(CapacityMs) + " ms budget");
+            // P3-42: a 1 MiB write moves what fits into the pipe before it blocks on Linux and macOS, so 0 there is a
+            // failure; Windows keeps a write larger than the anonymous pipe's free buffer pending whole (P3-40 measured 0).
+            var largeFloor = OperatingSystem.IsWindows() ? large.Bytes >= 0 : large.Bytes > 0;
+            Check(small.Settled && large.Settled && small.Bytes > 0 && largeFloor && measured <= PipeBufferBound && Length("success") - CutBytes > measured,
+                "P3-40 measured pipe capacity on " + os + ": an unread stdout pipe took " + N(small.Bytes) + " bytes in 1 KiB writes and "
+                + N(large.Bytes) + " bytes in 1 MiB writes before the writer blocked, at most PipeBufferBound " + N(PipeBufferBound)
+                + ", and the success cut leaves " + N(Length("success") - CutBytes) + " bytes unread; P3-42 the 1 MiB count is "
+                + (OperatingSystem.IsWindows() ? ">= 0 on Windows (a write larger than the anonymous pipe's free buffer stays pending whole, so 0 is valid)" : "> 0 on " + os + " (a blocking write moves what fits into the pipe first)")
+                + " | settled " + small.Settled + "/" + large.Settled + " logs [" + small.Log + "] [" + large.Log + "]");
+            Check(capacityElapsed <= CapacityMs && small.Ms <= CapacityMs && large.Ms <= CapacityMs && 2 * FillMs <= CapacityMs,
+                "P3-42 the two capacity runs count toward an explicit " + N(CapacityMs / 1000) + " s budget besides the cases' " + N(TotalMs / 1000) + " s (each fill at most "
+                + N(FillMs / 1000) + " s, every wait stopped at the budget) | " + N(small.Ms) + " + " + N(large.Ms) + " = " + N(capacityElapsed) + " ms on " + os);
 
             // ---- P3-40: every process kill in this file is contained (the CLI helper's as Server's) ----
             // The process may exit, or the kill be denied, between the timeout and the kill: InvalidOperationException or
@@ -863,6 +890,13 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("the `mcp-section-9-macos` artifact", StringComparison.Ordinal)
                 && paragraph.Contains("builds `interfaces/mcp` and `tests/mcp` once each", StringComparison.Ordinal),
                 "P3-40 docs/contracts P3-34 paragraph: measured pipe capacity with sources, close-before-request order, contained kills, macOS artifact and single builds | " + Short(paragraph));
+            // P3-42: the Windows figures and the P3-40 runs, the large-write floor per OS and the capacity budget.
+            Check(paragraph.Contains("Windows' anonymous pipe measured 4096 bytes in 1 KiB writes and 0 in 1 MiB writes (a write larger than the free buffer stays pending whole)", StringComparison.Ordinal)
+                && paragraph.Contains("P3-40 relay278 CI red 45420094697, green 45425212215 and 45434537615", StringComparison.Ordinal)
+                && paragraph.Contains("the 1 MiB count must be above 0 on Linux and macOS", StringComparison.Ordinal)
+                && paragraph.Contains("each OS posts its measured capacity as a notice", StringComparison.Ordinal)
+                && paragraph.Contains("the two capacity runs share a " + N(CapacityMs / 1000) + " s budget besides the cases' " + N(TotalMs / 1000) + " s", StringComparison.Ordinal),
+                "P3-42 docs/contracts P3-34 paragraph: Windows figures (4096 / 0), P3-40 runs, 1 MiB floor on Linux and macOS, capacity notices and budget | " + Short(paragraph));
             var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var macStep = workflow.IndexOf("- name: MCP generate_typology stdio section 9 alone (macOS, P3-38)", StringComparison.Ordinal);
             var macTail = macStep < 0 ? "" : workflow[macStep..];
@@ -873,6 +907,14 @@ internal static class GenerateTypologyToolTests
                 && macTail.Contains("uses: actions/upload-artifact@v4", StringComparison.Ordinal) && macTail.Contains("name: mcp-section-9-macos", StringComparison.Ordinal)
                 && macTail.Contains("if: always() && runner.os == 'macOS' && steps.mcp-section-9.outcome != 'skipped'", StringComparison.Ordinal),
                 "P3-40 .github/workflows/ci.yml macOS section 9: interfaces/mcp and tests/mcp built once each, the summary posted as a notice, the output uploaded as mcp-section-9-macos even on failure | step found " + (macStep >= 0));
+            // P3-42: under `set -o pipefail` a grep that heads a pipeline fails the step when nothing matches; the notice
+            // and summary greps are guarded (`|| true`), and no line of the step starts a pipeline with a bare grep.
+            static int BareGrepPipes(string text) => text.Split('\n').Count(l => l.TrimStart().StartsWith("grep ", StringComparison.Ordinal) && l.Contains(" | ", StringComparison.Ordinal));
+            const string NoticeGrep = "{ grep -E '^PASS .*(measured pipe capacity|closed pipe.s write did not throw)' \"$out\" || true; } | cut -c1-900";
+            Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macTail.Contains(NoticeGrep, StringComparison.Ordinal)
+                && macTail.Contains("grep '^PASS ' \"$out\" || true;", StringComparison.Ordinal) && BareGrepPipes(macTail) == 0
+                && BareGrepPipes("          grep -E 'x' \"$out\" | cut -c1-9") == 1 && BareGrepPipes("          " + NoticeGrep + " | sed 's/^//'") == 0,
+                "P3-42 .github/workflows/ci.yml macOS section 9: the notice and summary greps cannot fail the step under pipefail when nothing matches (guarded, no bare grep pipeline; 2 self-tests) | bare grep pipelines " + N(BareGrepPipes(macTail)));
         }
         finally
         {
