@@ -464,3 +464,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay285 (2026-11-25, cloud)
 - No new required action. `git pull` (main 29515018, CI green). Test/CI-only changes (P3-43, P4-38, P6-46); CI now also runs the ezdxf 1.4.2 cross-check of the CAD test constants on every push. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
+
+## Relay286 (2026-11-25, cloud)
+- No new required action. `git pull` (main 9caa236d, CI 45590940815 green 9/9). Test/CI/docs-only changes (P3-44, P10-47, P7-47). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3.
