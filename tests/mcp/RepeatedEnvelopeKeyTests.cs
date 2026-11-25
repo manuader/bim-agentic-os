@@ -982,9 +982,9 @@ internal static class RepeatedEnvelopeKeyTests
                 foreach (var argument in arguments) start.ArgumentList.Add(argument);
                 using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnetHost);
                 var input = process.StandardInput;
+                var reading = process.StandardOutput.ReadToEndAsync();
                 if (releaseStdinMs <= 0) input.Close();
                 else _ = Task.Run(async () => { await Task.Delay(releaseStdinMs); try { input.Close(); } catch (Exception) { } });
-                var reading = Task.FromResult(process.StandardOutput.ReadToEnd());
                 if (!process.WaitForExit(timeoutMs))
                 {
                     try { process.Kill(true); } catch (InvalidOperationException) { }
@@ -1011,6 +1011,7 @@ internal static class RepeatedEnvelopeKeyTests
                 var launchesBefore = launches;
                 var exists = File.Exists(dll);
                 sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
+                if (!exists) return (failing, measured, 0);
                 var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(cliWork);
                 try
@@ -1040,7 +1041,7 @@ internal static class RepeatedEnvelopeKeyTests
                             isError = result?["isError"]?.GetValue<bool>();
                         }
                         catch (Exception error) when (error is JsonException or InvalidOperationException) { }
-                        var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal);
+                        var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal) && made == 0;
                         measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?")
                             + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture));
                         if (!ok) failing.Add(label);
