@@ -42,6 +42,8 @@
 # removed from a copy by its AST extent; -Into is checked for any user (stand-in remover) and the P7-43 block reports its own leftover.
 # P7-45: Remove-Item $work counts only as a direct statement of the report's finally (scriptblock/if mutants, a report planted in
 # another top-level try); the stand-in remover counts its calls; -Silent without -Into leaves the run-wide list untouched.
+# P7-47: [void](Remove-Item $work) and $null = Remove-Item $work are direct statements too; $work counts only as Remove-Item's
+# -LiteralPath/-Path argument (a -Filter mutant reads work 0); the stand-in checks it got -LiteralPath with the probe path.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1124,7 +1126,10 @@ try {
     # definitions or calls of the old Remove-P733Directory. P7-43: returns an object (counts as properties, Summary = the
     # P7-41 text, Error = the first parse error or $null); work = the outer calls in a finally that also runs Remove-Item
     # on $work, and WorkReports = those CommandAsts (their Extent locates the call in the text). P7-45: that Remove-Item
-    # must be a direct statement of the same finally (nested in a scriptblock or if it does not count).
+    # must be a direct statement of the same finally (nested in a scriptblock or if it does not count). P7-47: a direct
+    # statement is a one-command pipeline `Remove-Item ...`, its void cast `[void](Remove-Item ...)` or `$null = Remove-Item
+    # ...` (any other wrapper, or a longer pipeline, does not count), and $work must be bound (static parameter binder) to
+    # Remove-Item's -LiteralPath or -Path: named, abbreviated, alias or positional; $work given to -Filter etc. does not count.
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -1140,6 +1145,31 @@ try {
         }
         $isCommand = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.CommandAst] -and $Node.GetCommandName() -eq $Name }
         $isVariable = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.VariableExpressionAst] -and $Node.VariablePath.UserPath -eq $Name }
+        # P7-47: the one CommandAst a direct statement runs ($null when it is not one of the three direct forms).
+        $directCommand = {
+            param($Statement)
+            $pipeline = $Statement
+            if ($Statement -is [Management.Automation.Language.AssignmentStatementAst]) {
+                if (!(& $isVariable $Statement.Left 'null') -or $Statement.Operator -ne [Management.Automation.Language.TokenKind]::Equals) { return $null }
+                $pipeline = $Statement.Right
+            }
+            if ($pipeline -isnot [Management.Automation.Language.PipelineAst] -or $pipeline.PipelineElements.Count -ne 1) { return $null }
+            $element = $pipeline.PipelineElements[0]
+            if ($element -is [Management.Automation.Language.CommandAst]) { return $element }
+            if ($Statement -is [Management.Automation.Language.AssignmentStatementAst] -or $element -isnot [Management.Automation.Language.CommandExpressionAst] -or $element.Redirections.Count) { return $null }
+            $cast = $element.Expression
+            if ($cast -isnot [Management.Automation.Language.ConvertExpressionAst] -or $cast.Type.TypeName.FullName -ne 'void' -or $cast.Child -isnot [Management.Automation.Language.ParenExpressionAst]) { return $null }
+            $inner = $cast.Child.Pipeline
+            if ($inner -is [Management.Automation.Language.PipelineAst] -and $inner.PipelineElements.Count -eq 1 -and $inner.PipelineElements[0] -is [Management.Automation.Language.CommandAst]) { return $inner.PipelineElements[0] }
+            return $null
+        }
+        $removesWork = {
+            param($Command)
+            if ($null -eq $Command -or !(& $isCommand $Command 'Remove-Item')) { return $false }
+            $bound = [Management.Automation.Language.StaticParameterBinder]::BindCommand($Command, $true).BoundParameters
+            foreach ($name in @('LiteralPath', 'Path')) { if ($bound.ContainsKey($name) -and (& $isVariable $bound[$name].Value 'work')) { return $true } }
+            return $false
+        }
         $outer = 0; $workReports = [Collections.Generic.List[object]]::new()
         $top = if ($ast.EndBlock) { @($ast.EndBlock.Statements) } else { @() }
         foreach ($try in @($top | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })) {
@@ -1147,7 +1177,7 @@ try {
             $outer += $reports.Count
             # P7-45: Remove-Item $work must be a direct statement of this finally (one-command pipeline), not nested in a
             # scriptblock, if or other block.
-            $cleansWork = @($try.Finally.Statements | Where-Object { $_ -is [Management.Automation.Language.PipelineAst] -and $_.PipelineElements.Count -eq 1 -and (& $isCommand $_.PipelineElements[0] 'Remove-Item') -and @($_.PipelineElements[0].CommandElements | Where-Object { & $isVariable $_ 'work' }).Count -gt 0 }).Count -gt 0
+            $cleansWork = @($try.Finally.Statements | Where-Object { & $removesWork (& $directCommand $_) }).Count -gt 0
             if ($cleansWork) { foreach ($report in $reports) { $workReports.Add($report) } }
         }
         $loops = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'tool' -and @($n.Condition.FindAll({ param($c) & $isVariable $c 'p737Ranked' }, $true)).Count -gt 0 }, $true))
@@ -1858,7 +1888,16 @@ try {
                         # Remove-Item $work counts only as a direct statement of the report's finally (not nested in a block).
                         @{ Name = 'report planted in a top-level try that does not remove $work'; Pairs = @(, @('param([string]$Dotnet)', "param([string]`$Dotnet)`ntry { `$y = 2 } finally { Write-PackageCleanupWarnings }")); Want = 'header P7-39,P7-41 outer 2 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
                         @{ Name = '$work removal nested in a scriptblock'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    & { Remove-Item -LiteralPath $work }')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
-                        @{ Name = '$work removal nested in an if'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    if ($true) { Remove-Item -LiteralPath $work }')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
+                        @{ Name = '$work removal nested in an if'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    if ($true) { Remove-Item -LiteralPath $work }')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        # P7-47: a void cast or a $null assignment of the $work removal is still a direct statement; Remove-Item
+                        # counts only when $work is its -LiteralPath/-Path (named, abbreviated, alias or positional) argument.
+                        @{ Name = 'void cast of the $work removal'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    [void](Remove-Item -LiteralPath $work)')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$null = the $work removal'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    $null = Remove-Item -LiteralPath $work')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work as the positional path'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    Remove-Item $work -Recurse')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work as -Path:'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    Remove-Item -Force -Path:$work')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work passed to -Filter'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    Remove-Item -Filter $work -LiteralPath $other')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work passed to -Exclude in a void cast'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    [void](Remove-Item -LiteralPath $other -Exclude $work)')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$null = $work removal piped on'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    $null = Remove-Item -LiteralPath $work | Out-Null')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
                     foreach ($mutant in $p741Mutants) {
                         $text = $p741Text
                         foreach ($pair in $mutant.Pairs) {
@@ -1871,7 +1910,7 @@ try {
                     }
                     $p741Own = [IO.File]::ReadAllText($PSCommandPath)
                     $p741OwnPin = Get-P741CleanupPin $p741Own
-                    Assert ($p741OwnPin.Header -cmatch '^P7-39,P7-41(,|$)' -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists P7-39 and P7-41 and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    Assert ($p741OwnPin.Header -ceq 'P7-39,P7-41,P7-43' -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly P7-39,P7-41,P7-43 (the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
                     # P7-43: the call is located by its CommandAst extent (not its exact text), so reformatting it does not
                     # break the mutation.
                     if (@($p741OwnPin.WorkReports).Count -ne 1) { $failures.Add("P7-41 self-test: the outer finally report CommandAst could not be found to remove from a copy: $($p741OwnPin.Summary)") }
@@ -1915,17 +1954,22 @@ try {
                     # P7-45: the stand-in counts its calls (one per Remove-PackageCaseDirectory call), so a check that passed
                     # because the real Remove-Item ran (or none ran) is caught.
                     $p745Calls = [Collections.Generic.List[string]]::new()
+                    # P7-47: the stand-in also records what it was bound to; each call must pass -LiteralPath (never -Path or
+                    # a positional path) with the probe path.
+                    $p747Received = [Collections.Generic.List[string]]::new()
                     $p743Into = [Collections.Generic.List[string]]::new(); $p743Before = $packageCleanupWarnings.Count
-                    $p743Warning = & { function Remove-Item { $p745Calls.Add('P7-43 -Into') }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
+                    $p743Warning = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-43 -Into'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
                     Assert ($p745Calls.Count -eq 1) "P7-45: the stand-in Remove-Item ran once for the -Into call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Warning -and $p743Into.Count -eq 1 -and $p743Into[0] -ceq $p743Warning -and $p743Warning.StartsWith('P7-43: ') -and $p743Warning.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p743Before) "P7-43: Remove-PackageCaseDirectory -Into collects a leftover (stand-in remover, any user) into the passed list only (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new): $p743Warning"
-                    $p743Silent = & { function Remove-Item { $p745Calls.Add('P7-43 -Into -Silent') }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
+                    $p743Silent = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-43 -Into -Silent'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
                     Assert ($p745Calls.Count -eq 2) "P7-45: the stand-in Remove-Item ran once for the -Into -Silent call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Silent -and $p743Into.Count -eq 1 -and $packageCleanupWarnings.Count -eq $p743Before -and (Test-Path -LiteralPath $p743Probe)) "P7-43: -Silent with -Into returns the warning and collects it nowhere (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new)"
                     # P7-45: -Silent without -Into returns the warning and leaves the default (run-wide) list untouched.
                     $p745Default = @($packageCleanupWarnings)
-                    $p745Silent = & { function Remove-Item { $p745Calls.Add('P7-45 -Silent') }; Remove-PackageCaseDirectory 'P7-45' $p743Probe -Silent }
+                    $p745Silent = & { function Remove-Item { [CmdletBinding()] param([Parameter(Position = 0)]$Path, $LiteralPath, [switch]$Recurse, [switch]$Force) $p745Calls.Add('P7-45 -Silent'); $p747Received.Add("$($PSBoundParameters.ContainsKey('LiteralPath'))|$($PSBoundParameters.ContainsKey('Path'))|$LiteralPath") }; Remove-PackageCaseDirectory 'P7-45' $p743Probe -Silent }
                     Assert ($p745Calls.Count -eq 3 -and $null -ne $p745Silent -and $p745Silent.StartsWith('P7-45: ') -and $p745Silent.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p745Default.Count -and ($packageCleanupWarnings -join "`n") -ceq ($p745Default -join "`n") -and $p743Into.Count -eq 1) "P7-45: -Silent without -Into returns the warning and leaves the default list untouched (stand-in calls $($p745Calls.Count), run-wide $($packageCleanupWarnings.Count - $p745Default.Count) new): $p745Silent"
+                    $p747Want = "True|False|$p743Probe"
+                    Assert ($p747Received.Count -eq 3 -and @($p747Received | Where-Object { $_ -cne $p747Want }).Count -eq 0) "P7-47: the stand-in Remove-Item received -LiteralPath with the probe path on each of its 3 calls (want $p747Want; got $($p747Received -join ' / '))"
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
                 finally {
                     # P7-43: this block's own leftover goes to its own list and is reported here, not in the run-wide report.
