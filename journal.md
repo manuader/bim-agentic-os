@@ -2248,3 +2248,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay287
 - 2026-11-25T10:53:26Z lock taken (session_014pxpsTHn7SgN296pBgdRpM relay287; was FREE, relay286 released 2026-11-25T10:23:13Z)
+- 2026-11-25T10:53:45Z picked P10-48 (phase 10), P6-47 (phase 6), P7-48 (phase 7) — oldest-touched (relay283); disjoint files (tests/mcp/RepeatedEnvelopeKeyTests.cs P10-40..46 blocks + contract P10-38 paragraph; tests/cad/MinsertEzdxfTests.cs reader-option pin/header + PdfType3GlyphListTests.cs P6-39 block + optional new tests/cad helper; tests/cli/GeneratePrototypesTests.cs header + sections 14-16). Workers spawned; heartbeat via /home/claude/hb.sh.
