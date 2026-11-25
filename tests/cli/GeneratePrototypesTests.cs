@@ -3725,8 +3725,12 @@ internal static class GeneratePrototypesTests
         // are followed; a parameter of a type the code does not declare, called, is unresolved naming its type. (n) A local
         // declared after the use does not shadow the field there. (o) Expression-bodied methods' and local functions'
         // parameters are followed like block-bodied ones; a lambda's parameter, called, is unresolved naming that limit.
-        // Each mutant edits the followed code (BoundedInput.cs) or GenerateWrite.cs and names its expected problem.
-        const string StdoutLambda = "status => { Console.WriteLine(); return 0; }";
+        // Each mutant edits the followed code (BoundedInput.cs) or GenerateWrite.cs and names its expected problem. The stdout
+        // lambda sits in a caller Execute does not reach (Noisy, Loud), so only the followed argument reaches it; a local
+        // function's callers share its member, so (o)'s local-function stdout lambda is in Poke and the reason names test.
+        // The lambdas' parameter is sink, a name the followed code does not use: a lambda x => ... directly in a type body is
+        // also a declarator of x, which Stat's local status would reach (labelled status) besides call.
+        const string StdoutLambda = "sink => { Console.WriteLine(); return 0; }";
         const string Poke = "Poke(path); var bytes = ReadBytes(path, MaxBytes, share);";
         const string StatParameter = "Execute reaches call( [the Func<byte[], int> parameter of Stat: ";
         var reachMutants = new (string Label, bool Followed, (string Pattern, string Replacement)[] Edits, string Reason)[]
@@ -3744,18 +3748,18 @@ internal static class GeneratePrototypesTests
             ("(l) a method-group local passed on instead of called", true, new[] {
                 (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; return Relay(f, out mode); } static void RequireUnixRegular(") }, StatParameter + "f (a local holding the method group Stat) used other than called"),
             ("(m) a stdout lambda passed for a Predicate<int> parameter", true, new[] { (ReadBytesCall, Poke),
-                (RequireRegular, "static void Poke(string path) { Probe(value => { Console.WriteLine(path); return true; }); } static void Probe(Predicate<int> test) { test(1); } static void RequireUnixRegular(") },
+                (RequireRegular, "static void Poke(string path) { Probe(sink => true); } static void Loud() { Probe(sink => { Console.WriteLine(); return true; }); } static void Probe(Predicate<int> test) { test(1); } static void RequireUnixRegular(") },
                 Through + "test"),
             ("(m) a stdout lambda passed for a parameter of a delegate type declared in the code", true, new[] { (ReadBytesCall, Poke),
-                (RequireRegular, "delegate bool Probing(int value); static void Poke(string path) { Probe(value => { Console.WriteLine(path); return true; }); } static void Probe(Probing test) { test(1); } static void RequireUnixRegular(") },
+                (RequireRegular, "delegate bool Probing(int value); static void Poke(string path) { Probe(sink => true); } static void Loud() { Probe(sink => { Console.WriteLine(); return true; }); } static void Probe(Probing test) { test(1); } static void RequireUnixRegular(") },
                 Through + "test"),
             ("(m) a called parameter of a delegate type the code does not declare", true, new[] { (ReadBytesCall, Poke),
-                (RequireRegular, "static void Poke(string path) { Probe(value => true); } static void Probe(Notifier test) { test(1); } static void RequireUnixRegular(") },
+                (RequireRegular, "static void Poke(string path) { Probe(sink => true); } static void Probe(Notifier test) { test(1); } static void RequireUnixRegular(") },
                 "Execute reaches test( [a Notifier parameter of Probe: not a Func, Action, Predicate"),
             ("(n) a field used before a local of the same name is declared in the same block", false, new[] { (AfterParsed, Parsed + "Fire();"),
                 (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Fire() { Echo?.Invoke(); Action Echo = () => { }; Echo(); } static void Fail(") }, Through + "Echo"),
             ("(o) a stdout lambda passed for a Func parameter of an expression-bodied method", true, new[] { (ReadBytesCall, Poke),
-                (RequireRegular, "static void Poke(string path) => Probe(() => { Console.WriteLine(path); return 0; }); static int Probe(Func<int> test) => test(); static void RequireUnixRegular(") },
+                (RequireRegular, "static void Poke(string path) => Probe(() => 0); static void Loud() { Probe(() => { Console.WriteLine(); return 0; }); } static int Probe(Func<int> test) => test(); static void RequireUnixRegular(") },
                 Through + "test"),
             ("(o) a stdout lambda passed for a Func parameter of an expression-bodied local function", true, new[] { (ReadBytesCall, Poke),
                 (RequireRegular, "static void Poke(string path) { int Probe(Func<int> test) => test(); Probe(() => { Console.WriteLine(path); return 0; }); } static void RequireUnixRegular(") },
