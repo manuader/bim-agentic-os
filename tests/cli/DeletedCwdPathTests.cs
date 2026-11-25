@@ -880,9 +880,12 @@ internal static class DeletedCwdPathTests
         @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    // P10-47: the parameter list may hold balanced parentheses (a default containing calls); stated limit: a parenthesis
-    // inside a string or char default is counted.
-    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\((?>[^()]|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-47: the parameter list may hold balanced parentheses (a default containing calls). P10-49: parentheses inside
+    // string (raw, verbatim, regular) and char defaults are skipped; stated limit: an interpolated string default
+    // ($"...") is read as a regular string, so a quote inside one of its holes ends it early.
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(
+        @"\bPathProblem\s*\((?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? FilterProblem41(string source)
     {
@@ -942,7 +945,40 @@ internal static class DeletedCwdPathTests
                 "P10-43 static pin reformat self-test: the reader refuses a filter that tests another variable", "");
             ScopingSelfTest45(skillLock, Check);
             ScopingSelfTest47(skillLock, Check);
+            ScopingSelfTest49(skillLock, Check);
         }
+    }
+
+    // P10-49 self-tests: an interpolation hole's format clause ({x:...}, after a ':' outside parentheses, brackets and
+    // braces) is text to the hole's closing brace, so '//', '/*' and a lone quote there are not code; a ':' inside
+    // parentheses (a conditional) stays code. A $$ raw hole closed by fewer braces than dollars is reported unclosed.
+    // The declaration reader skips parentheses inside string (regular, verbatim, raw) and char parameter defaults.
+    static void ScopingSelfTest49(string skillLock, Action<bool, string, string> Check)
+    {
+        const string Declaration = "public static string? PathProblem(string? path, string name)";
+        string Label(string what) => "P10-49 static pin scanner self-test: " + what;
+        var q3 = "\"\"\"";
+        var blocks = new (string Name, string Text)[]
+        {
+            ("format clause holding //", "{ a = $\"{x://}\"; }"),
+            ("format clause holding a quote char", "{ a = $\"{x:'}\"; }"),
+            ("verbatim format clause holding /*", "{ a = $@\"{x:/*}\"; }"),
+            ("alignment and format clause", "{ a = $\"{x,-5:'}\"; }"),
+            ("$$ raw format clause holding a quote char", "{ a = $$" + q3 + "{{x:'}}" + q3 + "; }"),
+            ("parenthesised conditional in a hole", "{ a = $\"{(b ? '}' : c)}\"; }"),
+            ("conditional inside a call in a hole", "{ a = $\"{F(b ? \"}\" : c)}\"; }"),
+        };
+        var wrong = blocks.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 skips an interpolation hole's format clause as text"), string.Join(" | ", wrong));
+        Check(BlockEnd45("{ a = $$" + q3 + "{{x} }" + q3 + "; }", 0) == -1 && BlockEnd45("{ a = $$" + q3 + "{{x:F} }" + q3 + "; }", 0) == -1,
+            Label("BlockEnd45 reports a $$ raw hole closed by one brace as unclosed"), "");
+        var declaration = "PathProblem(string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\\\")\", string e = " + q3 + " ) \" " + q3 + ") {";
+        Check(Declaration45.IsMatch(declaration) && !Declaration45.IsMatch("PathProblem(string a = \"(\" {"),
+            Label("Declaration45 skips parentheses inside string and char parameter defaults"), declaration);
+        var defaults = skillLock.Replace(Declaration, "public static string? PathProblem(string? path, string name = \")\")", StringComparison.Ordinal);
+        Check(defaults != skillLock && FilterProblem41(defaults) is null,
+            Label("the reader accepts a PathProblem declaration whose string default holds a parenthesis"), FilterProblem41(defaults) ?? (defaults == skillLock ? "not planted" : ""));
     }
 
     // P10-45: the "inside PathProblem" check is brace scoping, not indentation. Mutants of the SkillLockTool source:
@@ -973,14 +1009,17 @@ internal static class DeletedCwdPathTests
     // // and /* */ comments, string literals (regular, $, @ and $@/@$ verbatim, "" escapes) and char literals are skipped.
     // P10-47: also C# 11 raw literals (three or more quotes, closed by the same count; $-prefixed raw literals whose holes
     // open with as many braces as dollars) and everything inside interpolation holes, which are scanned as code to their
-    // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). Stated limit: a
-    // hole's format clause ({x:...}) is scanned as code.
+    // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). P10-49: a hole's
+    // format clause ({x:...}) is text to the hole's closing brace, and a $$ raw hole must close with as many braces as dollars.
     static int BlockEnd45(string source, int open) => open >= 0 && open < source.Length && source[open] == '{' ? CodeEnd47(source, open + 1) : -1;
 
-    // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1.
-    static int CodeEnd47(string source, int start)
+    // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1. P10-49: in an
+    // interpolation hole a ':' outside parentheses, brackets and braces opens the format clause, which is text to the first
+    // '}' (C# reads a top-level ':' in a hole as the format clause; a conditional there must be parenthesised).
+    static int CodeEnd47(string source, int start, bool hole = false)
     {
         var depth = 0;
+        var parens = 0;
         for (var i = start; i < source.Length; i++)
         {
             var c = source[i];
@@ -1012,6 +1051,9 @@ internal static class DeletedCwdPathTests
                 if (end < 0) return -1;
                 i = end;
             }
+            else if (c == '(' || c == '[') parens++;
+            else if ((c == ')' || c == ']') && parens > 0) parens--;
+            else if (hole && c == ':' && depth == 0 && parens == 0) return source.IndexOf('}', i + 1);
             else if (c == '{') depth++;
             else if (c == '}' && depth-- == 0) return i;
         }
@@ -1037,8 +1079,8 @@ internal static class DeletedCwdPathTests
                 {
                     var run = Run(i, '{');
                     if (run < dollars) { i += run - 1; continue; }
-                    var close = CodeEnd47(source, i + run);
-                    if (close < 0) return -1;
+                    var close = CodeEnd47(source, i + run, hole: true);
+                    if (close < 0 || Run(close, '}') < dollars) return -1;
                     i = close + dollars - 1;
                 }
             }
@@ -1056,7 +1098,7 @@ internal static class DeletedCwdPathTests
             if (dollars > 0 && c == '{')
             {
                 if (i + 1 < source.Length && source[i + 1] == '{') { i++; continue; }
-                var close = CodeEnd47(source, i + 1);
+                var close = CodeEnd47(source, i + 1, hole: true);
                 if (close < 0) return -1;
                 i = close;
             }
@@ -1131,7 +1173,9 @@ internal static class DeletedCwdPathTests
         string source;
         try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
-        Check(RestoreWiringProblem47(source) is null, Label("LockVerbsUnsearchable41 aggregates the reference and the locked call's restore problems into the restore check"), RestoreWiringProblem47(source) ?? "");
+        Check(RestoreWiringProblem47(source) is null,
+            Label("LockVerbsUnsearchable41 aggregates the reference and the locked call's restore problems into the restore check (pinned by the variable names reference, result and restoreProblem: a rename fails this pin)"),
+            RestoreWiringProblem47(source) ?? "");
         const string Wired = "RestoreProblems45((\"reference\", reference.Restore), (\"locked\", result.Restore))";
         var mutants = new (string Name, string Text)[]
         {
@@ -1172,7 +1216,18 @@ internal static class DeletedCwdPathTests
         Check(p47.Contains("C# 11 raw", StringComparison.Ordinal) && p47.Contains("interpolation holes", StringComparison.Ordinal) && p47.Contains("parameter default", StringComparison.Ordinal)
             && p47.Contains("only the locked call", StringComparison.Ordinal) && p47.Contains("green 45524195217", StringComparison.Ordinal),
             "P10-47 contract: the P10-47 paragraph states raw literals, interpolation holes, parameter defaults with calls and the restore wiring pin", section.Length == 0 ? "section not found" : p47.Length == 0 ? "P10-47 paragraph not found" : p47);
-        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47)", StringComparison.Ordinal), "P10-47 contract: the section heading lists P10-47", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
+        // P10-49: the P10-45 paragraph points to the P10-47 raw-literal support, the P10-47 paragraph cites its green run, and
+        // the P10-49 paragraph states the format clause, string defaults and the $$ closing run.
+        Check(p45.Contains("P10-47 adds raw-literal support", StringComparison.Ordinal),
+            "P10-49 contract: the P10-45 paragraph cross-references the P10-47 raw-literal support", section.Length == 0 ? "section not found" : p45.Length == 0 ? "P10-45 paragraph not found" : p45);
+        Check(p47.Contains("green 45585771329", StringComparison.Ordinal),
+            "P10-49 contract: the P10-47 paragraph cites green 45585771329", section.Length == 0 ? "section not found" : p47.Length == 0 ? "P10-47 paragraph not found" : p47);
+        var p49 = Paragraph("P10-49 (test tidy");
+        Check(p49.Contains("format clause", StringComparison.Ordinal) && p49.Contains("string or char default", StringComparison.Ordinal) && p49.Contains("closing brace run", StringComparison.Ordinal)
+            && p49.Contains("variable names", StringComparison.Ordinal) && p49.Contains("green 45585771329", StringComparison.Ordinal),
+            "P10-49 contract: the P10-49 paragraph states format clauses, string or char defaults, the $$ closing brace run and the wiring pin's variable names",
+            section.Length == 0 ? "section not found" : p49.Length == 0 ? "P10-49 paragraph not found" : p49);
+        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47, P10-49)", StringComparison.Ordinal), "P10-49 contract: the section heading lists P10-47 and P10-49", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
