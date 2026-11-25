@@ -2239,3 +2239,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay286
 - 2026-11-25T08:52:55Z lock taken (session_014pxpsSRbt8RYvz8ZKcf2K6 relay286; was FREE, relay285 released 2026-11-25T08:19:13Z)
+- 2026-11-25T08:53:13Z picked P3-44 (phase 3), P10-47 (phase 10), P7-47 (phase 7) — oldest-touched (relay282); disjoint files (tests/mcp/GenerateTypologyToolTests.cs s9 + ci.yml P3-38 macOS step + contract P3-34 paragraph; tests/cli/DeletedCwdPathTests.cs P10_41 section + contract P10-35..45 section; tests/packaging/test-package.ps1 header/P7-39/41/43 blocks + cleanup helpers). Workers spawned; heartbeat via /home/claude/hb.sh.
