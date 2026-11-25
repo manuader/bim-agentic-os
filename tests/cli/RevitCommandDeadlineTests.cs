@@ -1472,9 +1472,10 @@ internal static class RevitCommandDeadlineTests
 
         // P1-47: raw text skips a signature occurrence any character of which lies in a comment or a literal, not only its
         // first: in `Pick(@"x")` the '@' opens a verbatim literal, while `Pick(@string s)` is a verbatim identifier (code).
+        // The body runs from the signature on, so the modifiers before it are not part of it.
         const string PickMember = "static string Pick(@string s) { return s + \"}\"; }";
         var pickSource = "class T\n{\n    static string A() { return Pick(@\"x\"); }\n    " + PickMember + "\n    static string B() { return \"\"; }\n}\n";
-        check(MemberBody(pickSource, "Pick(@", true) == PickMember,
+        check(MemberBody(pickSource, "Pick(@", true) == PickMember["static string ".Length..],
             "P1-47 MemberBody self-test: raw text skips a signature whose later character lies in a literal ('@' of @\"x\") and reads the member",
             MemberBody(pickSource, "Pick(@", true) ?? "null");
         var tailInComment = "class T\n{\n    static void G() /* note */ { }\n}\n";
