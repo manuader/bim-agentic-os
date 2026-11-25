@@ -697,7 +697,7 @@ internal static class RepeatedEnvelopeKeyTests
                 + string.Join(" ", new[] { text, repeated, switchAt }.Select(i => i.ToString(CultureInfo.InvariantCulture))));
         }
 
-        RunP10_40(check);
+        RunP10_40(root, check);
     }
 
     // P10-42: the server identity the initialize bytes carry. One source (McpServer.ServerName/ServerVersion), pinned to
@@ -744,7 +744,7 @@ internal static class RepeatedEnvelopeKeyTests
     //      when a nested repeat is also present. A refusal here would reject requests whose meaning to this server is
     //      unambiguous. A notification's nested repeat gets no response.
     //   3. No case reaches the Revit transport.
-    static void RunP10_40(Action<bool, string> check)
+    static void RunP10_40(string root, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P10-40 nested repeated params members: " + name);
         // P10-42: the one source of the initialize bytes' server identity.
@@ -961,58 +961,138 @@ internal static class RepeatedEnvelopeKeyTests
             // generic catch) compared with the real Release CLI on the same project text in files: the MCP tool text equals
             // the CLI stdout line and isError equals a non-zero exit. Equal, so the code is shared CLI parity (a P10-43-class
             // runtime message as code on both surfaces), recorded in the contract, not changed here.
-            var dir = new DirectoryInfo(AppContext.BaseDirectory);
-            while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "global.json"))) dir = dir.Parent;
-            var cliDll = dir is null ? null : Path.Combine(dir.FullName, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
-            Check(cliDll is not null && File.Exists(cliDll), "CLI parity precondition: the Release Bim.Cli.dll exists | " + (cliDll ?? "repository root with global.json not found"));
-            var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(cliWork);
-            try
+            // P10-48: L4 (revit_query_elements) is compared too, with the CLI revit-command path on the same command envelope
+            // in a file (MCP text == CLI stdout, isError == non-zero exit, envelope_invalid). The repository root is the one
+            // tests/mcp/Program.cs FindRoot walk, passed in as root (no second walk in this file).
+            var cliDll = Path.Combine(root, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+            var dotnetHost = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } hostPath ? hostPath : "dotnet";
+            var launches = 0;
+            // P10-48: Cli enforces its timeout. stdout is read asynchronously, WaitForExit(timeout) bounds the wait (a child
+            // that keeps stdout open can no longer block a synchronous read), and on timeout the process tree is killed and
+            // waited for before TimeoutException (its message says whether the killed process exited). stdin is redirected
+            // and closed after releaseStdinMs (0: at once; the timeout self-test holds it open so the child never exits).
+            (string Stdout, int Exit) Cli(string dll, int timeoutMs, int releaseStdinMs, params string[] arguments)
             {
-                (string Stdout, int Exit) Cli(params string[] arguments)
+                launches++;
+                var start = new System.Diagnostics.ProcessStartInfo(dotnetHost)
                 {
-                    var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } path ? path : "dotnet";
-                    var start = new System.Diagnostics.ProcessStartInfo(host) { RedirectStandardOutput = true, UseShellExecute = false, StandardOutputEncoding = new System.Text.UTF8Encoding(false) };
-                    start.ArgumentList.Add(cliDll!);
-                    foreach (var argument in arguments) start.ArgumentList.Add(argument);
-                    using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + host);
-                    var stdout = process.StandardOutput.ReadToEnd();
-                    if (!process.WaitForExit(120000)) { process.Kill(true); throw new TimeoutException("CLI timed out: " + string.Join(" ", arguments)); }
-                    return (stdout.TrimEnd('\r', '\n'), process.ExitCode);
-                }
-                string Input(string name, string content) { var path = Path.Combine(cliWork, name); File.WriteAllText(path, content); return path; }
-                var surrogateProject = head + "\"Elements\":[],\"\\ud800\":1}";
-                var surrogateElement = head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}";
-                var parity = new (string Label, string Line, string[] Arguments)[]
-                {
-                    ("L1", Validate("80", surrogateProject), new[] { "validate", Input("l1.json", surrogateProject) }),
-                    ("L2", Validate("81", surrogateElement), new[] { "validate", Input("l2.json", surrogateElement) }),
-                    ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }),
+                    RedirectStandardInput = true, RedirectStandardOutput = true, UseShellExecute = false, StandardOutputEncoding = new System.Text.UTF8Encoding(false),
                 };
-                var parityBad = new List<string>();
-                var parityMeasured = new List<string>();
-                foreach (var (label, line, arguments) in parity)
+                start.ArgumentList.Add(dll);
+                foreach (var argument in arguments) start.ArgumentList.Add(argument);
+                using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + dotnetHost);
+                var input = process.StandardInput;
+                if (releaseStdinMs <= 0) input.Close();
+                else _ = Task.Run(async () => { await Task.Delay(releaseStdinMs); try { input.Close(); } catch (Exception) { } });
+                var reading = Task.FromResult(process.StandardOutput.ReadToEnd());
+                if (!process.WaitForExit(timeoutMs))
                 {
-                    var response = argumentServer.Handle(line) ?? "none";
-                    var (stdout, exit) = Cli(arguments);
-                    string? text = null;
-                    bool? isError = null;
-                    try
-                    {
-                        var result = JsonNode.Parse(response)?["result"];
-                        text = result?["content"]?[0]?["text"]?.GetValue<string>();
-                        isError = result?["isError"]?.GetValue<bool>();
-                    }
-                    catch (Exception error) when (error is JsonException or InvalidOperationException) { }
-                    var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith("{\"status\":\"failed\",\"code\":\"The JSON value could not be converted to Bim.Core.", StringComparison.Ordinal);
-                    parityMeasured.Add((ok ? "ok " : "FAIL ") + label + " mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?") + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture));
-                    if (!ok) parityBad.Add(label);
+                    try { process.Kill(true); } catch (InvalidOperationException) { }
+                    var exited = process.WaitForExit(10000);
+                    throw new TimeoutException("CLI timed out after " + timeoutMs.ToString(CultureInfo.InvariantCulture) + " ms, killed (exited " + exited + "): " + string.Join(" ", arguments));
                 }
-                Check(parityBad.Count == 0,
-                    "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI (MCP text == CLI stdout, isError == non-zero exit; shared P10-43-class runtime-message code) | failing "
-                    + string.Join(", ", parityBad) + " | " + string.Join(" ; ", parityMeasured));
+                process.WaitForExit();
+                return (reading.Result.TrimEnd('\r', '\n'), process.ExitCode);
             }
-            finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            var surrogateProject = head + "\"Elements\":[],\"\\ud800\":1}";
+            var surrogateElement = head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}";
+            const string SurrogateArgs = """{"category":"OST_Walls","\ud800":1}""";
+            var surrogateEnvelope = "{\"protocol_version\":1,\"operation_id\":\"p10-44\",\"document\":{\"path\":" + absent
+                + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"},\"command\":\"query.elements\",\"args\":" + SurrogateArgs + "}";
+            const string ConvertedPrefix = "{\"status\":\"failed\",\"code\":\"The JSON value could not be converted to Bim.Core.";
+            const string EnvelopeInvalidPrefix = "{\"status\":\"failed\",\"code\":\"envelope_invalid\",";
+            // P10-48: one parity run against a given CLI dll. The dll is a named precondition: without it no CLI process is
+            // launched and no parity check is made (one failure). Each case's Handle runs under its own send count (the
+            // counter before and after), so a stray send fails that case alone; every case is listed with its send count.
+            (List<string> Failing, List<string> Measured, int Launches) Parity(string dll, Func<string, string> handle, Action<bool, string> sink)
+            {
+                var failing = new List<string>();
+                var measured = new List<string>();
+                var launchesBefore = launches;
+                var exists = File.Exists(dll);
+                sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
+                var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(cliWork);
+                try
+                {
+                    string Input(string name, string content) { var path = Path.Combine(cliWork, name); File.WriteAllText(path, content); return path; }
+                    var parity = new (string Label, string Line, string[] Arguments, string Prefix)[]
+                    {
+                        ("L1", Validate("80", surrogateProject), new[] { "validate", Input("l1.json", surrogateProject) }, ConvertedPrefix),
+                        ("L2", Validate("81", surrogateElement), new[] { "validate", Input("l2.json", surrogateElement) }, ConvertedPrefix),
+                        ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }, ConvertedPrefix),
+                        ("L4", Revit("83", SurrogateArgs), new[] { "revit-command", Input("l4-envelope.json", surrogateEnvelope), "bim-agentic-os-2025-1" }, EnvelopeInvalidPrefix),
+                    };
+                    foreach (var (label, line, arguments, prefix) in parity)
+                    {
+                        var before = argumentSends;
+                        string response;
+                        try { response = handle(line); }
+                        catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                        var made = argumentSends - before;
+                        var (stdout, exit) = Cli(dll, 120000, 0, arguments);
+                        string? text = null;
+                        bool? isError = null;
+                        try
+                        {
+                            var result = JsonNode.Parse(response)?["result"];
+                            text = result?["content"]?[0]?["text"]?.GetValue<string>();
+                            isError = result?["isError"]?.GetValue<bool>();
+                        }
+                        catch (Exception error) when (error is JsonException or InvalidOperationException) { }
+                        var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal);
+                        measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?")
+                            + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture));
+                        if (!ok) failing.Add(label);
+                    }
+                }
+                finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+                sink(failing.Count == 0,
+                    "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI, and on revit_query_elements (L4) the same envelope_invalid as CLI revit-command on the same envelope (MCP text == CLI stdout, isError == non-zero exit, no transport send per case; shared P10-43-class runtime-message text) | failing "
+                    + string.Join(", ", failing) + " | " + string.Join(" ; ", measured));
+                return (failing, measured, launches - launchesBefore);
+            }
+            string Handled(string line) => argumentServer.Handle(line) ?? "none";
+            Parity(cliDll, Handled, Check);
+
+            // P10-48 self-tests of the parity run and Cli (collected, then one named check listing each):
+            //   a. a missing dll: one sink call (the failed precondition), no CLI launch, no case run;
+            //   b. a send planted in L2's Handle: L2 fails alone, listed with (sends 1), the parity sink fails;
+            //   c. a child that never exits on its own (the Release Bim.Mcp.dll with stdin held open): Cli throws
+            //      TimeoutException near its timeout, well before stdin is released, and the killed process exited.
+            var selfTest = new List<string>();
+            var missingSinks = new List<(bool Ok, string Name)>();
+            var missingLaunchesBefore = launches;
+            var missing = Parity(Path.Combine(root, "p10-48-absent", "Bim.Cli.dll"), Handled, (ok, name) => missingSinks.Add((ok, name)));
+            var missingOk = missingSinks.Count == 1 && !missingSinks[0].Ok && missingSinks[0].Name.StartsWith("CLI parity precondition:", StringComparison.Ordinal)
+                && missing.Launches == 0 && launches == missingLaunchesBefore && missing.Measured.Count == 0;
+            selfTest.Add((missingOk ? "ok" : "FAIL") + " a missing dll (sinks " + string.Join(", ", missingSinks.Select(sink => (sink.Ok ? "pass " : "fail ") + sink.Name[..Math.Min(40, sink.Name.Length)]))
+                + "; launches " + (launches - missingLaunchesBefore).ToString(CultureInfo.InvariantCulture) + "; cases " + missing.Measured.Count.ToString(CultureInfo.InvariantCulture) + ")");
+            var plantedSinks = new List<(bool Ok, string Name)>();
+            var planted = Parity(cliDll, line =>
+            {
+                if (line.Contains("\"id\":81,", StringComparison.Ordinal)) argumentSends++;
+                return Handled(line);
+            }, (ok, name) => plantedSinks.Add((ok, name)));
+            var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
+                && planted.Measured.Count == 4 && planted.Measured[1].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal)
+                && planted.Measured.Where((_, index) => index != 1).All(entry => entry.StartsWith("ok ", StringComparison.Ordinal));
+            selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)])) + ")");
+            var mcpDll = Path.Combine(root, "interfaces", "mcp", "bin", "Release", "net8.0", "Bim.Mcp.dll");
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            string timeout;
+            try { var (stdout, exit) = Cli(mcpDll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
+            catch (TimeoutException error) { timeout = error.Message; }
+            var waited = clock.ElapsedMilliseconds;
+            var timeoutOk = File.Exists(mcpDll) && timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True)", StringComparison.Ordinal) && waited < 20000;
+            selfTest.Add((timeoutOk ? "ok" : "FAIL") + " a child that never exits (" + timeout + "; " + waited.ToString(CultureInfo.InvariantCulture) + " ms)");
+            Check(missingOk && plantedOk && timeoutOk,
+                "P10-48 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case alone; Cli kills a child at its timeout | "
+                + string.Join(" ; ", selfTest));
+            // P10-48: the repository root comes from Program.cs FindRoot (root), not a second walk in this file.
+            var ownSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "RepeatedEnvelopeKeyTests.cs"));
+            Check(!ownSource.Contains("AppContext." + "BaseDirectory", StringComparison.Ordinal),
+                "one repository-root walk: RepeatedEnvelopeKeyTests.cs takes root from tests/mcp/Program.cs FindRoot, no walk of its own");
 
             // P10-46: the RunCases listing (own-counter self-test above) names every case, the passing one too.
             Check(selfMeasured.Count == 2 && selfMeasured[0].StartsWith("FAIL S1 planted send (sends 1) => ", StringComparison.Ordinal)
