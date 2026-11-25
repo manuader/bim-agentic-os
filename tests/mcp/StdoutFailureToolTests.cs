@@ -362,7 +362,7 @@ internal static class StdoutFailureToolTests
             string? failureMessage = failure.Message;
             return "mcp stdout failed: " + failure.GetType().FullName + ": " + (failureMessage?.ReplaceLineEndings(" ") ?? "");
         }
-        foreach (var failure in new Exception[] { new IOException("first P5-41\r\nsecond"), new IOException("a\nb\rc\u0085d e"), new IOException("plain P5-41"), new NullMessageException() })
+        foreach (var failure in new Exception[] { new IOException("first P5-41\r\nsecond"), new IOException("a\nb\rc\u0085d\u2028e"), new IOException("plain P5-41"), new NullMessageException() })
             Check(Line(failure) == LineP539(failure) && Lines(Line(failure)) == 1,
                 "the P5-41 formula prints the P5-39 line byte for byte when Message can be read (" + JsonSerializer.Serialize(LineP539(failure)) + ") | " + JsonSerializer.Serialize(Line(failure)));
         var getter = new MessageGetterThrowsException();
