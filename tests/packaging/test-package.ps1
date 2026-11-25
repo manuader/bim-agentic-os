@@ -2224,21 +2224,29 @@ try {
         # 'cleanup failed: ' follows anything but ': ' (e.g. "the copy cleanup failed: named") is exempt. The declaration may
         # be const or static readonly (either order); a literal assigned to CleanupFailed anywhere else (a mutable field) is
         # refused by name and not scanned further.
+        # P4-39: the type may be string, String or (global::)System.String; the declaration and assignment are found by one
+        # regex pass each over the code with every literal start marked (no look-back window, so any amount of whitespace or
+        # comments may sit before the literal); a mutable CleanupFailed without any declaration is that one message only.
         function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
             $problems = [Collections.Generic.List[string]]::new()
             $scan = Get-P437CsLiterals $CsText
             if ($scan.Error) { $problems.Add($scan.Error); return , $problems }
-            $declared = @($scan.Literals | Where-Object {
-                $from = [Math]::Max(0, $_.Start - 200)
-                $scan.Code.Substring($from, $_.Start - $from) -cmatch '(?<![\w.@])(?:const|static\s+readonly|readonly\s+static)\s+string\s+CleanupFailed\s*=\s*$' -and [regex]::new('\G\s*;').IsMatch($scan.Code, $_.End)
-            })
-            if ($declared.Count -ne 1) { $problems.Add("$($declared.Count) CleanupFailed declarations (want 1)") }
-            elseif ($declared[0].Value -cne $Prefix) { $problems.Add("C# CleanupFailed '$($declared[0].Value)' differs from the ps1 prefix '$Prefix'") }
+            $marked = $scan.Code.ToCharArray()
+            foreach ($literal in $scan.Literals) { $marked[$literal.Start] = [char]'"' }
+            $markedText = [string]::new($marked)
+            $declStarts = [Collections.Generic.HashSet[int]]::new()
+            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])(?:const|static\s+readonly|readonly\s+static)\s+(?:string|String|(?:global::)?System\.String)\s+CleanupFailed\s*=\s*(?=")')) { [void]$declStarts.Add($m.Index + $m.Length) }
+            $assignStarts = [Collections.Generic.HashSet[int]]::new()
+            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*=\s*(?=")')) { [void]$assignStarts.Add($m.Index + $m.Length) }
+            $semicolon = [regex]::new('\G\s*;')
+            $declared = @($scan.Literals | Where-Object { $declStarts.Contains($_.Start) -and $semicolon.IsMatch($scan.Code, $_.End) })
             $declaration = if ($declared.Count -eq 1) { $declared[0].Start } else { -1 }
+            $mutable = @($scan.Literals | Where-Object { $_.Start -ne $declaration -and $assignStarts.Contains($_.Start) }).Count
+            if ($declared.Count -ne 1) { if (!($declared.Count -eq 0 -and $mutable -gt 0)) { $problems.Add("$($declared.Count) CleanupFailed declarations (want 1)") } }
+            elseif ($declared[0].Value -cne $Prefix) { $problems.Add("C# CleanupFailed '$($declared[0].Value)' differs from the ps1 prefix '$Prefix'") }
             foreach ($literal in $scan.Literals) {
                 if ($literal.Start -eq $declaration) { continue }
-                $from = [Math]::Max(0, $literal.Start - 200)
-                if ($scan.Code.Substring($from, $literal.Start - $from) -cmatch '(?<![\w.@])CleanupFailed\s*=\s*$') { $problems.Add("CleanupFailed assigned outside a const or static readonly declaration $($literal.Raw)"); continue }
+                if ($assignStarts.Contains($literal.Start)) { $problems.Add("CleanupFailed assigned outside a const or static readonly declaration $($literal.Raw)"); continue }
                 $content = $literal.Value
                 if ($Prefix.Length -gt 0 -and $content.StartsWith($Prefix, [StringComparison]::Ordinal)) { $problems.Add("hard-coded prefix literal $($literal.Raw)") }
                 elseif ($content -cne $Prefix -and ($content.StartsWith('cleanup failed: ', [StringComparison]::Ordinal) -or $content.Contains(': cleanup failed: ', [StringComparison]::Ordinal) -or $content.EndsWith('cleanup failed: ', [StringComparison]::Ordinal))) { $problems.Add("other cleanup-failed literal $($literal.Raw)") }
@@ -2257,7 +2265,10 @@ try {
         # in verbatim ones, {{ and }} in interpolated ones whose {holes} stay as written and may hold nested literals; a
         # multi-line raw string drops its first and last lines and the closing-line indentation; P4-38: holes of interpolated
         # raw strings too) and Char; $null when it
-        # is not terminated (end of text, or a line break in a regular string or char literal).
+        # is not terminated (end of text, or a line break in a regular string or char literal). P4-39: an object with only
+        # Refused (the reason) for a raw interpolation hole closed by fewer } than its $ count, a // or /* comment in any
+        # interpolation hole (named limit, nested literals included) or a raw string closed by a longer quote run.
+        function Test-P439HoleComment([string]$T, [int]$At) { return ($T[$At] -ceq '/' -and $At + 1 -lt $T.Length -and ($T[$At + 1] -ceq '/' -or $T[$At + 1] -ceq '*')) }
         function Read-P437Literal([string]$T, [int]$At) {
             $i = $At; $interpolated = $false; $verbatim = $false
             while ($i -lt $T.Length -and ($T[$i] -ceq '$' -or $T[$i] -ceq '@')) { if ($T[$i] -ceq '$') { $interpolated = $true } else { $verbatim = $true }; $i++ }
@@ -2275,6 +2286,8 @@ try {
                 if (!$interpolated) {
                     $e = $T.IndexOf([string]::new([char]'"', $quotes), $i + $quotes, [StringComparison]::Ordinal)
                     if ($e -lt 0) { return $null }
+                    $run = 0; while ($e + $run -lt $T.Length -and $T[$e + $run] -ceq '"') { $run++ }
+                    if ($run -gt $quotes) { return [pscustomobject]@{ Refused = "raw string opened with $quotes quotes closed by a run of $run" } }
                     $content = $T.Substring($i + $quotes, $e - $i - $quotes)
                 }
                 else {
@@ -2288,6 +2301,7 @@ try {
                         $run = 0
                         if ($T[$j] -ceq '"') {
                             while ($j + $run -lt $T.Length -and $T[$j + $run] -ceq '"') { $run++ }
+                            if ($run -gt $quotes) { return [pscustomobject]@{ Refused = "raw string opened with $quotes quotes closed by a run of $run" } }
                             if ($run -ge $quotes) { break }
                             [void]$raw.Append($T, $j, $run); $j += $run; continue
                         }
@@ -2300,13 +2314,18 @@ try {
                                 if ($h -ge $T.Length) { return $null }
                                 if (Test-P437LiteralStart $T $h) {
                                     $nested = Read-P437Literal $T $h
-                                    if ($null -eq $nested) { return $null }
+                                    if ($null -eq $nested -or $nested.Refused) { return $nested }
                                     $h = $nested.End; continue
                                 }
+                                if (Test-P439HoleComment $T $h) { return [pscustomobject]@{ Refused = 'comment in an interpolation hole' } }
                                 if ($T[$h] -ceq '{') { $depth++ }
                                 elseif ($T[$h] -ceq '}') {
                                     if ($depth -gt 0) { $depth-- }
-                                    else { $close = 0; while ($close -lt $dollars -and $h -lt $T.Length -and $T[$h] -ceq '}') { $close++; $h++ }; break }
+                                    else {
+                                        $close = 0; while ($close -lt $dollars -and $h -lt $T.Length -and $T[$h] -ceq '}') { $close++; $h++ }
+                                        if ($close -lt $dollars) { return [pscustomobject]@{ Refused = "raw interpolation hole closed by $close of $dollars braces" } }
+                                        break
+                                    }
                                 }
                                 $h++
                             }
@@ -2344,9 +2363,10 @@ try {
                         if ($h -ge $T.Length) { return $null }
                         if (Test-P437LiteralStart $T $h) {
                             $nested = Read-P437Literal $T $h
-                            if ($null -eq $nested) { return $null }
+                            if ($null -eq $nested -or $nested.Refused) { return $nested }
                             $h = $nested.End; continue
                         }
+                        if (Test-P439HoleComment $T $h) { return [pscustomobject]@{ Refused = 'comment in an interpolation hole' } }
                         if ($T[$h] -ceq '{') { $depth++ }
                         elseif ($T[$h] -ceq '}') { $depth--; if ($depth -eq 0) { $h++; break } }
                         $h++
@@ -2403,6 +2423,7 @@ try {
                 if (Test-P437LiteralStart $Text $i) {
                     $literal = Read-P437Literal $Text $i
                     if ($null -eq $literal) { $scanError = "unterminated C# literal at offset $i"; break }
+                    if ($literal.Refused) { $scanError = "refused C# literal at offset $($i): $($literal.Refused)"; break }
                     if (!$literal.Char) { $literals.Add([pscustomobject]@{ Start = $i; End = $literal.End; Raw = $Text.Substring($i, $literal.End - $i); Value = $literal.Value }) }
                     & $blank $i $literal.End; $i = $literal.End; continue
                 }
