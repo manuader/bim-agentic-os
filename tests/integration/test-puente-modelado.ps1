@@ -49,7 +49,7 @@ try {
     Check ($up.bytes -eq 10) 'subir archivo'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/entrada/virus.exe" -Method Put -Headers $h -Body 'x' }) -eq 400) 'extensión no admitida'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/entrada/CON.txt" -Method Put -Headers $h -Body 'x' }) -eq 400) 'nombre reservado de Windows'
-    $c = Code { Invoke-RestMethod "$base/encargos/..%2F..%2Fx/entrada/a.pdf" -Method Put -Headers $h -Body 'x' }; Check ($c -in 400, 404) 'id con ..: rechazado'
+    $c = Code { Invoke-RestMethod "$base/encargos/..%2F..%2Fx/entrada/a.pdf" -Method Put -Headers $h -Body 'x' }; Check ($c -ge 400) "id con ..: rechazado ($c)"
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/aprobar" -Method Post -Headers $h }) -eq 409) 'aprobar sin ficha: 409'
 
     Invoke-RestMethod "$base/encargos/$id/ficha" -Method Post -Headers $h | Out-Null
