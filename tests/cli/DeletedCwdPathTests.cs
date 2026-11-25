@@ -880,7 +880,9 @@ internal static class DeletedCwdPathTests
         @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\([^()]*\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-47: the parameter list may hold balanced parentheses (a default containing calls); stated limit: a parenthesis
+    // inside a string or char default is counted.
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\((?>[^()]|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? FilterProblem41(string source)
     {
@@ -969,10 +971,17 @@ internal static class DeletedCwdPathTests
 
     // P10-45: index of the brace closing the block opened at source[open] == '{', or -1 when it is not closed. Braces in
     // // and /* */ comments, string literals (regular, $, @ and $@/@$ verbatim, "" escapes) and char literals are skipped.
-    static int BlockEnd45(string source, int open)
+    // P10-47: also C# 11 raw literals (three or more quotes, closed by the same count; $-prefixed raw literals whose holes
+    // open with as many braces as dollars) and everything inside interpolation holes, which are scanned as code to their
+    // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). Stated limit: a
+    // hole's format clause ({x:...}) is scanned as code.
+    static int BlockEnd45(string source, int open) => open >= 0 && open < source.Length && source[open] == '{' ? CodeEnd47(source, open + 1) : -1;
+
+    // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1.
+    static int CodeEnd47(string source, int start)
     {
         var depth = 0;
-        for (var i = open; i < source.Length; i++)
+        for (var i = start; i < source.Length; i++)
         {
             var c = source[i];
             var next = i + 1 < source.Length ? source[i + 1] : '\0';
@@ -988,19 +997,69 @@ internal static class DeletedCwdPathTests
                 if (end < 0) return -1;
                 i = end + 1;
             }
-            else if (c == '"' || c == '\'')
+            else if (c == '\'')
             {
-                var verbatim = c == '"' && i > 0 && (source[i - 1] == '@' || (source[i - 1] == '$' && i > 1 && source[i - 2] == '@'));
-                for (i++; i < source.Length; i++)
-                {
-                    if (source[i] == '\\' && !verbatim) { i++; continue; }
-                    if (source[i] != c) continue;
-                    if (verbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
-                    break;
-                }
+                for (i++; i < source.Length && source[i] != '\''; i++) if (source[i] == '\\') i++;
+                if (i >= source.Length) return -1;
+            }
+            else if (c == '"' || c == '$' || c == '@')
+            {
+                var quote = i;
+                while (quote < source.Length && (source[quote] == '$' || source[quote] == '@')) quote++;
+                if (quote >= source.Length || source[quote] != '"') { i = quote - 1; continue; }
+                var prefix = source[i..quote];
+                var end = LiteralEnd47(source, quote, prefix.Count(ch => ch == '$'), prefix.Contains('@', StringComparison.Ordinal));
+                if (end < 0) return -1;
+                i = end;
             }
             else if (c == '{') depth++;
-            else if (c == '}' && --depth == 0) return i;
+            else if (c == '}' && depth-- == 0) return i;
+        }
+        return -1;
+    }
+
+    // P10-47: index of the last character of the string literal whose first quote is source[quote], or -1 when unclosed.
+    static int LiteralEnd47(string source, int quote, int dollars, bool verbatim)
+    {
+        int Run(int at, char ch) { var n = 0; while (at + n < source.Length && source[at + n] == ch) n++; return n; }
+        var quotes = Run(quote, '"');
+        if (quotes >= 3 && !verbatim)
+        {
+            for (var i = quote + quotes; i < source.Length; i++)
+            {
+                if (source[i] == '"')
+                {
+                    var run = Run(i, '"');
+                    if (run >= quotes) return i + quotes - 1;
+                    i += run - 1;
+                }
+                else if (dollars > 0 && source[i] == '{')
+                {
+                    var run = Run(i, '{');
+                    if (run < dollars) { i += run - 1; continue; }
+                    var close = CodeEnd47(source, i + run);
+                    if (close < 0) return -1;
+                    i = close + dollars - 1;
+                }
+            }
+            return -1;
+        }
+        for (var i = quote + 1; i < source.Length; i++)
+        {
+            var c = source[i];
+            if (c == '\\' && !verbatim) { i++; continue; }
+            if (c == '"')
+            {
+                if (verbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                return i;
+            }
+            if (dollars > 0 && c == '{')
+            {
+                if (i + 1 < source.Length && source[i + 1] == '{') { i++; continue; }
+                var close = CodeEnd47(source, i + 1);
+                if (close < 0) return -1;
+                i = close;
+            }
         }
         return -1;
     }
