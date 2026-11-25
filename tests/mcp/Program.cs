@@ -568,17 +568,18 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
 {
     var serverSource=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
     // The ParseOptions body: from its signature to the brace matching the first '{' after it (no layout assumption).
-    // P1-46: the IndexOf-and-brace cut, kept for the red run only.
+    // P1-46: found on the comment- and literal-stripped code by the shared MemberBody (tests/cli/DeadlineSourceScan.cs,
+    // linked), as the p123 pin does, so a signature in a comment or a brace in a literal is not the member's ("" when
+    // there is no block body). The pin then reads the body's own source lines with comments blanked and literal text
+    // kept (its refusal-text tokens are literals): StripCode keeps the source's newlines, so the lines line up.
     const string P122Signature="static string? ParseOptions(";
     string P122Body(string p122Text) {
-        var p122Start=p122Text.IndexOf(P122Signature,StringComparison.Ordinal);
-        var p122Open=p122Start<0 ? -1 : p122Text.IndexOf('{',p122Start);
-        var p122End=-1;
-        for(int p122At=Math.Max(p122Open,0),p122Depth=0;p122Open>=0 && p122At<p122Text.Length;p122At++) {
-            if(p122Text[p122At]=='{') p122Depth++;
-            else if(p122Text[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
-        }
-        return p122End<0 ? "" : p122Text[p122Start..p122End];
+        var p122Raw=p122Text.ReplaceLineEndings("\n");
+        var p122Stripped=DeadlineSourceScan.StripCode(p122Raw);
+        var p122Member=DeadlineSourceScan.MemberBody(p122Stripped,P122Signature);
+        if(p122Member is null) return "";
+        var p122First=p122Stripped[..p122Stripped.IndexOf(P122Signature,StringComparison.Ordinal)].Count(p122Char=>p122Char=='\n');
+        return string.Join("\n",DeadlineSourceScan.CommentsBlanked(p122Raw).Split('\n').Skip(p122First).Take(p122Member.Count(p122Char=>p122Char=='\n')+1));
     }
     // P1-46: what the pin reads in a ParseOptions body: the shared option loop is called, and no value grammar, range
     // or refusal text of its own is there ("" when none is missing or found).

@@ -1503,6 +1503,7 @@ internal static class RevitCommandDeadlineTests
     // P1-44: root and path are compared with their symbolic links resolved (RealPath: a temp folder reached through a
     // link to the root, or a root reached through a link, is still inside it); a git that cannot start is named
     // 'git missing', apart from a path git reports as not gitignored (exit 1) and any other check-ignore failure.
+    // P1-46: every message names git's exit code (the not-gitignored one too).
     static string ControlLocationProblem(string root, string path, string gitExecutable = "git")
     {
         var realRoot = RealPath(root);
@@ -1513,7 +1514,7 @@ internal static class RevitCommandDeadlineTests
         return ignored.Exit switch
         {
             0 => "",
-            1 => "inside the repository root and not gitignored: " + relative,
+            1 => "inside the repository root and not gitignored (git check-ignore exit 1): " + relative,
             -1 => "git missing (" + ignored.Error + "): cannot tell whether " + relative + " inside the repository root is gitignored; " + GitRequired.TrimEnd(' ', ':'),
             _ => "git check-ignore failed (exit " + N(ignored.Exit) + error + "): cannot tell whether " + relative + " inside the repository root is gitignored",
         };
@@ -1549,7 +1550,8 @@ internal static class RevitCommandDeadlineTests
     static (bool Pass, string? Warning, string Record) LinkOutcome(bool created, bool resolved, bool windows, string reason)
     {
         if (created) return (resolved, null, "symbolic link created; resolution " + (resolved ? "exercised" : "FAILED"));
-        return (windows, null, "symbolic link not created (" + reason + ")");
+        var record = "symbolic link not created (" + reason.ReplaceLineEndings(" ") + ")";
+        return windows ? (true, "::warning::cli-inputs P1-46 " + record + "; the symlink resolution of ControlLocationProblem is not exercised on this Windows runner", record) : (false, null, record);
     }
 
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
@@ -1568,7 +1570,7 @@ internal static class RevitCommandDeadlineTests
         check(visible.StartsWith("inside the repository root and not gitignored (git check-ignore exit 1): ", StringComparison.Ordinal),
             "P1-46 control location self-test: the not-gitignored message keeps the git check-ignore exit code", visible);
 
-        // P1-46: a root that is not a repository makes git check-ignore fail (exit 128, 'not a git repository'): named
+        // P1-46: a root that is not a repository makes git check-ignore fail (exit 128, a 'fatal:' line): named
         // 'check-ignore failed' with git's exit code, not 'not gitignored'. The scratch root sits under the temp folder,
         // which verify.ps1 points inside the repository (.bim/verification/tmp, gitignored), so git would find the outer
         // repository: a .git file naming a missing git directory stops git's discovery at the scratch root.
@@ -1588,7 +1590,9 @@ internal static class RevitCommandDeadlineTests
             try { if (Directory.Exists(notRepository)) Directory.Delete(notRepository, recursive: true); }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
-        check(failed.StartsWith("git check-ignore failed (exit 128", StringComparison.Ordinal) && failed.Contains("not a git repository", StringComparison.OrdinalIgnoreCase)
+        // git's wording differs by version ('not a git repository' on Linux git 2.43, 'gitfile does not point to a valid
+        // repository' on the macOS runner's git, red run 45618724063): the exit code and git's own 'fatal:' line are pinned.
+        check(failed.StartsWith("git check-ignore failed (exit 128, fatal: ", StringComparison.Ordinal) && failed.Contains("cannot tell whether visible/Copy.cs", StringComparison.Ordinal)
             && !failed.Contains("not gitignored", StringComparison.Ordinal) && !failed.StartsWith("git missing", StringComparison.Ordinal),
             "P1-46 control location self-test: a root that is not a repository is named 'check-ignore failed' with git's exit code (128), not 'not gitignored' or 'git missing'",
             failed + " | " + probe);
