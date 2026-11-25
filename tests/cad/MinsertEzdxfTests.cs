@@ -1876,18 +1876,19 @@ internal static class MinsertEzdxfTests
             c(twoWayMissing.Count == 0 && !generator.Contains("def _contains(", StringComparison.Ordinal),
                 "justified: generator: --check is two-way (committed constants no generator row produces fail), matches whole rows (no contiguous-run matcher) and runs planted self-tests",
                 "missing " + string.Join(" | ", twoWayMissing) + " contiguous-run matcher left " + generator.Contains("def _contains(", StringComparison.Ordinal));
-            // P6-48: numpy pinned to the generation version; every output line but the caught self-tests annotated (20 a
-            // notice or error, the count of any lines left over printed); the C-extension run names its differing rows.
+            // P6-48: numpy pinned to the generation version; every output line but the caught self-tests annotated, 20
+            // lines per annotation (at most 9 annotations, then one line with the count of the lines left over); the
+            // C-extension run names its differing rows.
             string[] stepNeeded =
             {
-                ".tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3\n",
+                ".tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3",
                 "grep -v '^self-test planted .*: caught (' \"$out\" | cut -c1-900 | awk -v level=\"$level\"",
                 "more output lines not annotated",
                 "grep '^differing rows: '",
             };
             var stepAbsent = stepNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
             c(stepAbsent.Count == 0 && !stepText.Contains("tail -n 10", StringComparison.Ordinal),
-                "justified: generator: P6-48 the CI step pins numpy==2.5.3, annotates every failure line (20 a notice, the count of lines left over printed, no tail -n 10) and names the rows the C extensions move",
+                "justified: generator: P6-48 the CI step pins numpy==2.5.3, annotates every output line but the caught self-tests (20 lines per annotation, at most 9, then the count of the lines left over; no tail -n 10) and names the rows the C extensions move",
                 "missing " + string.Join(" | ", stepAbsent) + " tail -n 10 left " + stepText.Contains("tail -n 10", StringComparison.Ordinal));
             // P6-48: a label TEXT matches the generator row its handle names (LABEL_ROWS, no loose x,y match against any
             // cell); the summary names the differing rows, the C-extension state and numpy's version; a missing table,
@@ -1902,6 +1903,61 @@ internal static class MinsertEzdxfTests
             c(checkAbsent.Count == 0 && !generator.Contains("\"[\" in gnames[0]", StringComparison.Ordinal),
                 "justified: generator: P6-48 --check matches each label TEXT to the row its handle names (no loose x,y match), names differing rows, numpy and C-extension state, and plants a missing table and moved or unmapped labels",
                 "missing " + string.Join(" | ", checkAbsent) + " loose cell match left " + generator.Contains("\"[\" in gnames[0]", StringComparison.Ordinal));
+
+            // P6-50: the generation environment is recorded the same way in this file's header and in the generator's
+            // docstring (comment markers and line breaks aside): numpy==2.5.3, the full annotation, the evidence for the
+            // generation version (CI run 45718082997) and the pinned C-extension drift rows.
+            static string Prose(IEnumerable<string> lines) => string.Join(" ", lines
+                .Select(l => l.Trim())
+                .Select(l => l.StartsWith("//", StringComparison.Ordinal) ? l[2..].Trim() : l)
+                .Where(l => l.Length > 0));
+            var headerProse = Prose(header.Split('\n'));
+            var docEnd = generator.IndexOf("\"\"\"", 3, StringComparison.Ordinal);
+            var docProse = generator.StartsWith("\"\"\"", StringComparison.Ordinal) && docEnd > 0 ? Prose(generator[3..docEnd].Split('\n')) : "";
+            string[] environment =
+            {
+                "numpy==2.5.3", "pyparsing==", "typing_extensions==", "fonttools==",
+                "every output line but the caught self-tests is annotated, 20 lines an annotation, at most 9 annotations, then one line with the count of the lines left over",
+                "CI run 45718082997", "164 rows", "C1>NB, X1>XF, Z1>ZA, W1>CL",
+            };
+            var headerEnvAbsent = environment.Where(e => !headerProse.Contains(e, StringComparison.Ordinal)).ToList();
+            var docEnvAbsent = environment.Where(e => !docProse.Contains(e, StringComparison.Ordinal)).ToList();
+            c(headerEnvAbsent.Count == 0 && docEnvAbsent.Count == 0,
+                "justified: generator: P6-50 the header and the generator docstring name numpy==2.5.3 and the other pinned ezdxf dependencies, the full annotation, the evidence for the generation version and the C-extension drift rows",
+                "header missing " + string.Join(" | ", headerEnvAbsent) + "; docstring missing " + string.Join(" | ", docEnvAbsent));
+            // P6-50 (P6-49): the P6-45 and P6-47 header sentences name the shared CodePins stripper, not reflection.
+            c(!headerProse.Contains("reflection", StringComparison.Ordinal) && headerProse.Contains("CodePins.StripCommentsAndLiterals (tests/cad/CodePins.cs)", StringComparison.Ordinal),
+                "justified: generator: P6-50 the header's P6-45/P6-47 sentences name CodePins.StripCommentsAndLiterals (P6-49), not a reflection call",
+                "reflection named " + headerProse.Contains("reflection", StringComparison.Ordinal) + " CodePins named " + headerProse.Contains("CodePins.StripCommentsAndLiterals (tests/cad/CodePins.cs)", StringComparison.Ordinal));
+            // P6-50: ezdxf's other dependencies are pinned in the one install line and their versions printed.
+            var install = System.Text.RegularExpressions.Regex.Matches(stepText, @"^ *\.tools/ezdxf/bin/python -m pip install .*$", System.Text.RegularExpressions.RegexOptions.Multiline);
+            var pinnedInstall = install.Count == 1 && System.Text.RegularExpressions.Regex.IsMatch(install[0].Value.Trim(),
+                @"^\.tools/ezdxf/bin/python -m pip install ezdxf==1\.4\.2 numpy==2\.5\.3 pyparsing==\d+(\.\d+)+ typing_extensions==\d+(\.\d+)+ fonttools==\d+(\.\d+)+$");
+            string[] printed = { "importlib.metadata", "('pyparsing', 'typing_extensions', 'fonttools')" };
+            var printedAbsent = printed.Where(p => !stepText.Contains(p, StringComparison.Ordinal)).ToList();
+            c(pinnedInstall && printedAbsent.Count == 0,
+                "justified: generator: P6-50 the CI step pins ezdxf's other dependencies (pyparsing, typing_extensions, fonttools) in its one install line and prints their installed versions",
+                "install lines " + install.Count.ToString(CultureInfo.InvariantCulture) + " [" + string.Join(" | ", install.Select(m => m.Value.Trim())) + "] pinned " + pinnedInstall + " missing " + string.Join(" | ", printedAbsent));
+            // P6-50: the four C-extension drift rows are pinned in the generator; under the C extensions a differing row
+            // outside them fails the run (planted self-test), and the CI step fails on that run's status instead of
+            // ignoring it.
+            string[] driftNeeded =
+            {
+                "C_EXT_DRIFT = (\"C1>NB\", \"X1>XF\", \"Z1>ZA\", \"W1>CL\")",
+                "\"new C-extension drift rows: \"", "(\"a new C-extension drift row\", ",
+            };
+            var driftAbsent = driftNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            var cextIgnored = stepText.Contains("2>&1) || true", StringComparison.Ordinal);
+            c(driftAbsent.Count == 0 && !cextIgnored && stepText.Contains("2>&1) || cstatus=$?", StringComparison.Ordinal) && stepText.Contains("exit \"$cstatus\"", StringComparison.Ordinal),
+                "justified: generator: P6-50 the C-extension drift rows C1>NB, X1>XF, Z1>ZA, W1>CL are pinned; a new drifting row fails the C-extension run (planted) and the CI step",
+                "missing " + string.Join(" | ", driftAbsent) + " c-ext status ignored " + cextIgnored + " status kept " + stepText.Contains("2>&1) || cstatus=$?", StringComparison.Ordinal));
+            // P6-50: an Axes row (no quoted name) is named by its normal in "differing rows", not by its number tuple; the
+            // planted Axes self-test checks the name.
+            string[] axesNeeded = { "\"axes normal (\"", "\"not committed: (0.6, 0.0, 0.8)\", \"axes normal (0.6, 0.0, 0.8)\")" };
+            var axesAbsent = axesNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            c(axesAbsent.Count == 0,
+                "justified: generator: P6-50 an Axes row is named by its normal (axes normal (x, y, z)) in the differing rows, checked by the planted Axes self-test",
+                "missing " + string.Join(" | ", axesAbsent));
         }
         catch (Exception error)
         {

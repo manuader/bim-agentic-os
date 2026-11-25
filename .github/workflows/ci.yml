@@ -73,7 +73,8 @@ jobs:
           # P6-48: numpy pinned to the version the constants were generated with (2.5.5 was resolved unpinned).
           .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3
           .tools/ezdxf/bin/python -m pip check
-          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
+          # P6-50: the installed versions of ezdxf's other dependencies are printed with numpy's.
+          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, importlib.metadata, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, *(d + ' ' + importlib.metadata.version(d) for d in ('pyparsing', 'typing_extensions', 'fonttools')), 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
           # P6-48: with the wheel's C extensions a few rows differ in the last bits (notice only); the run names them.
           cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || true
           echo "::notice title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
