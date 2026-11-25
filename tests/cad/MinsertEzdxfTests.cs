@@ -501,16 +501,20 @@ internal static class MinsertEzdxfTests
                     drifted == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(drifted) ?? "not caught");
             // P6-45 self-tests: what must not fail the pin. A // and a /* */ comment naming DxfReadOptions and DxfReader.
             // beside the read, and the read statement reformatted over several lines.
-            foreach (var (label, tolerated) in new[]
+            foreach (var (tag, label, tolerated) in new[]
             {
-                ("a // comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, "// DxfReader.Parse with DxfReadOptions(MaxInputBytes) (pinned by tests/cad)\n            " + CliDxfRead, StringComparison.Ordinal)),
-                ("a /* */ comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, CliDxfRead + " /* not DxfReader.ReadFile, no other DxfReadOptions */", StringComparison.Ordinal)),
-                ("the read statement reformatted over several lines", cadCommand.Replace(CliDxfRead, "if (format == \"dxf\")\n                drawing = DxfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new DxfReadOptions( MaxInputBytes ));", StringComparison.Ordinal)),
+                ("p6-45", "a // comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, "// DxfReader.Parse with DxfReadOptions(MaxInputBytes) (pinned by tests/cad)\n            " + CliDxfRead, StringComparison.Ordinal)),
+                ("p6-45", "a /* */ comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, CliDxfRead + " /* not DxfReader.ReadFile, no other DxfReadOptions */", StringComparison.Ordinal)),
+                ("p6-45", "the read statement reformatted over several lines", cadCommand.Replace(CliDxfRead, "if (format == \"dxf\")\n                drawing = DxfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new DxfReadOptions( MaxInputBytes ));", StringComparison.Ordinal)),
                 // P6-47: a comparison reads MaxInputBytes; it neither declares nor assigns it.
-                ("(P6-47) a MaxInputBytes == comparison in code", cadCommand.Replace(CliDxfRead, "var atCap = MaxInputBytes == bytes.Length; " + CliDxfRead, StringComparison.Ordinal)),
+                ("p6-47", "a MaxInputBytes == comparison in code", cadCommand.Replace(CliDxfRead, "var atCap = MaxInputBytes == bytes.Length; " + CliDxfRead, StringComparison.Ordinal)),
+                // P6-49: identifier boundaries; another identifier ending in MaxInputBytes is not the cap.
+                ("p6-49", "an OtherMaxInputBytes = assignment in code", cadCommand.Replace(CliDxfRead, "var OtherMaxInputBytes = 5; " + CliDxfRead, StringComparison.Ordinal)),
+                // P6-49: an expression-bodied MaxInputBytes => (here a property of another type) is not an assignment.
+                ("p6-49", "an expression-bodied MaxInputBytes => in code", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "32 * 1024 * 1024;\n    private sealed class Limits { public int MaxInputBytes => CadCommand.MaxInputBytes; }", StringComparison.Ordinal)),
             })
                 c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
-                    "p6-45 reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
+                    tag + " reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
                     tolerated == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(tolerated) ?? "tolerated");
         }
         catch (Exception error)
