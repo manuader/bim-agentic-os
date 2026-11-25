@@ -427,45 +427,40 @@ internal static class MinsertEzdxfTests
     // P6-43: the in-process copy of CadCommand's DXF reader options, pinned against CadCommand.cs by ReaderOptionsProblems.
     private const int CliMaxInputBytes = 32 * 1024 * 1024;
     private static readonly DxfReadOptions CliDxfReadOptions = new(CliMaxInputBytes);
-    // The DXF read as CadCommand.cs writes it (used by the self-tests to find it) and, P6-45, as one statement of stripped
-    // code with all whitespace removed (the "dxf" literal stripped to "").
+    // The DXF read as CadCommand.cs writes it: the self-tests find it by this text and, P6-45, the pin matches it as one
+    // statement of stripped code with whitespace squeezed (the "dxf" literal stripped to ""). P6-49: that squeezed form is
+    // derived from this one (CodePins), so no hand-written compact copy is kept.
     private const string CliDxfRead = "if (format == \"dxf\") drawing = DxfReader.Parse(bytes, sourceFile, new DxfReadOptions(MaxInputBytes));";
-    private const string CliDxfReadCompact = "if(format==\"\")drawing=DxfReader.Parse(bytes,sourceFile,newDxfReadOptions(MaxInputBytes));";
     private const string CliCapPrefix = "public const int MaxInputBytes = ";
-    private const string CliCapCompact = "publicconstintMaxInputBytes=";
-
-    private static int Occurs(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
-
-    // P6-45: the PDF reader-option pin's stripper (comments removed, literals emptied), one implementation for both pins.
-    // P6-47: reached by reflection (it is private to PdfType3GlyphListTests); the pin label states the dependence.
-    private static string StripCode(string source) =>
-        (string)(typeof(PdfType3GlyphListTests).GetMethod("StripCommentsAndLiterals", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
-            ?? throw new MissingMethodException("PdfType3GlyphListTests.StripCommentsAndLiterals")).Invoke(null, new object[] { source })!;
 
     // Null when CadCommand.cs code (comments and literals stripped, P6-45) reads a DXF with exactly the options of
-    // CliDxfReadOptions.
+    // CliDxfReadOptions. P6-49: stripped by CodePins.StripCommentsAndLiterals (tests/cad/CodePins.cs, the one stripper
+    // shared with the PDF reader-option pin, called directly), counted squeezed at identifier boundaries (CodePins).
     private static string? ReaderOptionsProblems(string source)
     {
-        var code = StripCode(source.Replace("\r\n", "\n", StringComparison.Ordinal));
-        var compact = string.Concat(code.Where(ch => !char.IsWhiteSpace(ch)));
+        var code = CodePins.Squeeze(CodePins.StripCommentsAndLiterals(source.Replace("\r\n", "\n", StringComparison.Ordinal)));
+        var readStatement = CodePins.Squeeze(CodePins.StripCommentsAndLiterals(CliDxfRead));
+        var capDeclaration = CodePins.Squeeze(CliCapPrefix);
         var problems = new List<string>();
-        if (Occurs(code, "DxfReadOptions") != 1) problems.Add("'DxfReadOptions' x" + Occurs(code, "DxfReadOptions").ToString(CultureInfo.InvariantCulture) + " (want 1)");
-        if (Occurs(code, "DxfReader.") != 1) problems.Add("'DxfReader.' x" + Occurs(code, "DxfReader.").ToString(CultureInfo.InvariantCulture) + " (want 1)");
-        if (Occurs(compact, CliDxfReadCompact) != 1) problems.Add("the DXF read statement is not exactly '" + CliDxfRead + "' (whitespace aside) x" + Occurs(compact, CliDxfReadCompact).ToString(CultureInfo.InvariantCulture));
-        var capCount = Occurs(compact, CliCapCompact);
+        if (CodePins.Count(code, "DxfReadOptions") != 1) problems.Add("'DxfReadOptions' x" + CodePins.Count(code, "DxfReadOptions").ToString(CultureInfo.InvariantCulture) + " (want 1)");
+        if (CodePins.Count(code, "DxfReader.") != 1) problems.Add("'DxfReader.' x" + CodePins.Count(code, "DxfReader.").ToString(CultureInfo.InvariantCulture) + " (want 1)");
+        if (CodePins.Count(code, readStatement) != 1) problems.Add("the DXF read statement is not exactly '" + CliDxfRead + "' (whitespace aside) x" + CodePins.Count(code, readStatement).ToString(CultureInfo.InvariantCulture));
+        var capCount = CodePins.Count(code, capDeclaration);
         long? cap = null;
         if (capCount == 1)
         {
-            var start = compact.IndexOf(CliCapCompact, StringComparison.Ordinal) + CliCapCompact.Length;
-            var end = compact.IndexOf(';', start);
-            var factors = end < 0 ? Array.Empty<string>() : compact[start..end].Split('*');
+            var start = CodePins.IndexOf(code, capDeclaration) + capDeclaration.Length;
+            var end = code.IndexOf(';', start);
+            var factors = end < 0 ? Array.Empty<string>() : code[start..end].Split('*');
             if (factors.Length > 0 && factors.All(f => f.Length > 0 && f.All(char.IsAsciiDigit) && f.Length < 10))
                 cap = factors.Aggregate(1L, (product, f) => product * long.Parse(f, CultureInfo.InvariantCulture));
         }
-        // P6-47: assignments only; a MaxInputBytes == comparison reads the cap and is not counted.
+        // P6-47: assignments only; a MaxInputBytes == comparison reads the cap and is not counted. P6-49: nor is an
+        // expression-bodied MaxInputBytes => or another identifier ending in MaxInputBytes (identifier boundary).
+        const string assignment = "MaxInputBytes=";
         var assigned = 0;
-        for (var at = compact.IndexOf("MaxInputBytes=", StringComparison.Ordinal); at >= 0; at = compact.IndexOf("MaxInputBytes=", at + 1, StringComparison.Ordinal))
-            if (at + "MaxInputBytes=".Length >= compact.Length || compact[at + "MaxInputBytes=".Length] != '=') assigned++;
+        for (var at = CodePins.IndexOf(code, assignment); at >= 0; at = CodePins.IndexOf(code, assignment, at + 1))
+            if (at + assignment.Length >= code.Length || code[at + assignment.Length] is not ('=' or '>')) assigned++;
         if (assigned != 1 || cap is null)
             problems.Add("MaxInputBytes assigned x" + assigned.ToString(CultureInfo.InvariantCulture) + ", declared x" + capCount.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one declaration, one integer product)");
         // P6-45: replaces the always-true CliDxfReadOptions == new DxfReadOptions(CliMaxInputBytes); this one compares the
@@ -483,21 +478,21 @@ internal static class MinsertEzdxfTests
             var cadCommandPath = Path.Combine(RepoRoot(), "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath) : "";
             c(cadCommand.Length > 0 && ReaderOptionsProblems(cadCommand) is null,
-                "p6-43 reader options: CadCommand.cs code (comments and literals stripped, P6-45, by PdfType3GlyphListTests.StripCommentsAndLiterals reached by reflection, P6-47) reads a DXF with DxfReadOptions(MaxInputBytes) only, the in-process copy equals DxfReadOptions of CadCommand's parsed MaxInputBytes (32 MiB)",
+                "p6-43 reader options: CadCommand.cs code (comments and literals stripped, P6-45, by the shared CodePins.StripCommentsAndLiterals, P6-49) reads a DXF with DxfReadOptions(MaxInputBytes) only, the in-process copy equals DxfReadOptions of CadCommand's parsed MaxInputBytes (32 MiB)",
                 cadCommandPath + " " + (cadCommand.Length == 0 ? "missing" : ReaderOptionsProblems(cadCommand) ?? "pins hold") + " in-process " + CliDxfReadOptions);
             const string realCall = "new DxfReadOptions(MaxInputBytes)";
-            foreach (var (label, drifted, expect) in new[]
+            foreach (var (tag, label, drifted, expect) in new[]
             {
-                ("an extra reader argument", cadCommand.Replace(realCall, "new DxfReadOptions(MaxInputBytes) with { MaxBytes = 1024 }", StringComparison.Ordinal), "the DXF read statement"),
-                ("a commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " // " + CliDxfRead, StringComparison.Ordinal), "the DXF read statement"),
-                ("a /* */ commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " /* " + CliDxfRead + " */", StringComparison.Ordinal), "the DXF read statement"),
-                ("a second DxfReader. call in code", cadCommand.Replace(CliDxfRead, CliDxfRead + " var again = DxfReader.Parse(bytes, sourceFile);", StringComparison.Ordinal), "'DxfReader.' x2"),
-                ("a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
+                ("p6-43", "an extra reader argument", cadCommand.Replace(realCall, "new DxfReadOptions(MaxInputBytes) with { MaxBytes = 1024 }", StringComparison.Ordinal), "the DXF read statement"),
+                ("p6-43", "a commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " // " + CliDxfRead, StringComparison.Ordinal), "the DXF read statement"),
+                ("p6-43", "a /* */ commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " /* " + CliDxfRead + " */", StringComparison.Ordinal), "the DXF read statement"),
+                ("p6-43", "a second DxfReader. call in code", cadCommand.Replace(CliDxfRead, CliDxfRead + " var again = DxfReader.Parse(bytes, sourceFile);", StringComparison.Ordinal), "'DxfReader.' x2"),
+                ("p6-43", "a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
                 // P6-47: the == exclusion of the MaxInputBytes= count does not drop a second assignment.
-                ("(P6-47) a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                ("p6-47", "a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
             })
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
-                    "p6-43 reader options self-test: " + label + " in CadCommand.cs is caught",
+                    tag + " reader options self-test: " + label + " in CadCommand.cs is caught",
                     drifted == cadCommand ? "self-test anchor not found" : ReaderOptionsProblems(drifted) ?? "not caught");
             // P6-45 self-tests: what must not fail the pin. A // and a /* */ comment naming DxfReadOptions and DxfReader.
             // beside the read, and the read statement reformatted over several lines.

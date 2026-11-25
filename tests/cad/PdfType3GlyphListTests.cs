@@ -699,19 +699,22 @@ internal static class PdfType3GlyphListTests
                 (inputHash, 1),
             };
             var cadCommandAnchors = new[] { "internal static class CadCommand", "static void Execute(bool draft", "static Options ParseOptions(", "static void Fail(" };
-            // P6-47: each pin is counted with all whitespace removed from both the pin and the stripped source (as the DXF
-            // reader-option pin does), so a reformatted line still counts; problems name the pin as written.
-            static string Compact(string text) => string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
+            // P6-47: each pin is counted with whitespace removed from both the pin and the stripped source (as the DXF
+            // reader-option pin does), so a reformatted line still counts; problems name the pin as written. P6-49: through
+            // CodePins (tests/cad/CodePins.cs, shared with the DXF pin): one space is kept between identifier characters and
+            // a pin counts only at identifier boundaries (xpdf = PdfReader.Parse is not the pinned pdf = read).
             static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins)
             {
-                var compact = Compact(source);
-                return string.Join("; ", pins.Where(pin => Occurrences(compact, Compact(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(compact, Compact(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+                var squeezed = CodePins.Squeeze(source);
+                return string.Join("; ", pins.Where(pin => CodePins.Count(squeezed, CodePins.Squeeze(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(CodePins.Count(squeezed, CodePins.Squeeze(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
             }
-            // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code).
+            // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code;
+            // P6-49: matched squeezed, so a reformatted hash line or if (draft) keeps its place).
             static string? HashPlace(string stripped)
             {
-                int draftAt = stripped.IndexOf("if (draft)", StringComparison.Ordinal), hashAt = stripped.IndexOf(inputHash, StringComparison.Ordinal), briefAt = stripped.IndexOf(dxfCall, StringComparison.Ordinal);
-                return draftAt >= 0 && hashAt > draftAt && briefAt > hashAt ? null : "input hash at " + I(hashAt) + " not inside the cad-draft branch (if (draft) at " + I(draftAt) + ", FromDxf at " + I(briefAt) + ")";
+                var squeezed = CodePins.Squeeze(stripped);
+                int draftAt = CodePins.IndexOf(squeezed, CodePins.Squeeze("if (draft)")), hashAt = CodePins.IndexOf(squeezed, CodePins.Squeeze(inputHash)), briefAt = CodePins.IndexOf(squeezed, CodePins.Squeeze(dxfCall));
+                return draftAt >= 0 && hashAt > draftAt && briefAt > hashAt ? null : "input hash at " + I(hashAt) + " not inside the cad-draft branch (if (draft) at " + I(draftAt) + ", FromDxf at " + I(briefAt) + ", squeezed code)";
             }
             static string? CodeProblems(string source, IEnumerable<(string Line, int Count)> pins, IReadOnlyList<string> anchors)
             {
@@ -1031,96 +1034,8 @@ internal static class PdfType3GlyphListTests
         return problems.Count == 0 ? null : string.Join("; ", problems);
     }
 
-    // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
-    // replaced by an empty one ("" or ''), so a static check matches code only.
-    private static string StripCommentsAndLiterals(string source)
-    {
-        var output = new StringBuilder(source.Length);
-        var n = source.Length;
-        var i = 0;
-        while (i < n)
-        {
-            var c = source[i];
-            if (c == '/' && i + 1 < n && source[i + 1] == '/')
-            {
-                while (i < n && source[i] != '\n') i++;
-                continue;
-            }
-            if (c == '/' && i + 1 < n && source[i + 1] == '*')
-            {
-                var close = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                i = close < 0 ? n : close + 2;
-                output.Append(' ');
-                continue;
-            }
-            if (c == '\'')
-            {
-                var k = i + 1;
-                while (k < n && source[k] != '\'' && source[k] != '\n')
-                {
-                    if (source[k] == '\\') k++;
-                    k++;
-                }
-                output.Append("''");
-                i = Math.Min(n, k + 1);
-                continue;
-            }
-            if (c is '$' or '@' or '"')
-            {
-                var k = i;
-                var verbatim = false;
-                while (k < n && source[k] is '$' or '@')
-                {
-                    if (source[k] == '@') verbatim = true;
-                    k++;
-                }
-                if (k < n && source[k] == '"')
-                {
-                    var quotes = 0;
-                    while (k + quotes < n && source[k + quotes] == '"') quotes++;
-                    // A verbatim string is never raw: @"""" is one escaped quote, not the start of a raw literal.
-                    if (quotes >= 3 && !verbatim)
-                    {
-                        var close = source.IndexOf(new string('"', quotes), k + quotes, StringComparison.Ordinal);
-                        i = close < 0 ? n : close + quotes;
-                    }
-                    else if (quotes == 2 && !verbatim) i = k + 2;
-                    else if (verbatim)
-                    {
-                        k++;
-                        while (k < n)
-                        {
-                            if (source[k] == '"')
-                            {
-                                if (k + 1 < n && source[k + 1] == '"') { k += 2; continue; }
-                                break;
-                            }
-                            k++;
-                        }
-                        i = k + 1;
-                    }
-                    else
-                    {
-                        k++;
-                        while (k < n && source[k] != '"' && source[k] != '\n')
-                        {
-                            if (source[k] == '\\') k++;
-                            k++;
-                        }
-                        i = k + 1;
-                    }
-                    output.Append("\"\"");
-                    continue;
-                }
-                output.Append(source, i, Math.Max(k - i, 1));
-                i = Math.Max(k, i + 1);
-                continue;
-            }
-            output.Append(c);
-            i++;
-        }
-        return output.ToString();
-    }
+    // P6-27 stripper, moved to tests/cad/CodePins.cs in P6-49 (one definition shared with the DXF reader-option pin).
+    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);
 
     // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
     // block body up to its matching '}'; (-1, -1) when the signature is absent.
