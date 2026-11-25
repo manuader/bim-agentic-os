@@ -869,7 +869,7 @@ internal static class InternalErrorDelegationTests
             else if (code[i] == '{')
             {
                 if (depth > 0) { depth--; continue; }
-                if (System.Text.RegularExpressions.Regex.IsMatch(code[..i], @"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$")) return true;
+                if (LambdaHeader.IsMatch(code[..i])) return true;
                 if (MethodBody(code[HeaderStart(code, i)..i]) && ++bodies == 2) return true;
             }
         }
@@ -918,6 +918,29 @@ internal static class InternalErrorDelegationTests
     // The P3-39 pre-balance initializer replace is removed: InitializerArguments already reduced the arguments to `()`,
     // which no keyword test reads (the base(new object()) and this(new[] { n }) plants pin that). Both balancing-group
     // regexes carry a 1 s match timeout (pinned in the P3-29 section).
+    // P3-45: every regex InBlockLambda and MethodBody use is a named static field with the same 1 s match timeout
+    // (pinned by reflection, and the helpers' source is pinned to call no static Regex method). Attribute sections not
+    // at the start of a header (on a parameter or type parameter: after '(', ',' or '<') are reduced to `[]` with
+    // balanced brackets (InnerAttributes), so `void Later([A(new[] { 1 })] int n)` and `void Later<[A(new[] { 1 })] T>()`
+    // neither break the parameter list nor read as object creation. The hiding `new` accepts a generic return type
+    // nested to any depth (balancing group: `new Dictionary<A<B<(int, int)>>, C> M()`). An unsafe local function
+    // returning a pointer without `new` (`unsafe int* Later()`) already matched.
+    static readonly System.Text.RegularExpressions.Regex InnerAttributes = new(@"(?<=[(,<]\s*)\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\]",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex LambdaHeader = new(@"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex Constraint = new(@"\bwhere\s+\w+\s*:",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex TypeKeyword = new(@"\b(?:class|struct|record|interface|enum|namespace)\b",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex ObjectCreation = new(@"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*(?:ref\s+(?:readonly\s+)?)?(?:\([^(){};]*\)|[\w.]+(?:<(?>[^<>{};]+|<(?<g>)|>(?<-g>))*(?(g)(?!))>)?)(?:\[[\s,]*\]|\?|\*)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex AccessorHeader = new(@"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex OperatorHeader = new(@"\boperator\b[^(){};]*\([^{};]*\)\s*$",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
+    static readonly System.Text.RegularExpressions.Regex MethodHeader = new(@"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:*]+)\s*)*?~?\s*(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$",
+        System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
     static readonly System.Text.RegularExpressions.Regex InitializerArguments = new(@"\)\s*:\s*(base|this)\s*\((?>[^()]+|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*$",
         System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
     static readonly System.Text.RegularExpressions.Regex LeadingAttributes = new(@"^\s*(?:\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\]\s*)+",
@@ -926,15 +949,15 @@ internal static class InternalErrorDelegationTests
     static bool MethodBody(string header)
     {
         header = LeadingAttributes.Replace(header, "[] ");
+        header = InnerAttributes.Replace(header, "[]");
         header = InitializerArguments.Replace(header, ") : $1()");
-        var constraint = System.Text.RegularExpressions.Regex.Match(header, @"\bwhere\s+\w+\s*:");
+        var constraint = Constraint.Match(header);
         var head = constraint.Success ? header[..constraint.Index] : header;
-        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\b(?:class|struct|record|interface|enum|namespace)\b")) return false;
-        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\bnew\b(?!\s+(?:(?:public|protected|internal|private|static|virtual|abstract|sealed|override|readonly|unsafe|extern|async|partial|required)\s+)*(?:ref\s+(?:readonly\s+)?)?(?:\([^(){};]*\)|[\w.]+(?:<(?:[^<>{};]|<[^<>{};]*>)*>)?)(?:\[[\s,]*\]|\?|\*)*\s+~?\w+\s*(?:<[^(){};]*>)?\s*\()")) return false;
-        if (System.Text.RegularExpressions.Regex.IsMatch(header, @"^\s*(?:\[[^\[\]{};]*\]\s*)*(?:(?:public|protected|internal|private|readonly)\s+)*(?:get|set|init|add|remove)\s*$")) return true;
-        if (System.Text.RegularExpressions.Regex.IsMatch(head, @"\boperator\b[^(){};]*\([^{};]*\)\s*$")) return true;
-        var match = System.Text.RegularExpressions.Regex.Match(header,
-            @"^\s*(?:(?>\[[^\[\]{};]*\]|\([^(){};]*\)|[\w<>,.?:*]+)\s*)*?~?\s*(\w+)\s*(?:<[^(){};]*>)?\s*\([^{};]*\)\s*(?:\bwhere\b[^{};]*)?$");
+        if (TypeKeyword.IsMatch(head)) return false;
+        if (ObjectCreation.IsMatch(head)) return false;
+        if (AccessorHeader.IsMatch(header)) return true;
+        if (OperatorHeader.IsMatch(head)) return true;
+        var match = MethodHeader.Match(header);
         return match.Success && !new[] { "if", "while", "for", "foreach", "switch", "catch", "using", "lock", "fixed", "when", "checked", "unchecked", "return", "else", "do", "try", "finally" }
             .Contains(match.Groups[1].Value, StringComparer.Ordinal);
     }
