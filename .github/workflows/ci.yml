@@ -67,6 +67,21 @@ jobs:
         run: |
           .tools/ifc/bin/python -m pip install jsonschema==4.23.0
           .tools/ifc/bin/python -I tests/skills/check_schema.py
+      - name: ezdxf 1.4.2 generator constant check, two-way (P6-46)
+        run: |
+          python -m venv .tools/ezdxf
+          .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2
+          .tools/ezdxf/bin/python -m pip check
+          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'ezdxf', ezdxf.__version__)")"
+          diag=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1 | tail -n 1) || true
+          echo "::notice title=ezdxf-check-c-ext::with the wheel's C extensions: $diag"
+          # The constants were made by the pure-Python ezdxf of a v1.4.2 source checkout, so the C extensions are disabled.
+          out="$RUNNER_TEMP/ezdxf-check.txt"
+          status=0
+          EZDXF_DISABLE_C_EXT=1 .tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check > "$out" 2>&1 || status=$?
+          if [ "$status" -ne 0 ]; then level=error; else level=notice; fi
+          tail -n 10 "$out" | cut -c1-900 | sed "s/^/::$level title=ezdxf-check::/"
+          exit "$status"
       - name: Evaluate real IFC and enforce portable acceptance
         shell: pwsh
         run: |
