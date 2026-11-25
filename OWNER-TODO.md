@@ -461,3 +461,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay284 (2026-11-25, cloud)
 - No new required action. Merged P1-45, P2-44, P5-39 (main 65e76ff, CI 45558710699 green 9/9). P5-39 fixed a real defect: the MCP server's 'mcp stdout failed' error line on stderr could split into several lines when the message held line breaks; now always one line. Still open from before: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; ONE -Catalogue run then catalogue-report; N21 run 3; git pull.
+
+## Relay285 (2026-11-25, cloud)
+- No new required action. `git pull` (main 29515018, CI green). Test/CI-only changes (P3-43, P4-38, P6-46); CI now also runs the ezdxf 1.4.2 cross-check of the CAD test constants on every push. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
