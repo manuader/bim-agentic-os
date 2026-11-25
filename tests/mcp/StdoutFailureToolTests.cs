@@ -147,6 +147,9 @@ internal static class StdoutFailureToolTests
 
         check(failures.Count == 0, "P5-37 mcp stdout: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
 
+        // P5-41 runs before P5-39: the harness Check throws on the first failing collector, and P5-41's checks name the
+        // stderr fallback directly, while P5-39 section c only reads the P5-41 delta reversed.
+        RunP5_41(root, dotnet, mcpDll, check);
         RunP5_39(root, check);
     }
 
@@ -264,7 +267,8 @@ internal static class StdoutFailureToolTests
             }
             static string Unfolded(Exception failure) => "mcp stdout failed: " + failure.GetType().FullName + ": " + failure.Message;
             var programPath = Path.Combine(root, "interfaces", "mcp", "Program.cs");
-            var program = File.Exists(programPath) ? DocUpdateLinkTests.CodeOf(File.ReadAllText(programPath).ReplaceLineEndings("\n")) : "";
+            // P5-41 documented delta: Program.cs is read with ProgramDeltaP541 reversed (the P5-39 text; RunP5_41 pins the new statement).
+            var program = File.Exists(programPath) ? DocUpdateLinkTests.CodeOf(ReverseDelta(File.ReadAllText(programPath).ReplaceLineEndings("\n"), ProgramDeltaP541) ?? "") : "";
             const string Statement = "try { string? failureMessage=stdoutFailure.Message; Console.Error.WriteLine(\"mcp stdout failed: \"+stdoutFailure.GetType().FullName+\": \"+(failureMessage?.ReplaceLineEndings(\" \")??\"\")); } catch(Exception) { }";
             Check(Count(program, Statement) == 1 && Count(program, "mcp stdout failed") == 1,
                 "interfaces/mcp/Program.cs writes the diagnostic exactly once, through the pinned statement that folds the message with ReplaceLineEndings(\" \") and prints a null Message as empty | occurrences "
@@ -300,6 +304,145 @@ internal static class StdoutFailureToolTests
         }
 
         check(failures.Count == 0, "P5-39 mcp stdout edges: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
+    }
+
+    // P5-41: the 'mcp stdout failed' stderr line falls back to types when the write exception's Message getter throws.
+    // Oracles:
+    //   a. interfaces/mcp/Program.cs is the P5-39 file plus the documented delta ProgramDeltaP541 (the stderr statement and
+    //      its comment sentence): reversed, it gives the P5-39 text RunP5_39 section c reads; the new statement occurs once
+    //      and "mcp stdout failed" once.
+    //   b. Replica self-test of the new statement: for every P5-39 message (line breaks, null) it prints the P5-39 line
+    //      byte for byte; for an exception whose Message getter throws it prints exactly one line
+    //      "mcp stdout failed: <type>: <Message threw <the getter's exception type>>" (also two levels deep: only types are
+    //      read), where the P5-39 replica (the mutant) throws and the line was lost.
+    //   c. Real Release Bim.Mcp.dll (Linux; SKIP elsewhere: /bin/sh and /dev/full): an oversized first line (longer than
+    //      MaxLineChars + 1, answered by Run's request_too_large reply) with stdout >/dev/full or 1</dev/null: exit 1,
+    //      stdout empty, stderr exactly one line "mcp stdout failed: <type>: ..." (IOException / UnauthorizedAccessException
+    //      as P5-37 measured), no unhandled exception.
+    static void RunP5_41(string root, string dotnet, string mcpDll, Action<bool, string> check)
+    {
+        var failures = new List<string>();
+        void Check(bool condition, string name)
+        {
+            if (condition) check(true, "P5-41 mcp stderr fallback: " + name);
+            else failures.Add(name);
+        }
+        static string Short(string text) => text.Length > 300 ? text[..300] + "..." : text;
+        static int Count(string text, string part)
+        {
+            var n = 0;
+            for (var at = text.IndexOf(part, StringComparison.Ordinal); at >= 0; at = text.IndexOf(part, at + 1, StringComparison.Ordinal)) n++;
+            return n;
+        }
+        static int Lines(string text) => text.ReplaceLineEndings("\n").Split('\n').Length;
+
+        // ---- a. static: the documented delta and the new statement ----
+        var programPath = Path.Combine(root, "interfaces", "mcp", "Program.cs");
+        var raw = File.Exists(programPath) ? File.ReadAllText(programPath).ReplaceLineEndings("\n") : "";
+        var reversed = ReverseDelta(raw, ProgramDeltaP541);
+        Check(reversed is not null && Count(reversed, ProgramDeltaP541[1].Old) == 1,
+            "interfaces/mcp/Program.cs with ProgramDeltaP541 reversed holds the P5-39 statement once (each delta text occurs exactly once in the current file)");
+        var program = DocUpdateLinkTests.CodeOf(raw);
+        const string Statement = "try { string failureText; try { failureText=stdoutFailure.Message?.ReplaceLineEndings(\" \")??\"\"; } catch(Exception getterFailure) { failureText=\"<Message threw \"+getterFailure.GetType().FullName+\">\"; } Console.Error.WriteLine(\"mcp stdout failed: \"+stdoutFailure.GetType().FullName+\": \"+failureText); } catch(Exception) { }";
+        Check(Count(program, Statement) == 1 && Count(program, "mcp stdout failed") == 1,
+            "interfaces/mcp/Program.cs writes the diagnostic once, through the pinned P5-41 statement (fold, null as empty, a throwing Message getter replaced by its exception type) | occurrences "
+            + Count(program, Statement).ToString(CultureInfo.InvariantCulture) + "/" + Count(program, "mcp stdout failed").ToString(CultureInfo.InvariantCulture));
+
+        // ---- b. replica self-test ----
+        // A replica of the P5-41 statement pinned above, and of the P5-39 one (the mutant for a throwing getter).
+        static string Line(Exception stdoutFailure)
+        {
+            string failureText;
+            try { failureText = stdoutFailure.Message?.ReplaceLineEndings(" ") ?? ""; }
+            catch (Exception getterFailure) { failureText = "<Message threw " + getterFailure.GetType().FullName + ">"; }
+            return "mcp stdout failed: " + stdoutFailure.GetType().FullName + ": " + failureText;
+        }
+        static string LineP539(Exception failure)
+        {
+            string? failureMessage = failure.Message;
+            return "mcp stdout failed: " + failure.GetType().FullName + ": " + (failureMessage?.ReplaceLineEndings(" ") ?? "");
+        }
+        foreach (var failure in new Exception[] { new IOException("first P5-41\r\nsecond"), new IOException("a\nb\rc\u0085d e"), new IOException("plain P5-41"), new NullMessageException() })
+            Check(Line(failure) == LineP539(failure) && Lines(Line(failure)) == 1,
+                "the P5-41 formula prints the P5-39 line byte for byte when Message can be read (" + JsonSerializer.Serialize(LineP539(failure)) + ") | " + JsonSerializer.Serialize(Line(failure)));
+        var getter = new MessageGetterThrowsException();
+        var expected = "mcp stdout failed: " + typeof(MessageGetterThrowsException).FullName + ": <Message threw System.InvalidOperationException>";
+        Check(Line(getter) == expected && Lines(Line(getter)) == 1,
+            "a write exception whose Message getter throws prints exactly " + JsonSerializer.Serialize(expected) + " | " + JsonSerializer.Serialize(Line(getter)));
+        var twoLevels = new DoubleMessageGetterThrowsException();
+        var expectedTwo = "mcp stdout failed: " + typeof(DoubleMessageGetterThrowsException).FullName + ": <Message threw " + typeof(MessageGetterThrowsException).FullName + ">";
+        Check(Line(twoLevels) == expectedTwo,
+            "two levels: only types are read, so the getter's own throwing Message is never touched | " + JsonSerializer.Serialize(Line(twoLevels)));
+        var mutant = "";
+        try { LineP539(getter); }
+        catch (Exception error) { mutant = error.GetType().FullName ?? ""; }
+        Check(mutant == "System.InvalidOperationException",
+            "mutant self-test: the P5-39 formula throws for that exception (the line Program.cs used to drop) | " + (mutant.Length == 0 ? "did not throw" : mutant));
+
+        // ---- c. real process: oversized first line, failing stdout (Linux) ----
+        if (!OperatingSystem.IsLinux())
+            Console.WriteLine("SKIP P5-41 mcp stderr fallback: the real oversized-line run needs /bin/sh and /dev/full (Linux)");
+        else
+        {
+            var oversized = "{\"jsonrpc\":\"2.0\",\"id\":8,\"method\":\"tools/list\",\"params\":{\"pad\":\"" + new string('a', McpServer.MaxLineChars) + "\"}}";
+            const string Ping = """{"jsonrpc":"2.0","id":4,"method":"ping"}""";
+            Check(oversized.Length > McpServer.MaxLineChars + 1, "fixture: the oversized line is longer than MaxLineChars + 1");
+            foreach (var (redirect, type) in new[] { (">/dev/full", "System.IO.IOException"), ("1</dev/null", "System.UnauthorizedAccessException") })
+            {
+                var start = new ProcessStartInfo("/bin/sh") { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false,
+                    StandardInputEncoding = new UTF8Encoding(false), StandardOutputEncoding = new UTF8Encoding(false), StandardErrorEncoding = new UTF8Encoding(false) };
+                start.ArgumentList.Add("-c"); start.ArgumentList.Add("exec \"$@\" " + redirect); start.ArgumentList.Add("sh"); start.ArgumentList.Add(dotnet);
+                start.ArgumentList.Add(mcpDll);
+                (int Exit, string Out, string Err) run;
+                using (var process = Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: /bin/sh"))
+                {
+                    var stdout = process.StandardOutput.ReadToEndAsync();
+                    var stderr = process.StandardError.ReadToEndAsync();
+                    try { process.StandardInput.Write(oversized + "\n" + Ping + "\n"); process.StandardInput.Close(); } catch (IOException) { }
+                    if (!process.WaitForExit(120000)) { process.Kill(true); run = (-1, "<timed out>", ""); }
+                    else { process.WaitForExit(); run = (process.ExitCode, stdout.Result, stderr.Result); }
+                }
+                var prefix = "mcp stdout failed: " + type + ": ";
+                var err = run.Err.EndsWith('\n') ? run.Err[..^1] : run.Err;
+                Check(run.Exit == 1 && run.Out.Length == 0 && err.StartsWith(prefix, StringComparison.Ordinal) && Lines(err) == 1 && run.Err.EndsWith('\n')
+                    && !run.Err.Contains("Unhandled exception", StringComparison.Ordinal),
+                    "real Bim.Mcp.dll, an oversized first line (request_too_large reply) with stdout " + redirect + " (Linux): exit 1, stdout empty, stderr exactly one line '" + prefix + "...', no unhandled exception | exit "
+                    + run.Exit.ToString(CultureInfo.InvariantCulture) + " out " + JsonSerializer.Serialize(Short(run.Out)) + " err " + JsonSerializer.Serialize(Short(run.Err)));
+            }
+        }
+
+        check(failures.Count == 0, "P5-41 mcp stderr fallback: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
+    }
+
+    // P5-41 documented delta (new text, P5-39 text) of interfaces/mcp/Program.cs, "\n" line endings.
+    static readonly (string New, string Old)[] ProgramDeltaP541 =
+    {
+        ("// NullReferenceException. P5-41: a Message getter that throws no longer drops the line: the message part becomes\n"
+            + "// \"<Message threw <the getter's exception type>>\" (only types are read), exit 1.\n",
+            "// NullReferenceException. A Message getter that throws still drops the line (the guarded write), exit 1 alone.\n"),
+        ("    try { string failureText; try { failureText=stdoutFailure.Message?.ReplaceLineEndings(\" \")??\"\"; } catch(Exception getterFailure) { failureText=\"<Message threw \"+getterFailure.GetType().FullName+\">\"; } Console.Error.WriteLine(\"mcp stdout failed: \"+stdoutFailure.GetType().FullName+\": \"+failureText); } catch(Exception) { }\n",
+            "    try { string? failureMessage=stdoutFailure.Message; Console.Error.WriteLine(\"mcp stdout failed: \"+stdoutFailure.GetType().FullName+\": \"+(failureMessage?.ReplaceLineEndings(\" \")??\"\")); } catch(Exception) { }\n"),
+    };
+
+    // The text with each (new, old) pair replaced back (new -> old), or null when a new text does not occur exactly once.
+    static string? ReverseDelta(string text, IReadOnlyList<(string New, string Old)> delta)
+    {
+        foreach (var (newText, oldText) in delta)
+        {
+            var at = text.IndexOf(newText, StringComparison.Ordinal);
+            if (at < 0 || text.IndexOf(newText, at + 1, StringComparison.Ordinal) >= 0) return null;
+            text = text[..at] + oldText + text[(at + newText.Length)..];
+        }
+        return text;
+    }
+
+    // P5-41: an exception whose Message getter throws MessageGetterThrowsException (two levels).
+    sealed class DoubleMessageGetterThrowsException : Exception
+    {
+        public DoubleMessageGetterThrowsException() { }
+        public DoubleMessageGetterThrowsException(string message) : base(message) { }
+        public DoubleMessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
+        public override string Message => throw new MessageGetterThrowsException();
     }
 
     // P5-39: an exception whose Message is null (the formula must print "" for it).
