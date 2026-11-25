@@ -2506,7 +2506,7 @@ try {
         # hard-coded copies of the prefix, never a check name that merely contains 'cleanup failed: '.
         try {
             $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
-            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37') "P4-36/P4-37: this script's header lists P4-31..P4-37: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37)"
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38') "P4-36..P4-38: this script's header lists P4-31..P4-38: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38)"
             $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
             Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
             $p436Misplaced = [ordered]@{
@@ -2565,6 +2565,45 @@ try {
                 Assert (($p437Found -join '|') -ceq $p437Case.Want) "P4-37 self-test: $($p437Case.Label): $(Format-P431List $p437Found) (want [$($p437Case.Want)])"
             }
         } catch { $failures.Add("P4-37 prefix scan self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-38 self-test: holes of interpolated raw strings ($"""...{x}...""", $$"""...{{x}}...""") are read as code, so a nested
+        # (raw) string in a hole neither closes the outer literal nor hides a stale prefix; a preprocessor line (#region
+        # Don't) is skipped; the check-name policy (a check name containing ': cleanup failed: ' is a stale prefix, one with
+        # 'cleanup failed: ' after anything but ': ' is exempt); a static readonly CleanupFailed is read and a mutable one
+        # refused by name; LIMIT: a format clause with an apostrophe ({x:don't}) is read as code and fails closed as an
+        # unterminated literal; the tokenizer's run time over tests/cli/PackageLayoutPackTests.cs is printed and bounded.
+        try {
+            $p438Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p438Into 'P4-38' '/p4-38/left' { param($l, $p) 'W' }
+            $p438Prefix = if ($p438Into.Count -eq 1 -and $p438Into[0].EndsWith('W')) { $p438Into[0].Substring(0, $p438Into[0].Length - 1) } else { '<none>' }
+            $p438Decl = 'const string CleanupFailed = "' + $p438Prefix + '";'
+            $p438Stale = 'other cleanup-failed literal "P4-33: cleanup failed: "'
+            $p438Multi = '$"""' + "`n" + '    {Join(xs.Select(x => { return x; }))} P4-33: cleanup failed: x' + "`n" + '    """'
+            $p438Cases = @(
+                @{ Label = 'interpolated raw string with a nested raw string in a hole'; Text = $p438Decl + ' return $"""a {(ok ? """b""" : "c")} P4-33: cleanup failed: """ + p;'; Want = 'other cleanup-failed literal $"""a {(ok ? """b""" : "c")} P4-33: cleanup failed: """' }
+                @{ Label = '$$ raw string with a nested raw string in a {{hole}}'; Text = $p438Decl + ' return $$"""{x} {{F("""y""")}} P4-33: cleanup failed: """;'; Want = 'other cleanup-failed literal $$"""{x} {{F("""y""")}} P4-33: cleanup failed: """' }
+                @{ Label = 'stale prefix in a raw string nested in a hole'; Text = $p438Decl + ' return $"""x {F("""P4-33: cleanup failed: """)} y""";'; Want = 'other cleanup-failed literal $"""x {F("""P4-33: cleanup failed: """)} y"""' }
+                @{ Label = 'multi-line interpolated raw string with a lambda hole'; Text = $p438Decl + "`nvar m = " + $p438Multi + ';'; Want = 'other cleanup-failed literal ' + $p438Multi }
+                @{ Label = 'clean interpolated raw strings'; Text = $p438Decl + ' var s = $"""{a} {(ok ? "c" : """d""")}"""; var t = $$"""{a} {{b}} {c}""";'; Want = '' }
+                @{ Label = 'preprocessor lines with apostrophes'; Text = $p438Decl + "`n    #region Don't`n" + 'return "P4-33: cleanup failed: " + p;' + "`n#endregion it's done`n#if DEBUG // won't`n#endif"; Want = $p438Stale }
+                @{ Label = "check name containing ': cleanup failed: ' is a stale prefix"; Text = $p438Decl + ' check(ok, "P4-38: copy: cleanup failed: named", d);'; Want = 'other cleanup-failed literal "P4-38: copy: cleanup failed: named"' }
+                @{ Label = "check name with 'cleanup failed: ' after a word is exempt"; Text = $p438Decl + ' check(ok, "P4-38: the copy cleanup failed: named", d);'; Want = '' }
+                @{ Label = 'static readonly declaration'; Text = 'private static readonly string CleanupFailed = "' + $p438Prefix + '"; return CleanupFailed + p;'; Want = '' }
+                @{ Label = 'readonly static declaration with another prefix'; Text = 'readonly static string CleanupFailed = "P4-33: cleanup failed: ";'; Want = "C# CleanupFailed 'P4-33: cleanup failed: ' differs from the ps1 prefix '$p438Prefix'" }
+                @{ Label = 'mutable CleanupFailed refused by name'; Text = 'static string CleanupFailed = "' + $p438Prefix + '";'; Want = '0 CleanupFailed declarations (want 1)|CleanupFailed assigned outside a const or static readonly declaration "' + $p438Prefix + '"' }
+                @{ Label = 'LIMIT: format clause with an apostrophe fails closed'; Text = $p438Decl + ' return $"{x:don''t} P4-33: cleanup failed: " + p;'; Want = "unterminated C# literal at offset $($p438Decl.Length + 8)" }
+            )
+            foreach ($p438Case in $p438Cases) {
+                $p438Found = Get-P435PrefixMismatch $p438Case.Text $p438Prefix
+                Assert (($p438Found -join '|') -ceq $p438Case.Want) "P4-38 self-test: $($p438Case.Label): $(Format-P431List $p438Found) (want [$($p438Case.Want)])"
+            }
+            $p438Cs = [IO.File]::ReadAllText((Join-Path $root 'tests/cli/PackageLayoutPackTests.cs'))
+            $p438Watch = [Diagnostics.Stopwatch]::StartNew()
+            $p438Scan = Get-P437CsLiterals $p438Cs
+            $p438Watch.Stop()
+            $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound 20000 ms)"
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::notice title=packaging::' + ($p438Cost -replace '%', '%25')) } else { Write-Host $p438Cost }
+            Assert ($null -eq $p438Scan.Error -and $p438Scan.Literals.Count -gt 0 -and $p438Watch.ElapsedMilliseconds -lt 20000) "P4-38: the tokenizer reads tests/cli/PackageLayoutPackTests.cs without error within its bound: $p438Cost error $($p438Scan.Error)"
+        } catch { $failures.Add("P4-38 tokenizer self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
