@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 // tests/cli/RevitCommandDeadlineTests.cs), CommentsBlanked (P1-44), and the parsed argument list of a
 // `new RevitDeadlineTransport(` construction (P1-40, P1-42): split at depth 0 and mapped onto the constructor's
 // parameters as C# does. RevitCommandDeadlineTests (sections 2g, 2i, 3a) and the tests/mcp RevitCallAll pin call it.
+// P1-45: CodeMask (comments and literals blanked at their positions) and MemberBody(raw: true), for a pin that reads
+// the source as written instead of StripCode output.
 internal static class DeadlineSourceScan
 {
     // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
@@ -19,47 +21,56 @@ internal static class DeadlineSourceScan
     {
         var text = new StringBuilder(source.Length);
         var i = 0;
-        StripCodeInto(source, ref i, text, 0, null);
+        StripCodeInto(source, ref i, text, 0, null, null);
         return text.ToString();
     }
 
     // P1-44: source with only its comments blanked (each comment character a space, newlines kept), literals and code
     // unchanged at their positions: for pins that read literal text or need to tell a comment line from literal text.
-    internal static string CommentsBlanked(string source)
+    internal static string CommentsBlanked(string source) => Blanked(source, comments: true, literals: false);
+
+    // P1-45: the source with its comments AND every literal — its delimiters, its text, an interpolation hole's braces
+    // and the format text after a hole's ':' — blanked the same way, every other character left at its own position,
+    // the code inside a hole included, so the result has the source's length. MemberBody(raw: true) counts brackets on
+    // it, where a bracket inside a string or char literal (or a comment) is not one of the code's.
+    internal static string CodeMask(string source) => Blanked(source, comments: true, literals: true);
+
+    static string Blanked(string source, bool comments, bool literals)
     {
-        var comments = new bool[source.Length];
+        var marks = new bool[source.Length];
         var i = 0;
-        StripCodeInto(source, ref i, new StringBuilder(source.Length), 0, comments);
+        StripCodeInto(source, ref i, new StringBuilder(source.Length), 0, comments ? marks : null, literals ? marks : null);
         var text = source.ToCharArray();
-        for (var k = 0; k < text.Length; k++) if (comments[k] && text[k] != '\n') text[k] = ' ';
+        for (var k = 0; k < text.Length; k++) if (marks[k] && text[k] != '\n') text[k] = ' ';
         return new string(text);
     }
 
     // Copies code from s[i..] into text. holeBraces > 0: inside an interpolation hole, returns past the run of holeBraces
     // '}' that closes it at depth 0 (the caller writes the hole's braces). P1-44: comments, when given, marks the source
-    // positions of every comment (CommentsBlanked).
-    static void StripCodeInto(string s, ref int i, StringBuilder text, int holeBraces, bool[]? comments)
+    // positions of every comment (CommentsBlanked). P1-45: literals, when given, marks the positions of every literal —
+    // delimiters, text, a hole's braces and a hole's format text — and never those of the code inside a hole (CodeMask).
+    static void StripCodeInto(string s, ref int i, StringBuilder text, int holeBraces, bool[]? comments, bool[]? literals)
     {
         var depth = 0;
         void Blank(int from, int to) { for (var k = from; k < to && k < s.Length; k++) if (s[k] == '\n') text.Append('\n'); }
-        void Mark(int from, int to) { if (comments is not null) for (var k = from; k < to && k < s.Length; k++) comments[k] = true; }
+        void Mark(bool[]? marks, int from, int to) { if (marks is not null) for (var k = from; k < to && k < s.Length; k++) marks[k] = true; }
         void Hole(ref int pos, int braces)
         {
             text.Append('{');
-            StripCodeInto(s, ref pos, text, braces, comments);
+            StripCodeInto(s, ref pos, text, braces, comments, literals);
             text.Append('}');
         }
         while (i < s.Length)
         {
             var c = s[i];
             var next = i + 1 < s.Length ? s[i + 1] : '\0';
-            if (c == '/' && next == '/') { var from = i; while (i < s.Length && s[i] != '\n') i++; Mark(from, i); continue; }
+            if (c == '/' && next == '/') { var from = i; while (i < s.Length && s[i] != '\n') i++; Mark(comments, from, i); continue; }
             if (c == '/' && next == '*')
             {
                 var end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
                 var stop = end < 0 ? s.Length : end + 2;
                 Blank(i, stop);
-                Mark(i, stop);
+                Mark(comments, i, stop);
                 text.Append(' ');
                 i = stop;
                 continue;
@@ -69,7 +80,9 @@ internal static class DeadlineSourceScan
                 var p = i + 1;
                 while (p < s.Length && s[p] != '\'' && s[p] != '\n') p += s[p] == '\\' ? 2 : 1;
                 text.Append("''");
-                i = Math.Min(s.Length, p + 1);
+                var stop = Math.Min(s.Length, p + 1);
+                Mark(literals, i, stop);
+                i = stop;
                 continue;
             }
             var at = i;
@@ -81,17 +94,17 @@ internal static class DeadlineSourceScan
                 var quotes = 0;
                 while (!verbatim && at + quotes < s.Length && s[at + quotes] == '"') quotes++;
                 text.Append('"');
-                var p = at + 1;
-                if (quotes == 2) p = at + 2;
-                else if (quotes >= 3)
+                var p = quotes >= 3 ? at + quotes : quotes == 2 ? at + 2 : at + 1;
+                Mark(literals, i, p);
+                if (quotes >= 3)
                 {
-                    p = at + quotes;
                     while (p < s.Length)
                     {
                         if (s[p] == '"')
                         {
                             var run = 0;
                             while (p + run < s.Length && s[p + run] == '"') run++;
+                            Mark(literals, p, p + run);
                             p += run;
                             if (run >= quotes) break;
                             continue;
@@ -100,15 +113,17 @@ internal static class DeadlineSourceScan
                         {
                             var run = 0;
                             while (p + run < s.Length && s[p + run] == '{') run++;
+                            Mark(literals, p, p + run);
                             p += run;
                             if (run >= dollars) Hole(ref p, dollars);
                             continue;
                         }
                         if (s[p] == '\n') text.Append('\n');
+                        Mark(literals, p, p + 1);
                         p++;
                     }
                 }
-                else
+                else if (quotes <= 1)
                 {
                     while (p < s.Length)
                     {
@@ -116,15 +131,17 @@ internal static class DeadlineSourceScan
                         var after = p + 1 < s.Length ? s[p + 1] : '\0';
                         if (d == '"')
                         {
-                            if (verbatim && after == '"') { p += 2; continue; }
+                            if (verbatim && after == '"') { Mark(literals, p, p + 2); p += 2; continue; }
+                            Mark(literals, p, p + 1);
                             p++;
                             break;
                         }
-                        if (!verbatim && d == '\\') { p += 2; continue; }
+                        if (!verbatim && d == '\\') { Mark(literals, p, p + 2); p += 2; continue; }
                         if (!verbatim && d == '\n') break;
-                        if (dollars > 0 && (d == '{' || d == '}') && after == d) { p += 2; continue; }
-                        if (dollars > 0 && d == '{') { p++; Hole(ref p, 1); continue; }
+                        if (dollars > 0 && (d == '{' || d == '}') && after == d) { Mark(literals, p, p + 2); p += 2; continue; }
+                        if (dollars > 0 && d == '{') { Mark(literals, p, p + 1); p++; Hole(ref p, 1); continue; }
                         if (d == '\n') text.Append('\n');
+                        Mark(literals, p, p + 1);
                         p++;
                     }
                 }
@@ -138,12 +155,14 @@ internal static class DeadlineSourceScan
                 else if (c is ')' or ']') depth--;
                 else if (c == '}')
                 {
-                    if (depth == 0) { i = Math.Min(s.Length, i + holeBraces); return; }
+                    if (depth == 0) { Mark(literals, i, i + holeBraces); i = Math.Min(s.Length, i + holeBraces); return; }
                     depth--;
                 }
                 else if (c == ':' && depth == 0 && next != ':' && (i == 0 || s[i - 1] != ':'))
                 {
+                    var from = i;
                     while (i < s.Length && s[i] != '}' && s[i] != '\n') i++;
+                    Mark(literals, from, i);
                     continue;
                 }
             }
@@ -157,25 +176,33 @@ internal static class DeadlineSourceScan
     // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
     // P1-43: the head is read at bracket depth 0 only: a ';', '=>' or '{' inside the parameter list or an attribute
     // (inside '(' .. ')' or '[' .. ']') is not the member's own end, arrow or block.
-    internal static string? MemberBody(string code, string signature)
+    // P1-45: `code` is StripCode output by default — there every literal is "" or an interpolated literal's
+    // "{hole code}", whose brackets are that code's and are counted. `raw: true` reads the source as written: the
+    // brackets are counted on CodeMask(code), so one inside a string or char literal (a parameter attribute like
+    // [Note(")")], a default value) or inside a comment is not the code's, and a signature named in a comment or a
+    // literal is not the member. The two cannot be one path: StripCode drops the '$' of an interpolated literal, so
+    // its hole would read as literal text. A stray ')' or ']' never takes the bracket depth below 0.
+    internal static string? MemberBody(string code, string signature, bool raw = false)
     {
+        var scan = raw ? CodeMask(code) : code;
         var start = code.IndexOf(signature, StringComparison.Ordinal);
+        while (raw && start >= 0 && scan[start] != code[start]) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
         if (start < 0) return null;
         var nested = 0;
-        for (var k = start; k < code.Length; k++)
+        for (var k = start; k < scan.Length; k++)
         {
-            var c = code[k];
+            var c = scan[k];
             if (c is '(' or '[') nested++;
-            else if (c is ')' or ']') nested--;
+            else if (c is ')' or ']') { if (nested > 0) nested--; }
             else if (nested > 0) continue;
-            else if (c == ';' || (c == '=' && k + 1 < code.Length && code[k + 1] == '>')) return null;
+            else if (c == ';' || (c == '=' && k + 1 < scan.Length && scan[k + 1] == '>')) return null;
             else if (c == '{')
             {
                 var depth = 0;
-                for (var end = k; end < code.Length; end++)
+                for (var end = k; end < scan.Length; end++)
                 {
-                    if (code[end] == '{') depth++;
-                    else if (code[end] == '}' && --depth == 0) return code[start..(end + 1)];
+                    if (scan[end] == '{') depth++;
+                    else if (scan[end] == '}' && --depth == 0) return code[start..(end + 1)];
                 }
                 return null;
             }
