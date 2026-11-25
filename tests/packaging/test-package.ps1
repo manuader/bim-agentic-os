@@ -42,6 +42,8 @@
 # removed from a copy by its AST extent; -Into is checked for any user (stand-in remover) and the P7-43 block reports its own leftover.
 # P7-45: Remove-Item $work counts only as a direct statement of the report's finally (scriptblock/if mutants, a report planted in
 # another top-level try); the stand-in remover counts its calls; -Silent without -Into leaves the run-wide list untouched.
+# P7-47: [void](Remove-Item $work) and $null = Remove-Item $work are direct statements too; $work counts only as Remove-Item's
+# -LiteralPath/-Path argument (a -Filter mutant reads work 0); the stand-in checks it got -LiteralPath with the probe path.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1124,7 +1126,10 @@ try {
     # definitions or calls of the old Remove-P733Directory. P7-43: returns an object (counts as properties, Summary = the
     # P7-41 text, Error = the first parse error or $null); work = the outer calls in a finally that also runs Remove-Item
     # on $work, and WorkReports = those CommandAsts (their Extent locates the call in the text). P7-45: that Remove-Item
-    # must be a direct statement of the same finally (nested in a scriptblock or if it does not count).
+    # must be a direct statement of the same finally (nested in a scriptblock or if it does not count). P7-47: a direct
+    # statement is a one-command pipeline `Remove-Item ...`, its void cast `[void](Remove-Item ...)` or `$null = Remove-Item
+    # ...` (any other wrapper, or a longer pipeline, does not count), and $work must be bound (static parameter binder) to
+    # Remove-Item's -LiteralPath or -Path: named, abbreviated, alias or positional; $work given to -Filter etc. does not count.
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -1140,6 +1145,31 @@ try {
         }
         $isCommand = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.CommandAst] -and $Node.GetCommandName() -eq $Name }
         $isVariable = { param($Node, [string]$Name) $Node -is [Management.Automation.Language.VariableExpressionAst] -and $Node.VariablePath.UserPath -eq $Name }
+        # P7-47: the one CommandAst a direct statement runs ($null when it is not one of the three direct forms).
+        $directCommand = {
+            param($Statement)
+            $pipeline = $Statement
+            if ($Statement -is [Management.Automation.Language.AssignmentStatementAst]) {
+                if (!(& $isVariable $Statement.Left 'null') -or $Statement.Operator -ne [Management.Automation.Language.TokenKind]::Equals) { return $null }
+                $pipeline = $Statement.Right
+            }
+            if ($pipeline -isnot [Management.Automation.Language.PipelineAst] -or $pipeline.PipelineElements.Count -ne 1) { return $null }
+            $element = $pipeline.PipelineElements[0]
+            if ($element -is [Management.Automation.Language.CommandAst]) { return $element }
+            if ($Statement -is [Management.Automation.Language.AssignmentStatementAst] -or $element -isnot [Management.Automation.Language.CommandExpressionAst] -or $element.Redirections.Count) { return $null }
+            $cast = $element.Expression
+            if ($cast -isnot [Management.Automation.Language.ConvertExpressionAst] -or $cast.Type.TypeName.FullName -ne 'void' -or $cast.Child -isnot [Management.Automation.Language.ParenExpressionAst]) { return $null }
+            $inner = $cast.Child.Pipeline
+            if ($inner -is [Management.Automation.Language.PipelineAst] -and $inner.PipelineElements.Count -eq 1 -and $inner.PipelineElements[0] -is [Management.Automation.Language.CommandAst]) { return $inner.PipelineElements[0] }
+            return $null
+        }
+        $removesWork = {
+            param($Command)
+            if ($null -eq $Command -or !(& $isCommand $Command 'Remove-Item')) { return $false }
+            $bound = [Management.Automation.Language.StaticParameterBinder]::BindCommand($Command, $true).BoundParameters
+            foreach ($name in @('LiteralPath', 'Path')) { if ($bound.ContainsKey($name) -and (& $isVariable $bound[$name].Value 'work')) { return $true } }
+            return $false
+        }
         $outer = 0; $workReports = [Collections.Generic.List[object]]::new()
         $top = if ($ast.EndBlock) { @($ast.EndBlock.Statements) } else { @() }
         foreach ($try in @($top | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })) {
@@ -1147,7 +1177,7 @@ try {
             $outer += $reports.Count
             # P7-45: Remove-Item $work must be a direct statement of this finally (one-command pipeline), not nested in a
             # scriptblock, if or other block.
-            $cleansWork = @($try.Finally.Statements | Where-Object { $_ -is [Management.Automation.Language.PipelineAst] -and $_.PipelineElements.Count -eq 1 -and (& $isCommand $_.PipelineElements[0] 'Remove-Item') -and @($_.PipelineElements[0].CommandElements | Where-Object { & $isVariable $_ 'work' }).Count -gt 0 }).Count -gt 0
+            $cleansWork = @($try.Finally.Statements | Where-Object { & $removesWork (& $directCommand $_) }).Count -gt 0
             if ($cleansWork) { foreach ($report in $reports) { $workReports.Add($report) } }
         }
         $loops = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'tool' -and @($n.Condition.FindAll({ param($c) & $isVariable $c 'p737Ranked' }, $true)).Count -gt 0 }, $true))
