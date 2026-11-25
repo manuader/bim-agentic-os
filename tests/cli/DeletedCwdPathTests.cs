@@ -880,9 +880,12 @@ internal static class DeletedCwdPathTests
         @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
-    // P10-47: the parameter list may hold balanced parentheses (a default containing calls); stated limit: a parenthesis
-    // inside a string or char default is counted.
-    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\((?>[^()]|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-47: the parameter list may hold balanced parentheses (a default containing calls). P10-49: parentheses inside
+    // string (raw, verbatim, regular) and char defaults are skipped; stated limit: an interpolated string default
+    // ($"...") is read as a regular string, so a quote inside one of its holes ends it early.
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(
+        @"\bPathProblem\s*\((?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{",
+        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? FilterProblem41(string source)
     {
@@ -1006,14 +1009,17 @@ internal static class DeletedCwdPathTests
     // // and /* */ comments, string literals (regular, $, @ and $@/@$ verbatim, "" escapes) and char literals are skipped.
     // P10-47: also C# 11 raw literals (three or more quotes, closed by the same count; $-prefixed raw literals whose holes
     // open with as many braces as dollars) and everything inside interpolation holes, which are scanned as code to their
-    // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). Stated limit: a
-    // hole's format clause ({x:...}) is scanned as code.
+    // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). P10-49: a hole's
+    // format clause ({x:...}) is text to the hole's closing brace, and a $$ raw hole must close with as many braces as dollars.
     static int BlockEnd45(string source, int open) => open >= 0 && open < source.Length && source[open] == '{' ? CodeEnd47(source, open + 1) : -1;
 
-    // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1.
-    static int CodeEnd47(string source, int start)
+    // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1. P10-49: in an
+    // interpolation hole a ':' outside parentheses, brackets and braces opens the format clause, which is text to the first
+    // '}' (C# reads a top-level ':' in a hole as the format clause; a conditional there must be parenthesised).
+    static int CodeEnd47(string source, int start, bool hole = false)
     {
         var depth = 0;
+        var parens = 0;
         for (var i = start; i < source.Length; i++)
         {
             var c = source[i];
@@ -1045,6 +1051,9 @@ internal static class DeletedCwdPathTests
                 if (end < 0) return -1;
                 i = end;
             }
+            else if (c == '(' || c == '[') parens++;
+            else if ((c == ')' || c == ']') && parens > 0) parens--;
+            else if (hole && c == ':' && depth == 0 && parens == 0) return source.IndexOf('}', i + 1);
             else if (c == '{') depth++;
             else if (c == '}' && depth-- == 0) return i;
         }
@@ -1070,8 +1079,8 @@ internal static class DeletedCwdPathTests
                 {
                     var run = Run(i, '{');
                     if (run < dollars) { i += run - 1; continue; }
-                    var close = CodeEnd47(source, i + run);
-                    if (close < 0) return -1;
+                    var close = CodeEnd47(source, i + run, hole: true);
+                    if (close < 0 || Run(close, '}') < dollars) return -1;
                     i = close + dollars - 1;
                 }
             }
@@ -1089,7 +1098,7 @@ internal static class DeletedCwdPathTests
             if (dollars > 0 && c == '{')
             {
                 if (i + 1 < source.Length && source[i + 1] == '{') { i++; continue; }
-                var close = CodeEnd47(source, i + 1);
+                var close = CodeEnd47(source, i + 1, hole: true);
                 if (close < 0) return -1;
                 i = close;
             }
