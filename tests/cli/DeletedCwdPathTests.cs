@@ -878,13 +878,18 @@ internal static class DeletedCwdPathTests
         @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\([^()]*\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     static string? FilterProblem41(string source)
     {
         var tries = Try41.Matches(source);
         if (tries.Count != 1) return "not exactly one 'try { Path.GetFullPath(path); }' (any layout): " + tries.Count.ToString(CultureInfo.InvariantCulture);
         var at = tries[0].Index;
-        var method = source.LastIndexOf(" PathProblem(", at, StringComparison.Ordinal);
-        if (method < 0 || source[method..at].Contains("\n    }", StringComparison.Ordinal)) return "the GetFullPath try is not inside PathProblem";
+        // P10-45: brace scoping, not indentation: the try lies inside the body of the last 'PathProblem(<parameters>) {'
+        // declaration before it (BlockEnd45 skips braces in strings, chars and comments).
+        var declaration = Declaration45.Matches(source).Where(match => match.Index < at).LastOrDefault();
+        var close = declaration is null ? -1 : BlockEnd45(source, declaration.Index + declaration.Length - 1);
+        if (close < at) return "the GetFullPath try is not inside PathProblem (brace scoping: " + (declaration is null ? "no 'PathProblem(...) {' declaration before it" : close < 0 ? "its body is not closed" : "its body closes before the try") + ")";
         var filter = Catch41.Match(source, at + tries[0].Length);
         if (!filter.Success) return "no 'catch (Exception e) when (e is A or B ...)' filter directly follows the GetFullPath try (only whitespace and // comment lines may stand between)";
         var types = System.Text.RegularExpressions.Regex.Split(filter.Groups["types"].Value, @"\s+or\s+");
