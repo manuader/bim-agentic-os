@@ -458,3 +458,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay283 (2026-11-25, cloud)
 - No new required action. `git pull` (main 7ff2d8fb, CI green). Test-only changes (P10-46, P6-45, P7-46). P10-46 confirmed the nested lone-surrogate error code is the same System.Text.Json message on CLI and MCP (feeds the optional typed generic-catch decision). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
+
+## Relay284 (2026-11-25, cloud)
+- No new required action. Merged P1-45, P2-44, P5-39 (main 65e76ff, CI 45558710699 green 9/9). P5-39 fixed a real defect: the MCP server's 'mcp stdout failed' error line on stderr could split into several lines when the message held line breaks; now always one line. Still open from before: decide ADR0010 (P2-11) and ADR0011 (P9-03), recommended option A; ONE -Catalogue run then catalogue-report; N21 run 3; git pull.
