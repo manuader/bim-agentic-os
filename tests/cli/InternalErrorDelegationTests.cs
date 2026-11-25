@@ -553,6 +553,27 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { try { " + read + " } catch (Exception) { throw; } } C(int[] a) { } }\n", true),
                     ("the pinned read in a new-modifier method returning a tuple", declaration + "\nclass C : B { public new (int, int) M() { try { " + read + " } catch (Exception) { throw; } return (0, 0); } }\n", true),
                     ("the pinned read in a new-modifier method returning ref int", declaration + "\nclass C : B { int f; public new ref int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
+                    // P3-43: braces or nested brackets inside a bracketed attribute argument before a seam-reading header
+                    // (`[A(new[] { 1 })]`, `[A(typeof(int[]))]`), a collection expression holding a block lambda in a
+                    // constructor initializer or a statement before the header, a new-modifier method returning a generic
+                    // type containing a tuple or a pointer, local functions in for (;;) / using (...) bodies; clean controls
+                    // (incl. the ref readonly new-modifier one P3-41 lacked).
+                    ("the read moved into a local function carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic void W() { [A(new[] { 1 })] void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside a method carrying [A(new[] { 1 })]", declaration + "\n[A(new[] { 1 })] static void W() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function carrying [A(typeof(int[]))]", declaration + "\nstatic void W() { [A(typeof(int[]))] void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside a get accessor carrying [A(new[] { 1 })]", declaration + "\nstatic int P { [A(new[] { 1 })] get { void Later() { " + read + " } Later(); return 0; } }\n", false),
+                    ("the read moved into a local function inside a constructor with a this([() => { return; }]) initializer (planted)", declaration + "\nsealed class C { public C() : this([() => { return; }]) { void Later() { " + read + " } Later(); } C(Action[] a) { } }\n", false),
+                    ("the read moved into a local function after a collection expression holding a block lambda", declaration + "\nstatic void W() { Action[] xs = [() => { return; }]; void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning List<(int, int)> (planted)", declaration + "\nclass C : B { public new List<(int, int)> M() { void Later() { " + read + " } Later(); return null; } }\n", false),
+                    ("the read moved into a local function inside a new-modifier method returning a pointer (planted)", declaration + "\nclass C : B { public new unsafe int* M() { void Later() { " + read + " } Later(); return null; } }\n", false),
+                    ("the read moved into a local function inside a for (;;) body", declaration + "\nstatic void W() { for (;;) { void Later() { " + read + " } Later(); break; } }\n", false),
+                    ("the read moved into a local function inside a using (...) body", declaration + "\nstatic void W() { using (var s = new MemoryStream()) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the pinned read in a method carrying [A(new[] { 1 })]", declaration + "\n[A(new[] { 1 })] static void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read after a collection expression holding a block lambda", declaration + "\nstatic void W() { Action[] xs = [() => { return; }]; try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in a new-modifier method returning List<(int, int)>", declaration + "\nclass C : B { public new List<(int, int)> M() { try { " + read + " } catch (Exception) { throw; } return null; } }\n", true),
+                    ("the pinned read in a new-modifier method returning ref readonly int", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
+                    ("the pinned read in a for (;;) body", declaration + "\nstatic void W() { for (;;) { try { " + read + " } catch (Exception) { throw; } break; } }\n", true),
+                    ("the pinned read in a using (...) body", declaration + "\nstatic void W() { using (var s = new MemoryStream()) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                 };
                 // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
                 // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
@@ -610,8 +631,22 @@ internal static class InternalErrorDelegationTests
             // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls; its 2 pinned limits are
             // now planted) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 planted, 3 clean controls)
             // for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new
-            // seams: 835.
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7) + 2 * (16 + 1) + 2 * (16 + 2) && selfTests == 835, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // seams; plus 16 bracket/collection-expression/generic-tuple-or-pointer/for-using header cases (P3-43: 10 planted,
+            // 6 clean controls) for each of the 9 seams and its 2 header-span pins: 981.
+            // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
+            // inside the parentheses do not split it).
+            foreach (var (code, header) in new[] { ("{ for (;;) {", "for (;;)"), ("{ using (var s = new MemoryStream()) {", "using (var s = new MemoryStream())") })
+            {
+                var open = code.LastIndexOf('{');
+                Check(code[HeaderStart(code, open)..open].Trim() == header, "P3-29 seam hygiene self-test: the header of [" + code + "] spans [" + header + "]", code[HeaderStart(code, open)..open]);
+                selfTests++;
+            }
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16) + 2 * (16 + 1) + 2 * (16 + 2) + 2 && selfTests == 981, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
+            // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
+            foreach (var field in new[] { "InitializerArguments", "LeadingAttributes" })
+                Check(typeof(InternalErrorDelegationTests).GetField(field, Any)?.GetValue(null) is System.Text.RegularExpressions.Regex pattern && pattern.MatchTimeout == TimeSpan.FromSeconds(1),
+                    "P3-29 seam hygiene: the header regex " + field + " has a 1 s match timeout", (typeof(InternalErrorDelegationTests).GetField(field, Any)?.GetValue(null) as System.Text.RegularExpressions.Regex)?.MatchTimeout.ToString("c", CultureInfo.InvariantCulture) ?? "<missing>");
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
