@@ -904,6 +904,53 @@ internal static class RevitCommandDeadlineTests
             : "::notice::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
                 + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
 
+    // ---- P1-45: the step-wide FAIL summary line and the runtime warning's level and place ----
+    // (a) Static, on the comment- and literal-stripped tests/cli/Program.cs: its Check records every FAIL name of the
+    // step in failedNames, and the step-wide summary line is printed exactly once, from the finally block, so a
+    // harness error (or a test that throws) still prints it. A print named only in a comment is no print.
+    static string[] StepSummaryProblems(string source)
+    {
+        var code = StripCode(source.ReplaceLineEndings("\n"));
+        var problems = new List<string>();
+        var checkBody = MemberBody(code, "void Check(");
+        if (checkBody is null) problems.Add("the Check function was not found");
+        else if (!System.Text.RegularExpressions.Regex.IsMatch(checkBody, @"\bfailedNames\s*\.\s*Add\s*\(\s*name\s*\)")) problems.Add("Check does not record the FAIL name in failedNames");
+        var prints = System.Text.RegularExpressions.Regex.Matches(code, @"Console\s*\.\s*WriteLine\s*\(\s*CliInputsSummary\s*\.\s*Line\s*\(\s*failedNames\s*\)\s*\)");
+        if (prints.Count != 1) problems.Add("the step-wide summary line is printed " + N(prints.Count) + " times, not once");
+        else
+        {
+            var last = System.Text.RegularExpressions.Regex.Match(code, @"\}\s*finally\s*\{");
+            if (!last.Success) problems.Add("no finally block was found");
+            else if (prints[0].Index < last.Index) problems.Add("the step-wide summary line is printed before the finally block");
+        }
+        return problems.ToArray();
+    }
+
+    // (b) Static, on this file: the Windows runtime annotation is written exactly once, from VisibilitySelfTest, which
+    // RunSteps calls before it checks or prints anything else; and no ::notice:: line is left anywhere (that budget is
+    // spent by the other gates of the same step).
+    static string[] RuntimeWarningProblems(string source)
+    {
+        var code = StripCode(source.ReplaceLineEndings("\n"));
+        var problems = new List<string>();
+        const string Written = @"Console\s*\.\s*WriteLine\s*\(\s*notice\s*\)";
+        var writes = System.Text.RegularExpressions.Regex.Matches(code, Written).Count;
+        if (writes != 1) problems.Add("the runtime warning is written " + N(writes) + " times, not once");
+        var visibility = MemberBody(code, "static void VisibilitySelfTest(");
+        if (visibility is null) problems.Add("VisibilitySelfTest was not found");
+        else if (!System.Text.RegularExpressions.Regex.IsMatch(visibility, Written)) problems.Add("VisibilitySelfTest does not write the runtime warning");
+        var steps = MemberBody(code, "static void RunSteps(");
+        if (steps is null) problems.Add("RunSteps was not found");
+        else
+        {
+            var call = steps.IndexOf("VisibilitySelfTest(", StringComparison.Ordinal);
+            if (call < 0) problems.Add("RunSteps does not call VisibilitySelfTest");
+            else if (System.Text.RegularExpressions.Regex.IsMatch(steps[..call], @"Console\s*\.\s*Write|SelfTest\(|Problems\(")) problems.Add("RunSteps checks or prints something before VisibilitySelfTest");
+        }
+        if (DeadlineSourceScan.CommentsBlanked(source).Contains("::" + "notice::", StringComparison.Ordinal)) problems.Add("a " + "::" + "notice:: line is left in the file");
+        return problems.ToArray();
+    }
+
     // P1-43: echoes the format an interpolation hole passes (the compiler's reading of a hole like {x::}).
     sealed class EchoFormat : IFormattable
     {
@@ -949,6 +996,83 @@ internal static class RevitCommandDeadlineTests
         check(self.Length > 0 && Occurrences(WindowsMeasuredRuntime) == 1 && Occurrences(WindowsMeasuredOs) == 1 && Occurrences(WindowsMeasuredRun) == 1,
             "P1-43 runtime self-test: the Windows measured runtime, OS and run each appear once in this file (their declaration)",
             selfPath + ": " + N(Occurrences(WindowsMeasuredRuntime)) + "/" + N(Occurrences(WindowsMeasuredOs)) + "/" + N(Occurrences(WindowsMeasuredRun)) + "; this run " + framework + ", " + os);
+
+        // ---- P1-45 (a): one step-wide FAIL summary line ----
+        // The summary above lists the FAIL names of these deadline tests only; the cli-inputs step runs many more test
+        // files, whose ::error:: FAIL lines are hidden after the tenth just the same. tests/cli/Program.cs collects
+        // every FAIL name its Check reports and prints one step-wide summary line through CliInputsSummary.Line from
+        // its finally block, so a harness error still prints it.
+        var programPath = Path.Combine(root, "tests", "cli", "Program.cs");
+        var program = File.Exists(programPath) ? File.ReadAllText(programPath) : "";
+        var stepProblems = program.Length == 0 ? new[] { "not read" } : StepSummaryProblems(program);
+        check(stepProblems.Length == 0,
+            "P1-45 static: tests/cli/Program.cs records every FAIL name of the step and prints one step-wide summary line from its finally block",
+            programPath + ": " + string.Join("; ", stepProblems));
+        const string CleanProgram = "int passed=0, failed=0;\nvar failedNames=new List<string>();\n"
+            + "void Check(bool condition,string name,string detail=\"\") {\n    if(condition) { Console.WriteLine(\"PASS \"+name); passed++; return; }\n"
+            + "    Console.WriteLine(\"::error::cli-inputs FAIL \"+name+(detail.Length>0?\" | \"+detail:\"\"));\n    failedNames.Add(name);\n    failed++;\n}\n"
+            + "try {\n    Check(true,\"a\");\n    // Console.WriteLine(CliInputsSummary.Line(failedNames));\n"
+            + "} catch(Exception exception) {\n    Console.WriteLine(\"::error::cli-inputs harness error: \"+exception.Message);\n"
+            + "} finally {\n    Console.WriteLine(CliInputsSummary.Line(failedNames));\n}\n";
+        const string StepPrint = "Console.WriteLine(CliInputsSummary.Line(failedNames));";
+        check(StepSummaryProblems(CleanProgram).Length == 0,
+            "P1-45 step summary mutation self-test: a Check recording every FAIL name and one summary line printed from the finally block pass (a print named only in a comment is no print)",
+            string.Join("; ", StepSummaryProblems(CleanProgram)));
+        var stepMutants = new (string Label, string Source)[]
+        {
+            ("a Check that does not record the FAIL name", CleanProgram.Replace("    failedNames.Add(name);\n", "", StringComparison.Ordinal)),
+            ("the summary line printed twice", CleanProgram.Replace("} finally {\n    " + StepPrint, "} finally {\n    " + StepPrint + "\n    " + StepPrint, StringComparison.Ordinal)),
+            ("the summary line printed before the finally block", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "    " + StepPrint + "\n} finally {\n}", StringComparison.Ordinal)),
+            ("the summary line named only in a comment", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "} finally {\n}", StringComparison.Ordinal)),
+            ("no finally block at all", CleanProgram.Replace("} finally {\n    " + StepPrint + "\n}", "}\n" + StepPrint, StringComparison.Ordinal)),
+        };
+        foreach (var (label, source) in stepMutants)
+            check(source != CleanProgram && StepSummaryProblems(source).Length > 0, "P1-45 step summary mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        var stepNames = Enumerable.Range(1, 12).Select(k => "P1-45 synthetic step failure " + N(k)).ToList();
+        stepNames[5] = "P1-45 synthetic step failure 6 with a '%' and a\nsecond line";
+        var stepLine = CliInputsSummary.Line(stepNames);
+        check(stepLine.StartsWith("::warning::" + CliInputsSummary.Title + ": 12 FAIL: #1 ", StringComparison.Ordinal) && !stepLine.Contains('\n') && !stepLine.Contains('\r')
+            && stepLine.Contains("#6 P1-45 synthetic step failure 6 with a '%25' and a%0Asecond line", StringComparison.Ordinal)
+            && stepLine.IndexOf("#1 ", StringComparison.Ordinal) < stepLine.IndexOf("#12 ", StringComparison.Ordinal),
+            "P1-45 step summary: every FAIL name of the step is listed in order on one ::warning:: line, % CR LF escaped",
+            stepLine.Replace("\n", "<LF>", StringComparison.Ordinal).Replace("\r", "<CR>", StringComparison.Ordinal));
+        check(CliInputsSummary.Line(Array.Empty<string>()) == CliInputsSummary.Title + ": 0 FAIL",
+            "P1-45 step summary: no failure is one plain line (no annotation)", CliInputsSummary.Line(Array.Empty<string>()));
+        var longNames = Enumerable.Range(1, 400).Select(k => "P1-45 synthetic long step failure " + N(k) + new string('x', 40)).ToList();
+        var longLine = CliInputsSummary.Line(longNames);
+        check(longLine.Length <= CliInputsSummary.Cap + 200 && !longLine.Contains('\n')
+            && longLine.StartsWith("::warning::" + CliInputsSummary.Title + ": 400 FAIL: #1 ", StringComparison.Ordinal) && longLine.EndsWith(" more", StringComparison.Ordinal),
+            "P1-45 step summary: a list past one annotation's length keeps the count and the first names and ends with the number left out",
+            N(longLine.Length) + " chars; tail " + longLine[Math.Max(0, longLine.Length - 60)..]);
+
+        // ---- P1-45 (b): the runtime annotation's level and place ----
+        // The step that runs cli-inputs (scripts/verify.ps1) also runs the gates that print ::notice:: lines (tests/mcp,
+        // tests/generative, tests/mirror-journal, tests/packaging) and GitHub Actions shows at most ten annotations of
+        // each level per step, so a notice printed from here can be dropped. P1-43's Windows runtime annotation is a
+        // ::warning:: instead (this step's warnings are otherwise only the two FAIL summary lines and the failing
+        // P10-30/P10-32 probes) and it is printed from this self-test, the first thing RunSteps does.
+        var warningProblems = self.Length == 0 ? new[] { "not read" } : RuntimeWarningProblems(self);
+        check(warningProblems.Length == 0,
+            "P1-45 static: the Windows runtime annotation is written once, from VisibilitySelfTest before anything else these tests print, and no notice line is left",
+            selfPath + ": " + string.Join("; ", warningProblems));
+        const string CleanFile = "class F\n{\n    static void RunSteps(string root, Action<bool, string, string> check)\n    {\n"
+            + "        void Check(bool condition, string name) => check(condition, name, \"\");\n        VisibilitySelfTest(root, check);\n        Check(true, \"a\");\n    }\n\n"
+            + "    static void VisibilitySelfTest(string root, Action<bool, string, string> check)\n    {\n"
+            + "        if (OperatingSystem.IsWindows() && RuntimeNotice(\"x\", \"y\") is { } notice) Console.WriteLine(notice);\n        check(true, \"b\", root);\n    }\n}\n";
+        const string Write = "Console.WriteLine(notice);";
+        check(RuntimeWarningProblems(CleanFile).Length == 0,
+            "P1-45 runtime warning mutation self-test: one write, from a VisibilitySelfTest that RunSteps calls first, passes", string.Join("; ", RuntimeWarningProblems(CleanFile)));
+        var warningMutants = new (string Label, string Source)[]
+        {
+            ("the write moved out of VisibilitySelfTest", CleanFile.Replace("if (OperatingSystem.IsWindows() && RuntimeNotice(\"x\", \"y\") is { } notice) " + Write, "check(true, \"c\", root);", StringComparison.Ordinal)
+                .Replace("        Check(true, \"a\");", "        var notice = \"x\";\n        " + Write, StringComparison.Ordinal)),
+            ("the warning written twice", CleanFile.Replace(Write, Write + " " + Write, StringComparison.Ordinal)),
+            ("something printed before the VisibilitySelfTest call", CleanFile.Replace("        VisibilitySelfTest(root, check);", "        Console.WriteLine(\"first\");\n        VisibilitySelfTest(root, check);", StringComparison.Ordinal)),
+            ("a " + "::" + "notice:: line left in the file", CleanFile.Replace("check(true, \"b\", root);", "Console.WriteLine(\"::" + "notice::b \" + root);", StringComparison.Ordinal)),
+        };
+        foreach (var (label, source) in warningMutants)
+            check(source != CleanFile && RuntimeWarningProblems(source).Length > 0, "P1-45 runtime warning mutation self-test: " + label + " is flagged", "no problem flagged");
     }
 
     // ---- 2g. P1-36: RevitDeadlineTransport has one page seam ----
@@ -960,6 +1084,9 @@ internal static class RevitCommandDeadlineTests
     // P1-44: StripCode and MemberBody live once in tests/cli/DeadlineSourceScan.cs (shared with tests/mcp).
     static string StripCode(string source) => DeadlineSourceScan.StripCode(source);
     static string? MemberBody(string code, string signature) => DeadlineSourceScan.MemberBody(code, signature);
+    // P1-45: the same helpers reading the source as written (comments and literals masked out), not StripCode output.
+    static string CodeMask(string source) => DeadlineSourceScan.CodeMask(source);
+    static string? MemberBody(string code, string signature, bool raw) => DeadlineSourceScan.MemberBody(code, signature, raw);
 
     static string[] SeamProblems(string source)
     {
@@ -1234,6 +1361,59 @@ internal static class RevitCommandDeadlineTests
         check(compiled == "[:]", "P1-43 strip self-test: the compiler reads {x::} as x with the format \":\" (measured)", compiled);
         check(StripCode("var s = $\"{x::}\";") == "var s = \"{x::}\";" && StripCode("var s = $@\"{x::}\";") == "var s = \"{x::}\";",
             "P1-43 strip self-test: StripCode reads {x::} as the code x:: (P1-41 '::' rule, pinned as measured)", StripCode("var s = $\"{x::}\";") + " ; " + StripCode("var s = $@\"{x::}\";"));
+
+        // P1-45: CodeMask is the source as written with every comment and every literal blanked at its own position
+        // (same length, newlines kept), the code of an interpolation hole kept and its braces and surrounding literal
+        // text blanked. MemberBody(raw: true) counts brackets on it, so a bracket inside a string or char literal is
+        // not the code's (the stripped path is unchanged: there a literal is "" or an interpolated literal's
+        // "{hole code}", whose brackets are that code's).
+        const string MaskSource = "var s = \"a(b\"; // c)\nvar c = '(';\nvar t = $\"{F(x)}:N2\";\nvar r = \"\"\"a)b\"\"\";\n";
+        var mask = CodeMask(MaskSource);
+        check(mask.Length == MaskSource.Length && mask.Count(ch => ch == '\n') == MaskSource.Count(ch => ch == '\n')
+            && mask.StartsWith("var s = ", StringComparison.Ordinal) && mask.Contains("var t = ", StringComparison.Ordinal) && mask.Contains("F(x)", StringComparison.Ordinal)
+            && !mask.Contains("a(b", StringComparison.Ordinal) && !mask.Contains("c)", StringComparison.Ordinal) && !mask.Contains(":N2", StringComparison.Ordinal)
+            && !mask.Contains("a)b", StringComparison.Ordinal) && !mask.Contains("{F", StringComparison.Ordinal)
+            && mask.Count(ch => ch == '(') == 1 && mask.Count(ch => ch == ')') == 1,
+            "P1-45 CodeMask self-test: comments and literals are blanked in place (length, lines and code kept; an interpolation hole's code stays, its braces and text go)",
+            mask.Replace("\n", "<LF>", StringComparison.Ordinal));
+
+        var rawMembers = new (string Label, string Signature, string Member)[]
+        {
+            ("a parameter attribute holding ')'", "public string? Send(", "public string? Send([Note(\")\")] string line)" + Tail),
+            ("a parameter attribute holding an unbalanced '('", "public string? Send(", "public string? Send([Note(\"(\")] string line)" + Tail),
+            ("a parameter attribute holding an unbalanced '[' as a char literal", "public string? Send(", "public string? Send([Note('[')] string line)" + Tail),
+            ("a default value holding brackets", "public string? Send(", "public string? Send(string line, string tag = \"([{\")" + Tail),
+            ("a verbatim default value holding brackets", "public string? Send(", "public string? Send(string line, string tag = @\"a)b(\")" + Tail),
+        };
+        foreach (var (label, signature, member) in rawMembers)
+        {
+            var source = "class T\n{\n    " + member + Next;
+            check(MemberBody(source, signature, true) == member, "P1-45 MemberBody self-test: raw text with " + label + " keeps the member's body",
+                MemberBody(source, signature, true) ?? "null");
+        }
+        var rawBodiless = new (string Label, string Signature, string Member)[]
+        {
+            ("an expression-bodied member whose parameter attribute holds '('", "public string? Peek(", "public string? Peek([Note(\"(\")] string line) => line;"),
+            ("an abstract member whose parameter attribute holds '('", "public abstract string? Send(", "public abstract string? Send([Note(\"(\")] string line);"),
+        };
+        foreach (var (label, signature, member) in rawBodiless)
+        {
+            var source = "abstract class T\n{\n    " + member + Next;
+            check(MemberBody(source, signature, true) is null, "P1-45 MemberBody self-test: raw text with " + label + " has no body", MemberBody(source, signature, true) ?? "null");
+        }
+        var commented = "class T\n{\n    // public string? Send(string line) { return line; }\n    public string? Send(string line)" + Tail + Next;
+        check(MemberBody(commented, "public string? Send(", true) == "public string? Send(string line)" + Tail,
+            "P1-45 MemberBody self-test: raw text whose signature is named first in a comment reads the member, not the comment",
+            MemberBody(commented, "public string? Send(", true) ?? "null");
+
+        // P1-45: a stray ')' (an unbalanced source, or a signature found mid-expression) never takes the bracket depth
+        // below 0, where a later parameter list's '=>' or ';' would read as the member's own.
+        const string Stray = "public string? Send(string line)) Guard(Func<int> make = () => 0)";
+        var strayMember = Stray + Tail;
+        var straySource = "class T\n{\n    " + strayMember + Next;
+        check(MemberBody(straySource, "public string? Send(", true) == strayMember && MemberBody(StripCode(straySource), "public string? Send(") == StripCode(strayMember),
+            "P1-45 MemberBody self-test: a stray ')' never takes the bracket depth below 0, so a '=>' in a later parameter list is not the member's (raw and stripped)",
+            (MemberBody(straySource, "public string? Send(", true) ?? "null") + " ; " + (MemberBody(StripCode(straySource), "public string? Send(") ?? "null"));
     }
 
     // ---- 2i. P1-38: the deadline transport's configured transport, the core read-timeout helper, the test helpers ----

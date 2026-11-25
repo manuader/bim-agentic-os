@@ -1557,3 +1557,14 @@ try {
 } finally {
     try { if(Directory.Exists(work)) Directory.Delete(work,true); } catch(IOException) { } catch(UnauthorizedAccessException) { }
 }
+
+// P1-45: one step-wide FAIL summary line for the cli-inputs step. GitHub Actions shows at most ten error annotations
+// per step, so the ::error:: FAIL lines after the tenth are only in the log; this line lists every FAIL name of the
+// whole step as one ::warning:: (its own budget, used in this step by the deadline summary and the failing
+// P10-30/P10-32 probes alone), and with no failure it is a plain line.
+// STUB (P1-45 red): the real line lands with the Check that records the names.
+internal static class CliInputsSummary {
+    internal const string Title="cli-inputs step";
+    internal const int Cap=3000; // one annotation message; every FAIL line stays in the step log
+    internal static string Line(IReadOnlyList<string> failed) => Title+": "+failed.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)+" FAIL";
+}

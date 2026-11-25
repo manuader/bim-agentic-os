@@ -7,6 +7,8 @@ using System.Text.RegularExpressions;
 // tests/cli/RevitCommandDeadlineTests.cs), CommentsBlanked (P1-44), and the parsed argument list of a
 // `new RevitDeadlineTransport(` construction (P1-40, P1-42): split at depth 0 and mapped onto the constructor's
 // parameters as C# does. RevitCommandDeadlineTests (sections 2g, 2i, 3a) and the tests/mcp RevitCallAll pin call it.
+// P1-45: CodeMask (comments and literals blanked at their positions) and MemberBody(raw: true), for a pin that reads
+// the source as written instead of StripCode output.
 internal static class DeadlineSourceScan
 {
     // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
@@ -152,30 +154,44 @@ internal static class DeadlineSourceScan
         }
     }
 
+    // P1-45: the source with every comment AND every literal (delimiters included) blanked — each such character a
+    // space, newlines kept, so the result has the source's length and every other character at its own position, the
+    // code inside an interpolation hole included (its braces and format text belong to the literal). MemberBody(raw:
+    // true) counts brackets on it. STUB (P1-45 red): the identity until the implementation lands.
+    internal static string CodeMask(string source) => source;
+
     // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
     // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
     // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
     // P1-43: the head is read at bracket depth 0 only: a ';', '=>' or '{' inside the parameter list or an attribute
     // (inside '(' .. ')' or '[' .. ']') is not the member's own end, arrow or block.
-    internal static string? MemberBody(string code, string signature)
+    // P1-45: `code` is StripCode output by default — there every literal is "" or an interpolated literal's
+    // "{hole code}", whose brackets are that code's and are counted. `raw: true` reads the source as written: the
+    // brackets are counted on CodeMask(code), so one inside a string or char literal (a parameter attribute like
+    // [Note(")")], a default value) or inside a comment is not the code's, and a signature named in a comment or a
+    // literal is not the member. The two cannot be one path: StripCode drops the '$' of an interpolated literal, so
+    // its hole would read as literal text. A stray ')' or ']' never takes the bracket depth below 0.
+    internal static string? MemberBody(string code, string signature, bool raw = false)
     {
+        var scan = raw ? CodeMask(code) : code;
         var start = code.IndexOf(signature, StringComparison.Ordinal);
+        while (raw && start >= 0 && scan[start] != code[start]) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
         if (start < 0) return null;
         var nested = 0;
-        for (var k = start; k < code.Length; k++)
+        for (var k = start; k < scan.Length; k++)
         {
-            var c = code[k];
+            var c = scan[k];
             if (c is '(' or '[') nested++;
             else if (c is ')' or ']') nested--;
             else if (nested > 0) continue;
-            else if (c == ';' || (c == '=' && k + 1 < code.Length && code[k + 1] == '>')) return null;
+            else if (c == ';' || (c == '=' && k + 1 < scan.Length && scan[k + 1] == '>')) return null;
             else if (c == '{')
             {
                 var depth = 0;
-                for (var end = k; end < code.Length; end++)
+                for (var end = k; end < scan.Length; end++)
                 {
-                    if (code[end] == '{') depth++;
-                    else if (code[end] == '}' && --depth == 0) return code[start..(end + 1)];
+                    if (scan[end] == '{') depth++;
+                    else if (scan[end] == '}' && --depth == 0) return code[start..(end + 1)];
                 }
                 return null;
             }
