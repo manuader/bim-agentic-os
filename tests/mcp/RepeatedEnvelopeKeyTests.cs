@@ -467,7 +467,6 @@ internal static class RepeatedEnvelopeKeyTests
             // P10-38: the dll is a named precondition; without it the process is never launched (one failure, not two).
             var dllExists = File.Exists(mcpDll);
             Check(dllExists, "precondition: the Release Bim.Mcp.dll exists, else the stdio process is not launched (" + mcpDll + ")");
-            var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
             static byte[] Utf8(string text) => System.Text.Encoding.UTF8.GetBytes(text);
             byte[] Concat(params byte[][] parts) => parts.SelectMany(part => part).ToArray();
             var wtf8Lone = new byte[] { 0xED, 0xA0, 0x80 };
@@ -512,27 +511,18 @@ internal static class RepeatedEnvelopeKeyTests
             byte[] stdout = [];
             var stderr = "";
             var exit = -1;
+            // P10-50: launched through Launch, the one launcher this file shares with the P10-48 Cli (async read, kill and
+            // wait on timeout); stdin is written then closed at once.
             if (dllExists)
-            try
             {
-                var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
-                start.ArgumentList.Add(mcpDll);
-                using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("MCP process did not start: " + dotnet);
-                using var collected = new MemoryStream();
-                var reading = process.StandardOutput.BaseStream.CopyToAsync(collected);
-                var errors = process.StandardError.ReadToEndAsync();
-                try { process.StandardInput.BaseStream.Write(stdin); process.StandardInput.BaseStream.Flush(); process.StandardInput.Close(); } catch (IOException) { }
-                if (!process.WaitForExit(120000)) { process.Kill(true); stderr = "<timed out>"; }
-                else
+                try
                 {
-                    process.WaitForExit();
-                    reading.Wait();
-                    stdout = collected.ToArray();
-                    stderr = errors.Result;
-                    exit = process.ExitCode;
+                    var launched = Launch(mcpDll, stdin, 120000, 0, Array.Empty<string>());
+                    if (launched.TimedOut) stderr = "<timed out after 120000 ms, killed (exited " + launched.KilledExited + ")>";
+                    else { stdout = launched.Stdout; stderr = launched.Stderr; exit = launched.Exit; }
                 }
+                catch (Exception error) { stderr = "threw " + error.GetType().Name + ": " + error.Message; }
             }
-            catch (Exception error) { stderr = "threw " + error.GetType().Name + ": " + error.Message; }
             var expectedBytes = System.Text.Encoding.UTF8.GetBytes(string.Concat(lines.Select(line => line.Expected + "\n")));
             // P10-40: each response line is matched to its request line by id, so a missing or extra line names that line only.
             var answer = System.Text.Encoding.UTF8.GetString(stdout);
@@ -763,7 +753,7 @@ internal static class RepeatedEnvelopeKeyTests
         {
             try { input.Write(stdin); input.Flush(); } catch (IOException) { }
             if (releaseStdinMs <= 0) CloseInput(input);
-            else releasing = ReleaseAfter(input, releaseStdinMs);
+            else releasing = ReleaseAfter(input, releaseStdinMs, release.Token);
             if (!process.WaitForExit(timeoutMs))
             {
                 try { process.Kill(true); } catch (InvalidOperationException) { }
@@ -777,9 +767,9 @@ internal static class RepeatedEnvelopeKeyTests
         finally { release.Cancel(); }
     }
 
-    static async Task ReleaseAfter(Stream input, int delayMs)
+    static async Task ReleaseAfter(Stream input, int delayMs, CancellationToken token)
     {
-        await Task.Delay(delayMs).ConfigureAwait(false);
+        await Task.Delay(delayMs, token).ConfigureAwait(false);
         CloseInput(input);
     }
 
@@ -1043,7 +1033,13 @@ internal static class RepeatedEnvelopeKeyTests
                 + ",\"unique_id\":\"00000000-0000-0000-0000-000000000000-00000001\"},\"command\":\"query.elements\",\"args\":" + SurrogateArgs + "}";
             const string ConvertedPrefix = "{\"status\":\"failed\",\"code\":\"The JSON value could not be converted to Bim.Core.";
             const string EnvelopeInvalidPrefix = "{\"status\":\"failed\",\"code\":\"envelope_invalid\",";
-            const string L4ParityLabel = "L4";
+            // P10-50: the CLI side of L4 depends on the repository policy files: revit-command reads
+            // RevitCommandPolicySource (.bim/revit-enabled-roots.txt, config/revit-content-libraries.txt of the CLI binary's
+            // repository) before reading or parsing the envelope, so a malformed owner file answers allowlist_invalid there,
+            // not envelope_invalid (the MCP side here runs with RevitCommandPolicy.None). The label names it; the L4 entry
+            // lists whether the .bim file is present.
+            const string L4ParityLabel = "L4 (CLI revit-command reads .bim/revit-enabled-roots.txt through RevitCommandPolicySource before parsing the envelope)";
+            var policyFile = File.Exists(Path.Combine(root, ".bim", "revit-enabled-roots.txt")) ? "present" : "absent";
             // P10-48: one parity run against a given CLI dll. The dll is a named precondition: without it no CLI process is
             // launched and no parity check is made (one failure). Each case's Handle runs under its own send count (the
             // counter before and after), so a stray send fails that case alone; every case is listed with its send count.
@@ -1088,7 +1084,7 @@ internal static class RepeatedEnvelopeKeyTests
                         catch (Exception error) when (error is JsonException or InvalidOperationException) { }
                         var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal) && made == 0;
                         measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?")
-                            + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture));
+                            + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (label == L4ParityLabel ? " | .bim/revit-enabled-roots.txt " + policyFile : ""));
                         if (!ok) failing.Add(label);
                     }
                 }
@@ -1120,11 +1116,12 @@ internal static class RepeatedEnvelopeKeyTests
             selfTest.Add((missingOk ? "ok" : "FAIL") + " a missing dll (sinks " + string.Join(", ", missingSinks.Select(sink => (sink.Ok ? "pass " : "fail ") + sink.Name[..Math.Min(40, sink.Name.Length)]))
                 + "; launches " + (launches - missingLaunchesBefore).ToString(CultureInfo.InvariantCulture) + "; cases " + missing.Measured.Count.ToString(CultureInfo.InvariantCulture) + ")");
             var plantedSinks = new List<(bool Ok, string Name)>();
+            var onlyL2 = new[] { "L2" };
             var planted = Parity(cliDll, line =>
             {
                 if (line.Contains("\"id\":81,", StringComparison.Ordinal)) argumentSends++;
                 return Handled(line);
-            }, (ok, name) => plantedSinks.Add((ok, name)));
+            }, (ok, name) => plantedSinks.Add((ok, name)), onlyL2);
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
                 && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal) && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
@@ -1135,12 +1132,14 @@ internal static class RepeatedEnvelopeKeyTests
             (bool Ran, bool Ok, string Entry) TimeoutSelfTest(string dll, Action<bool, string> sink)
             {
                 var exists = File.Exists(dll);
+                sink(exists, "Cli timeout self-test precondition: the Release Bim.Mcp.dll exists (the child that never exits while stdin is open), else it is not launched | " + dll);
+                if (!exists) return (false, true, "not run: no " + dll);
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 string timeout;
                 try { var (stdout, exit) = Cli(dll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
                 catch (TimeoutException error) { timeout = error.Message; }
                 var waited = clock.ElapsedMilliseconds;
-                var ok = exists && timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True), stdin release task Canceled:", StringComparison.Ordinal) && waited < 20000;
+                var ok = timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True), stdin release task Canceled:", StringComparison.Ordinal) && waited < 20000;
                 return (true, ok, timeout + "; " + waited.ToString(CultureInfo.InvariantCulture) + " ms");
             }
             var timeoutSinks = new List<(bool Ok, string Name)>();
