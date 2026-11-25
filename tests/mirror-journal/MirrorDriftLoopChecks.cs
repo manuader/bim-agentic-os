@@ -2211,9 +2211,9 @@ static class MirrorDriftLoopChecks
     static string MacNumber(long value) => value.ToString(CultureInfo.InvariantCulture);
 
     static MacCheckNames MacNames(MacSendBufferCounts c) => new(
-        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + c.Lowered + ", requested=" + MacRequestedText(c) + ")",
-        MacPreconditionPrefix + "each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + c.Chunk + "-byte piece, as are the " + c.Read + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer",
-        MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + 2L * c.Read + ") with queued == lowered (" + c.Lowered + ")",
+        MacKeptPrefix + ": the kernel kept the lowered send buffer the lever requested (measured lowered=" + MacNumber(c.Lowered) + ", requested=" + MacRequestedText(c) + ")",
+        MacPreconditionPrefix + "each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the " + MacNumber(c.Chunk) + "-byte piece, as are the " + MacNumber(c.Read) + " bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer",
+        MacSelfTestPrefix + ": the lowered relation rejects a planted handed == 2 x read (" + MacNumber(2L * c.Read) + ") with queued == lowered (" + MacNumber(c.Lowered) + ")",
         "macos: with the seam client's send buffer raised (and the fake's receive buffer above it), the seam run's queued (FIONREAD) == the raised send buffer and handed == the bytes the fake read plus it < wire bytes (still writing), while the CLI process (default send buffer) queues exactly the default unix send buffer: the writer's send buffer bounds the queue",
         MacLoweredPrefix + ": with the seam client's send buffer lowered below its default, the second seam run prints the CLI's line, queues exactly the lowered send buffer and hands the bytes the fake read plus it, below the default and raised runs: queued and handed follow the send buffer both ways");
 
@@ -2228,6 +2228,20 @@ static class MirrorDriftLoopChecks
         RaisedDefault = raised.Default, LoweredDefault = lowered.Default, Raised = raised.Set, Lowered = lowered.Set,
         RequestedLowered = lowered.Requested,
     };
+
+    // P2-44/P2-45: what a pair of lever records breaks, read from the records themselves: for each lever (raised, then
+    // lowered) 'calls=N' when it did not run exactly once and 'error' when it recorded one. The self-tests check it
+    // against WithLevers' LeversOk and the labels of the planted lever records.
+    static string[] LeverFailures(LeverRecord raised, LeverRecord lowered)
+    {
+        var failures = new List<string>();
+        foreach (var (which, record) in new[] { ("raised", raised), ("lowered", lowered) })
+        {
+            if (record.Calls != 1) failures.Add(which + " calls=" + MacNumber(record.Calls));
+            if (record.Error.Length != 0) failures.Add(which + " error");
+        }
+        return failures.ToArray();
+    }
 
     // P2-41: the macOS checks in order as (passed, name); checks skipped because a setup check is red are added to notRun
     // (their names), so the caller prints one 'not run (setup red)' line for each.
@@ -2375,16 +2389,7 @@ static class MirrorDriftLoopChecks
         // not run exactly once or recorded an error). This replaces the always-true leverPlants.Length == 6 clause: each
         // plant must break exactly one thing, that one must be what its label says, the levers must be ok exactly when
         // nothing is broken, and the plants together must cover both levers x (calls 0, calls 2, an error).
-        static string[] LeverFailures(LeverRecord raised, LeverRecord lowered)
-        {
-            var failures = new List<string>();
-            foreach (var (which, record) in new[] { ("raised", raised), ("lowered", lowered) })
-            {
-                if (record.Calls != 1) failures.Add(which + " calls=" + record.Calls.ToString(CultureInfo.InvariantCulture));
-                if (record.Error.Length != 0) failures.Add(which + " error");
-            }
-            return failures.ToArray();
-        }
+        // P2-45: LeverFailures is a named class-level helper (beside WithLevers), no longer local to this self-test.
         var leverSeen = new List<string>();
         var covered = new SortedSet<string>(StringComparer.Ordinal);
         var leverPlantsOk = LeverFailures(raisedOk, loweredOk).Length == 0 && WithLevers(baseline, raisedOk, loweredOk).LeversOk;
@@ -2444,6 +2449,13 @@ static class MirrorDriftLoopChecks
             && twoOff.SequenceEqual(new[] { "WireBytes: live=39758 recorded=39757", "LoweredRun: live=False recorded=True" }, StringComparer.Ordinal),
             "macos pin self-test (P2-45): the recorded-count drift lists nothing for equal counts and exactly each planted field with its live and recorded values",
             "same=[" + string.Join(" ; ", same) + "] one=[" + string.Join(" ; ", oneOff) + "] two=[" + string.Join(" ; ", twoOff) + "]");
+        // P2-45: LeverFailures is a named class-level helper (a local function compiles to a mangled name), and it names
+        // each lever's failures as text: a lever that never ran and one that ran twice with an error.
+        var helper = typeof(MirrorDriftLoopChecks).GetMethod("LeverFailures", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var named = LeverFailures(new LeverRecord { Calls = 0 }, new LeverRecord { Calls = 2, Default = 8192, Requested = 6144, Set = 6144, Error = "planted" });
+        check(helper is not null && named.SequenceEqual(new[] { "raised calls=0", "lowered calls=2", "lowered error" }, StringComparer.Ordinal),
+            "macos pin (P2-45): LeverFailures is a named class-level helper and lists 'raised calls=0', 'lowered calls=2', 'lowered error' for a raised lever that never ran and a lowered one that ran twice with an error",
+            "helper=" + (helper?.Name ?? "<none>") + " failures=[" + string.Join(" ; ", named) + "]");
     }
 
     // P2-45: the fields where the live macOS counts differ from the recorded ones, in declaration order, as
