@@ -2221,3 +2221,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay284
 - 2026-11-25T04:53:05Z lock taken (session_014pxpsU2QB6nyDqSCA4J1Tr relay284; was FREE, relay283 released 2026-11-25T04:18:10Z)
+- 2026-11-25T04:53:37Z picked P1-45 (phase 1), P2-44 (phase 2), P5-39 (phase 5) — oldest-touched (relay280); P1-46/P5-40 serialize with them, left for next relay; disjoint files (tests/cli/RevitCommandDeadlineTests.cs P1-43 helpers + DeadlineSourceScan.cs + tests/cli/Program.cs Check; tests/mirror-journal macOS helpers; SkillListCommand.cs catch + interfaces/mcp/Program.cs stderr + SkillListTests.cs/StdoutFailureToolTests.cs new sections + contract P5-37). Workers spawned; heartbeat via /home/claude/hb.sh.
