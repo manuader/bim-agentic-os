@@ -863,6 +863,8 @@ internal static class DeletedCwdPathTests
         RestoreSelfTest43(scratch, Check, skip);
         WriteFailed43SelfTest(Check);
         RestoreProblemsSelfTest45(Check);
+        RestoreWiring47(root, Check);
+        Contract47(root, Check);
         GenericCatch43(scratch, cliDll, Check);
     }
 
@@ -937,6 +939,7 @@ internal static class DeletedCwdPathTests
             Check(FilterProblem41(skillLock.Replace(OneLine, "catch (Exception error) when (other is ArgumentException)", StringComparison.Ordinal)) is not null,
                 "P10-43 static pin reformat self-test: the reader refuses a filter that tests another variable", "");
             ScopingSelfTest45(skillLock, Check);
+            ScopingSelfTest47(skillLock, Check);
         }
     }
 
@@ -1000,6 +1003,117 @@ internal static class DeletedCwdPathTests
             else if (c == '}' && --depth == 0) return i;
         }
         return -1;
+    }
+
+    // P10-47 self-tests of the scanner and the declaration reader. BlockEnd45 on small texts (each a block whose last
+    // character is its closing brace): C# 11 raw literals (three and four quotes, multi-line, a lone brace inside) and
+    // $/$$ raw interpolated literals, and strings, chars and comments inside the holes of $, $@ and raw interpolated
+    // strings. Then the SkillLockTool source with a raw literal and an interpolation hole holding "}" inside PathProblem
+    // before the try (accepted), and with a parameter default containing calls in the PathProblem declaration (accepted).
+    static void ScopingSelfTest47(string skillLock, Action<bool, string, string> Check)
+    {
+        const string Try = "try { Path.GetFullPath(path); }";
+        const string Declaration = "public static string? PathProblem(string? path, string name)";
+        string Label(string what) => "P10-47 static pin scanner self-test: " + what;
+        var q3 = "\"\"\"";
+        var blocks = new (string Name, string Text)[]
+        {
+            ("raw literal with a closing brace", "{ a = " + q3 + " } \" \"\" " + q3 + "; }"),
+            ("raw literal with an opening brace", "{ a = " + q3 + " { " + q3 + "; }"),
+            ("four-quote raw literal holding three quotes", "{ a = \"" + q3 + " } " + q3 + " }\"" + q3 + "; }"),
+            ("multi-line raw literal", "{\n    a = " + q3 + "\n        } {\n        " + q3 + ";\n}"),
+            ("$ raw literal with a hole", "{ a = $" + q3 + "x {F(\"}\")} y" + q3 + "; }"),
+            ("$$ raw literal with single braces as text and a hole", "{ a = $$" + q3 + "{ {{F(\"}\")}} }" + q3 + "; }"),
+            ("string inside a $ hole", "{ a = $\"x{F(\"}\")}y\"; }"),
+            ("char and comment inside a $ hole", "{ a = $\"{'}'}{F(/* } */ 1)}\"; }"),
+            ("verbatim string inside a $@ hole", "{ a = $@\"x{F(@\"}\"\"\")}\"\"\"; }"),
+            ("nested interpolated string inside a hole", "{ a = $\"{$\"{\"}\"}\"}\"; }"),
+            ("escaped braces beside a hole", "{ a = $\"{{ {x} }}\"; }"),
+        };
+        var wrong = blocks.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 skips braces in raw literals and in strings, chars and comments inside interpolation holes"), string.Join(" | ", wrong));
+        Check(BlockEnd45("{ a = " + q3 + " } ", 0) == -1 && BlockEnd45("{ a = $\"{F(\"}\"", 0) == -1,
+            Label("BlockEnd45 reports an unclosed raw literal and an unclosed hole as unclosed"), "");
+        var raw = skillLock.Replace(Try, "_ = " + q3 + " } " + q3 + " + $\"{\"}\"}\";\n        " + Try, StringComparison.Ordinal);
+        Check(raw != skillLock && FilterProblem41(raw) is null,
+            Label("the reader accepts a raw literal and an interpolation hole holding \"}\" inside PathProblem before the try"), FilterProblem41(raw) ?? (raw == skillLock ? "not planted" : ""));
+        var defaults = skillLock.Replace(Declaration, "public static string? PathProblem(string? path, string name = nameof(System.String))", StringComparison.Ordinal);
+        Check(defaults != skillLock && FilterProblem41(defaults) is null,
+            Label("the reader accepts a PathProblem declaration whose parameter default contains a call"), FilterProblem41(defaults) ?? (defaults == skillLock ? "not planted" : ""));
+        Check(Declaration45.IsMatch("PathProblem(string a = F(G(1), H()), int b = 2) {") && !Declaration45.IsMatch("PathProblem(string a = F(1 {"),
+            Label("Declaration45 takes nested balanced parentheses in the parameter list and refuses an unbalanced one"), "");
+    }
+
+    // P10-47: the lock-verb restore aggregation wiring, read from this file. Inside LockVerbsUnsearchable41's body (found by
+    // Declaration-style balanced parentheses and BlockEnd45) the one RestoreProblems45 call must pass both calls' restore
+    // problems, ("reference", reference.Restore) and ("locked", result.Restore), into restoreProblem, which the restore check
+    // requires empty, with reference = Call(false) and result = Call(true). Whitespace free. Null when wired, else why.
+    static readonly System.Text.RegularExpressions.Regex LockVerbs47 = new(@"\bstatic\s+void\s+LockVerbsUnsearchable41\s*\((?>[^()]|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
+    static string? RestoreWiringProblem47(string source)
+    {
+        var declarations = LockVerbs47.Matches(source);
+        if (declarations.Count != 1) return "not exactly one LockVerbsUnsearchable41 declaration: " + declarations.Count.ToString(CultureInfo.InvariantCulture);
+        var open = declarations[0].Index + declarations[0].Length - 1;
+        var close = BlockEnd45(source, open);
+        if (close < 0) return "LockVerbsUnsearchable41's body is not closed";
+        var body = System.Text.RegularExpressions.Regex.Replace(System.Text.RegularExpressions.Regex.Replace(source[open..(close + 1)], @"\s+", " "), @" ?([(),;=]) ?", "$1");
+        var calls = System.Text.RegularExpressions.Regex.Matches(body, @"\bRestoreProblems45\(").Count;
+        if (calls != 1) return "not exactly one RestoreProblems45 call in LockVerbsUnsearchable41: " + calls.ToString(CultureInfo.InvariantCulture);
+        foreach (var wired in new[] { "var restoreProblem=RestoreProblems45((\"reference\",reference.Restore),(\"locked\",result.Restore));", "restoreProblem.Length==0", "var reference=Call(false);", "var result=Call(true);" })
+            if (!body.Contains(wired, StringComparison.Ordinal)) return "LockVerbsUnsearchable41 lacks " + wired + " (whitespace free)";
+        return null;
+    }
+
+    static void RestoreWiring47(string root, Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-47 lock verbs restore wiring: " + what;
+        string source;
+        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
+        Check(RestoreWiringProblem47(source) is null, Label("LockVerbsUnsearchable41 aggregates the reference and the locked call's restore problems into the restore check"), RestoreWiringProblem47(source) ?? "");
+        const string Wired = "RestoreProblems45((\"reference\", reference.Restore), (\"locked\", result.Restore))";
+        var mutants = new (string Name, string Text)[]
+        {
+            ("only the locked call's problems", "RestoreProblems45((\"locked\", result.Restore))"),
+            ("the locked call's problems under both names", "RestoreProblems45((\"reference\", result.Restore), (\"locked\", result.Restore))"),
+            ("only the reference call's problems", "RestoreProblems45((\"reference\", reference.Restore))"),
+        };
+        foreach (var (name, text) in mutants)
+        {
+            var mutant = source.Replace(Wired, text, StringComparison.Ordinal);
+            Check(mutant != source && RestoreWiringProblem47(mutant) is not null, Label("a mutant passing " + name + " to RestoreProblems45 is refused"), mutant == source ? "not planted" : RestoreWiringProblem47(mutant) ?? "accepted");
+        }
+        var unused = source.Replace("restoreProblem.Length == 0", "true", StringComparison.Ordinal);
+        Check(unused != source && RestoreWiringProblem47(unused) is not null, Label("a mutant whose restore check ignores the aggregate is refused"), unused == source ? "not planted" : RestoreWiringProblem47(unused) ?? "accepted");
+    }
+
+    // P10-47: the contract wording (docs/contracts/module-contracts.md, the P10-35.. section): the P10-45 paragraph cites its
+    // green run and the P10-47 paragraph states the scanner, declaration and wiring results (as the P3-34 paragraph check).
+    static void Contract47(string root, Action<bool, string, string> Check)
+    {
+        string contracts;
+        try { contracts = File.ReadAllText(Path.Combine(root, "docs", "contracts", "module-contracts.md")).Replace("\r\n", "\n", StringComparison.Ordinal); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, "P10-47 contract: docs/contracts/module-contracts.md is readable", error.Message); return; }
+        var heading = contracts.IndexOf("## MCP and CLI paths under an unsearchable working directory: remainder and the macOS gap (P10-35", StringComparison.Ordinal);
+        var next = heading < 0 ? -1 : contracts.IndexOf("\n## ", heading + 1, StringComparison.Ordinal);
+        var section = heading < 0 ? "" : next < 0 ? contracts[heading..] : contracts[heading..next];
+        string Paragraph(string start)
+        {
+            var at = section.IndexOf("\n" + start, StringComparison.Ordinal);
+            if (at < 0) return "";
+            var end = section.IndexOf('\n', at + 1);
+            return end < 0 ? section[(at + 1)..] : section[(at + 1)..end];
+        }
+        var p45 = Paragraph("P10-45 (test tidy");
+        Check(p45.Contains("red 45521954740", StringComparison.Ordinal) && p45.Contains("green 45524195217", StringComparison.Ordinal) && p45.Contains("STAYS RECORDED AS CODE READING ONLY", StringComparison.Ordinal),
+            "P10-47 contract: the P10-45 paragraph cites red 45521954740 and green 45524195217 and keeps the file-tool reach record", section.Length == 0 ? "section not found" : p45.Length == 0 ? "P10-45 paragraph not found" : p45);
+        var p47 = Paragraph("P10-47 (test tidy");
+        Check(p47.Contains("C# 11 raw", StringComparison.Ordinal) && p47.Contains("interpolation holes", StringComparison.Ordinal) && p47.Contains("parameter default", StringComparison.Ordinal)
+            && p47.Contains("only the locked call", StringComparison.Ordinal) && p47.Contains("green 45524195217", StringComparison.Ordinal),
+            "P10-47 contract: the P10-47 paragraph states raw literals, interpolation holes, parameter defaults with calls and the restore wiring pin", section.Length == 0 ? "section not found" : p47.Length == 0 ? "P10-47 paragraph not found" : p47);
+        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47)", StringComparison.Ordinal), "P10-47 contract: the section heading lists P10-47", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
