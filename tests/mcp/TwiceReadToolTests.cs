@@ -398,7 +398,10 @@ internal static class TwiceReadToolTests
     // pin compares whole builder bodies within the two sections (mutant self-test: a builder grown by a line fails it);
     // an invalid code (xx.p538.bad: jurisdiction_invalid on the valid lock) is the drift line over the drifted lock (drift
     // before validation); the escaped '+' is pinned as the current encoder behaviour (text \u002B, raw server line
-    // \\u002B); the provenance paragraph's words are pinned literally across its reflow.
+    // \\u002B); the provenance paragraph's words are pinned literally across its reflow. P5-40: Section() brace-matches
+    // the method on comment- and literal-blanked code (reformat self-test, the P5-38 line scan as mutant); the grown-builder
+    // mutant also runs on this file's builders; the depth check carries its own stand-in (independent of section 14); the
+    // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs.
     static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
@@ -430,7 +433,26 @@ internal static class TwiceReadToolTests
             // there section 16 AmbiguityTwiceRead, up to the method's closing brace), so a builder grown by a line differs and
             // section 14's identical Manifest cannot stand in for section 16's. ShallowPinned is the P5-36 pin (header +
             // next line anywhere in the file), kept only to prove the grown Manifest mutant below passed it.
+            // P5-40: Span finds the method by brace matching: on the source with comments and string and char literals
+            // blanked (Blank; line breaks kept), the one `static void <method>(` and the '}' closing the first '{' after it;
+            // Section is the source lines from the declaration through that closing brace's line (reformat self-test below,
+            // with the P5-38 line scan, OldSection, as its mutant).
+            static (int Start, int End) Span(string source, string method)
+            {
+                // P5-40 red: still the P5-38 line scan (the reformat self-test must fail on it).
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var start = Array.FindIndex(lines, line => line.Trim().StartsWith("static void " + method + "(", StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start + 1, line => line.TrimEnd() == "    }");
+                return start < 0 || end < 0 ? (-1, -1) : (start, end);
+            }
             static string[] Section(string source, string method)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var (start, end) = Span(source, method);
+                return start < 0 ? Array.Empty<string>() : lines[start..(end + 1)];
+            }
+            // The P5-38 Section: from the declaration line to the first later line that is exactly "    }" (excluded).
+            static string[] OldSection(string source, string method)
             {
                 var lines = source.ReplaceLineEndings("\n").Split('\n');
                 var start = Array.FindIndex(lines, line => line.Trim().StartsWith("static void " + method + "(", StringComparison.Ordinal));
@@ -475,13 +497,51 @@ internal static class TwiceReadToolTests
             Check(Pinned(hereSource, thereSource),
                 "P5-36/P5-38: the four-pack fixture's Manifest and Sidecar builders are the same whole bodies as in tests/cli/SkillListTests.cs section 16 (duplicated on purpose) | "
                 + Short(string.Join(" / ", Builders(hereSource, "Ambiguity"))) + " | there " + Short(string.Join(" / ", Builders(thereSource, "AmbiguityTwiceRead"))));
+            // P5-40 reformat self-test, both files: Section spans the method from its declaration through its closing brace
+            // and gives the same lines as the P5-38 scan (plus the closing brace) on the sources as they are; on three
+            // reformatted copies of the method (dedented by four spaces, so an inner block closes at "    }"; the opening
+            // brace moved onto the declaration line and the method indented four more; a comment, char literals, an
+            // interpolated string and a verbatim string whose own line is "    }" inserted after the opening brace) it gives
+            // exactly the reformatted method and the same builders, while the P5-38 scan (OldSection) does not.
+            static string[] Dedented(string[] body) => body.Select(line => line.StartsWith("    ", StringComparison.Ordinal) ? line[4..] : line).ToArray();
+            static string[] BraceOnDeclaration(string[] body) =>
+                new[] { "    " + body[0].TrimEnd() + " {" }.Concat(body.Skip(2).Select(line => line.Length == 0 ? line : "    " + line)).ToArray();
+            static string[] Inserted(string[] body) => body.Take(2).Concat(new[]
+            {
+                "        // P5-40 reformat probe: } } {",
+                "        /* } */ _ = '}' + \"}\" + $\"{{\" + $\"{('}')}\" + '\\'' + @\"",
+                "    }",
+                "\";",
+            }).Concat(body.Skip(2)).ToArray();
+            foreach (var (file, source, method) in new[] { ("tests/mcp/TwiceReadToolTests.cs", hereSource, "Ambiguity"), ("tests/cli/SkillListTests.cs", thereSource, "AmbiguityTwiceRead") })
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var (start, end) = Span(source, method);
+                var section = Section(source, method);
+                Check(start >= 0 && end > start && lines[start].Trim().StartsWith("static void " + method + "(", StringComparison.Ordinal) && lines[end].Trim() == "}"
+                    && lines[start + 1].Trim() == "{" && section.Length == end - start + 1 && section[..^1].SequenceEqual(OldSection(source, method)) && Builders(source, method).Length == 2,
+                    "P5-40: Section(" + method + ") in " + file + " spans the declaration through its closing brace, the P5-38 scan's lines plus that brace | lines "
+                    + start.ToString(CultureInfo.InvariantCulture) + ".." + end.ToString(CultureInfo.InvariantCulture) + " old " + OldSection(source, method).Length.ToString(CultureInfo.InvariantCulture));
+                if (start < 0 || end <= start) continue;
+                var body = lines[start..(end + 1)];
+                foreach (var (name, reformatted) in new[] { ("dedented by four spaces", Dedented(body)), ("brace on the declaration line, indented four more", BraceOnDeclaration(body)), ("comment, literals and a verbatim \"    }\" line inserted", Inserted(body)) })
+                {
+                    var variant = string.Join("\n", lines[..start].Concat(reformatted).Concat(lines[(end + 1)..]));
+                    var found = Section(variant, method);
+                    Check(found.SequenceEqual(reformatted) && Builders(variant, method).SequenceEqual(Builders(source, method)) && !OldSection(variant, method).SequenceEqual(reformatted[..^1]),
+                        "P5-40 reformat self-test: " + file + " with " + method + " " + name + ": Section finds exactly the reformatted method by brace matching and the same builders, the P5-38 line scan does not | found "
+                        + found.Length.ToString(CultureInfo.InvariantCulture) + " of " + reformatted.Length.ToString(CultureInfo.InvariantCulture) + " lines, last " + (found.Length > 0 ? found[^1].Trim() : "<none>")
+                        + ", old " + OldSection(variant, method).Length.ToString(CultureInfo.InvariantCulture));
+                }
+            }
             // P5-38 mutant self-test: a copy of tests/cli/SkillListTests.cs whose section-16 builder grew by one line (the
             // terminating ';' moved to an added `+ "..."` line) must fail the pin, for the Sidecar and for the Manifest.
-            static string Grown(string cliSource, string header)
+            // P5-40: Grown takes the file and the method; the builder is looked up inside that method's Span only.
+            static string Grown(string source, string method, string header)
             {
-                var lines = cliSource.ReplaceLineEndings("\n").Split('\n').ToList();
-                var section = lines.FindIndex(line => line.Trim().StartsWith("static void AmbiguityTwiceRead(", StringComparison.Ordinal));
-                var at = section < 0 ? -1 : lines.FindIndex(section, line => line.Trim() == header);
+                var lines = source.ReplaceLineEndings("\n").Split('\n').ToList();
+                var (start, end) = Span(source, method);
+                var at = start < 0 ? -1 : lines.FindIndex(start, end - start + 1, line => line.Trim() == header);
                 if (at < 0 || !lines[at + 1].TrimEnd().EndsWith(';')) return "";
                 lines[at + 1] = lines[at + 1].TrimEnd()[..^1];
                 lines.Insert(at + 2, "            + \"\";");
@@ -489,14 +549,34 @@ internal static class TwiceReadToolTests
             }
             foreach (var header in new[] { "static string Sidecar(string code, string pack, string municipality, string note) =>", "static string Manifest(string id) =>" })
             {
-                var mutant = Grown(thereSource, header);
+                var mutant = Grown(thereSource, "AmbiguityTwiceRead", header);
                 Check(mutant.Length > 0 && mutant != thereSource.ReplaceLineEndings("\n") && !Pinned(hereSource, mutant),
                     "P5-38 mutant self-test: the builder pin fails when section 16's " + header + " body grows by a line");
+                // P5-40: the same mutant on the tests/mcp side: this file's Ambiguity builder grown by a line fails the pin.
+                var hereMutant = Grown(hereSource, "Ambiguity", header);
+                Check(hereMutant.Length > 0 && hereMutant != hereSource.ReplaceLineEndings("\n") && !Pinned(hereMutant, thereSource),
+                    "P5-40 mutant self-test (tests/mcp side): the builder pin fails when Ambiguity's " + header + " body grows by a line");
             }
-            // Depth: the grown Manifest mutant passed the P5-36 pin (section 14's identical Manifest stood in for it; red run
-            // 45485947608 failed exactly this self-test before the whole-body pin), while the real sources pass both.
-            Check(ShallowPinned(hereSource, thereSource) && ShallowPinned(hereSource, Grown(thereSource, "static string Manifest(string id) =>")),
-                "P5-38 depth: the P5-36 header + next line pin passes the grown Manifest mutant the whole-body pin refuses");
+            // Depth (P5-40, independent of section 14): the grown mutant plus an explicit stand-in, the original header and
+            // next line of section 16's builder appended outside section 16 (the role section 14's identical Manifest played
+            // when red run 45485947608 failed the P5-38 self-test), passes the P5-36 header + next line pin and fails the
+            // whole-body pin, for both builders; the real sources pass both pins.
+            static string StandIn(string source, string method, string header)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var (start, end) = Span(source, method);
+                var at = start < 0 ? -1 : Array.FindIndex(lines, start, end - start + 1, line => line.Trim() == header);
+                return at < 0 ? "" : "\ninternal static class P540StandIn\n{\n" + lines[at] + "\n" + lines[at + 1] + "\n}\n";
+            }
+            foreach (var header in new[] { "static string Sidecar(string code, string pack, string municipality, string note) =>", "static string Manifest(string id) =>" })
+            {
+                var standIn = StandIn(thereSource, "AmbiguityTwiceRead", header);
+                var grown = Grown(thereSource, "AmbiguityTwiceRead", header);
+                var depth = grown + standIn;
+                Check(standIn.Length > 0 && grown.Length > 0 && ShallowPinned(hereSource, thereSource) && Pinned(hereSource, thereSource)
+                    && ShallowPinned(hereSource, depth) && !Pinned(hereSource, depth),
+                    "P5-40 depth (independent of section 14): with an explicit stand-in outside section 16, the P5-36 header + next line pin passes the grown " + header + " mutant the whole-body pin refuses");
+            }
             // The drift-hash provenance paragraph (above the DriftLine pins) is the same text in both files.
             static string Provenance(string source)
             {
@@ -518,6 +598,19 @@ internal static class TwiceReadToolTests
             var words = string.Join(" ", provenance.Split('\n').Select(line => line.StartsWith("//", StringComparison.Ordinal) ? line[2..] : line)
                 .SelectMany(line => line.Split(' ', StringSplitOptions.RemoveEmptyEntries)));
             Check(words == ProvenanceText, "P5-38: the reflowed provenance paragraph keeps the P5-36 words exactly | " + Short(words));
+            // P5-40: the addendum below the paragraph names the P5-38 runs and states why they re-printed no drift line; it
+            // is the same text in both files (the P5-36 paragraph above is unchanged).
+            static string Addendum(string source)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n').Select(line => line.Trim()).ToArray();
+                var start = Array.FindIndex(lines, line => line.StartsWith("// Provenance addendum (P5-40;", StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.EndsWith("as passing checks print no annotation.", StringComparison.Ordinal));
+                return start < 0 || end < 0 ? "" : string.Join("\n", lines[start..(end + 1)]);
+            }
+            var addendum = Addendum(hereSource);
+            Check(addendum.Length > 0 && addendum.Contains("45485947608", StringComparison.Ordinal) && addendum.Contains("45489441146", StringComparison.Ordinal)
+                && addendum == Addendum(thereSource) && Provenance(hereSource) == provenance,
+                "P5-40: the provenance addendum names the P5-38 red and green runs and is the same text in both files | " + Short(addendum));
         }
         foreach (var (packId, code, municipality) in new[] { (PackA, CodeA, "Fixture Town"), (PackB, CodeB, "Fixture Town"), (DuplicateOne, DuplicateCode, "Twin Town"), (DuplicateTwo, DuplicateCode, "Twin Town") })
         {
@@ -675,6 +768,10 @@ internal static class TwiceReadToolTests
         // first pinned after the P5-34 red probe run 44911652955; both files' drift lines were re-observed byte for byte, as
         // the prefix of their two-drift lines, in P5-36 probe failure annotations: tests/cli on macOS in run 45316035463,
         // tests/mcp on Linux and Windows in run 45318167428; they hash fixture bytes only, so they are the same on every OS.
+        // Provenance addendum (P5-40; the same in both files): the P5-38 runs re-printed no drift line. Red run
+        // 45485947608 failed only the P5-38 builder mutant self-test (tests/mcp annotations, Linux and Windows) and green
+        // run 45489441146 passed every drift pin (tests/cli on Linux, Windows and macOS, tests/mcp on Linux and Windows):
+        // the lines were matched byte for byte there, not re-printed, as passing checks print no annotation.
         const string DriftLine = "{\"status\":\"failed\",\"code\":\"skill_lock_drift\",\"subject\":\"xx.p534ma.pack\",\"detail\":\"pinned 1.2.3 sha256 9e32485998aa48cebc4968ac580b1d14c6c2d387badcf3984f77056ff6eda544, found 1.2.3 sha256 5175a2e01235ae2dc54392a9bd79904df5e9ea97c45d5f264e1e43cddf879f6f; an explicit lock update is required to accept it\"}";
         Phase("drifted lock", new (string, JsonObject, string[], string, bool)[]
         {
@@ -726,6 +823,20 @@ internal static class TwiceReadToolTests
             Check(raw.Length == 2 && raw.All(l => l.Contains("(\\\\u002B1 more", StringComparison.Ordinal) && !l.Contains('+')
                     && JsonNode.Parse(l) is JsonObject parsed && Text(parsed) == TwoDriftLine),
                 "P5-38: two drifted packs on one packaged server, twice: each raw line carries \\\\u002B and no '+', its text is the pinned line | " + Short(string.Join(" / ", raw)));
+            // P5-40: the same on the code route (code xx.p534md over the two drifted packs): twice in process (text +,
+            // no '+') and twice on one packaged server (raw line \\u002B, no '+', text the pinned line).
+            var codeRequest = Args(("code", DuplicateCode));
+            for (var turn = 1; turn <= 2; turn++)
+            {
+                var response = InProcess(Line(codeRequest.DeepClone().AsObject()), true);
+                Check(IsResult(response) && IsError(response) && Text(response) == TwoDriftLine && Text(response).Contains("(\\u002B1 more", StringComparison.Ordinal) && !Text(response).Contains('+'),
+                    "P5-40: two drifted packs, code route, in-process call #" + turn.ToString(CultureInfo.InvariantCulture) + " text carries \\u002B, no '+' | " + Short(response.ToJsonString()));
+            }
+            var codeRaw = McpProcess(Line(codeRequest.DeepClone().AsObject()) + "\n" + Line(codeRequest.DeepClone().AsObject()) + "\n")
+                .Split('\n', StringSplitOptions.RemoveEmptyEntries).Select(l => l.TrimEnd('\r')).ToArray();
+            Check(codeRaw.Length == 2 && codeRaw.All(l => l.Contains("(\\\\u002B1 more", StringComparison.Ordinal) && !l.Contains('+')
+                    && JsonNode.Parse(l) is JsonObject parsed && Text(parsed) == TwoDriftLine && IsError(parsed)),
+                "P5-40: two drifted packs, code route, on one packaged server, twice: each raw line carries \\\\u002B and no '+', its text is the pinned line | " + Short(string.Join(" / ", codeRaw)));
         }
     }
 
