@@ -1050,6 +1050,11 @@ def _self_tests(generated, source):
         ("a moved decoy label", 'Text("L5", -40600.0, ', 'Text("L5", -40600.5, ', 'not committed: ("T1"'),
         ("a LeafPoints row with a swapped label", '        ("Q1", "LA", "start", ', '        ("Q1", "LA", "end", ', 'not committed: ("Q1", "LA", "start"'),
         ("a duplicated JustifiedPoints row", '        ("K1", "TG", ', '        ("K1", "TG", 50325.59735516724, 20323.954543849297, 50325.59735516724, 20323.954543849297),\n        ("K1", "TG", ', "committed twice: JustifiedPoints"),
+        # P6-48: a table renamed away, a label moved onto another placed cell's centre (R1[1,1]; a loose x,y match
+        # against any cell accepted it), and a label whose handle LABEL_ROWS does not map.
+        ("a missing Cells table", "double[] Corners)[] Cells =\n", "double[] Corners)[] CellsGone =\n", "table not found: Cells"),
+        ("a label moved to another cell's centre", 'Text("L1", 9329.804845413264, 11572.354790610807, ', 'Text("L1", 4999.677826491072, 9072.35479061081, ', "not produced by the generator: Drawing() line"),
+        ("a label with no LABEL_ROWS entry", 'Text("L2", ', 'Text("L9", ', "not produced by the generator: Drawing() line"),
     ]
     failures = []
     for label, old, new, expected in plants:

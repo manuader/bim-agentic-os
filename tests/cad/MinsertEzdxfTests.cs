@@ -1877,6 +1877,32 @@ internal static class MinsertEzdxfTests
             c(twoWayMissing.Count == 0 && !generator.Contains("def _contains(", StringComparison.Ordinal),
                 "justified: generator: --check is two-way (committed constants no generator row produces fail), matches whole rows (no contiguous-run matcher) and runs planted self-tests",
                 "missing " + string.Join(" | ", twoWayMissing) + " contiguous-run matcher left " + generator.Contains("def _contains(", StringComparison.Ordinal));
+            // P6-48: numpy pinned to the generation version; every output line but the caught self-tests annotated (20 a
+            // notice or error, the count of any lines left over printed); the C-extension run names its differing rows.
+            string[] stepNeeded =
+            {
+                ".tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3\n",
+                "grep -v '^self-test planted .*: caught (' \"$out\" | cut -c1-900 | awk -v level=\"$level\"",
+                "more output lines not annotated",
+                "grep '^differing rows: '",
+            };
+            var stepAbsent = stepNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
+            c(stepAbsent.Count == 0 && !stepText.Contains("tail -n 10", StringComparison.Ordinal),
+                "justified: generator: P6-48 the CI step pins numpy==2.5.3, annotates every failure line (20 a notice, the count of lines left over printed, no tail -n 10) and names the rows the C extensions move",
+                "missing " + string.Join(" | ", stepAbsent) + " tail -n 10 left " + stepText.Contains("tail -n 10", StringComparison.Ordinal));
+            // P6-48: a label TEXT matches the generator row its handle names (LABEL_ROWS, no loose x,y match against any
+            // cell); the summary names the differing rows, the C-extension state and numpy's version; a missing table,
+            // a label moved to another cell's centre and an unmapped label handle are planted.
+            string[] checkNeeded =
+            {
+                "LABEL_ROWS = {\"L1\": \"R1[1,2]\", \"L2\": \"S1[2,0]\", \"L3\": \"M1[1,1]\", \"L4\": \"N1[0,1]\", \"L5\": \"T1\", \"L6\": \"T2[0,0]\", \"L7\": \"T3[1,1]\"}",
+                "\"differing rows: \"", "ezdxf.options.use_c_ext", "numpy.__version__",
+                "(\"a missing Cells table\", ", "(\"a label moved to another cell's centre\", ", "(\"a label with no LABEL_ROWS entry\", ",
+            };
+            var checkAbsent = checkNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            c(checkAbsent.Count == 0 && !generator.Contains("\"[\" in gnames[0]", StringComparison.Ordinal),
+                "justified: generator: P6-48 --check matches each label TEXT to the row its handle names (no loose x,y match), names differing rows, numpy and C-extension state, and plants a missing table and moved or unmapped labels",
+                "missing " + string.Join(" | ", checkAbsent) + " loose cell match left " + generator.Contains("\"[\" in gnames[0]", StringComparison.Ordinal));
         }
         catch (Exception error)
         {
