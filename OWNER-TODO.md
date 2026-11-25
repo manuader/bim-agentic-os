@@ -482,3 +482,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay291 (2026-11-25, cloud)
 - No new required action. `git pull` (main a26b5164, CI 45689267572 green 9/9). Test-only changes (P10-50, P6-49, P7-50). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3.
+
+## Relay292 (2026-11-25, cloud)
+- No new required action. `git pull` (main 36398c0a, CI 45714141805 green 9/9). P1-47 and P2-46 test-only; P5-41 small product change (skill-list internal-error fallback when an exception's Message getter throws; MCP stderr line falls back to exception types) — success/refusal output unchanged. Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3.
