@@ -862,6 +862,7 @@ internal static class DeletedCwdPathTests
         LockVerbsUnsearchable41(root, scratch, cliDll, Check, skip);
         RestoreSelfTest43(scratch, Check, skip);
         WriteFailed43SelfTest(Check);
+        RestoreProblemsSelfTest45(Check);
         GenericCatch43(scratch, cliDll, Check);
     }
 
@@ -877,13 +878,18 @@ internal static class DeletedCwdPathTests
         @"\G(?:\s|//[^\n]*\n)*catch\s*\(\s*Exception\s+(?<v>\w+)\s*\)\s*when\s*\(\s*\k<v>\s+is\s+(?<types>[A-Za-z_][\w.]*(?:\s+or\s+[A-Za-z_][\w.]*)*)\s*\)",
         System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\([^()]*\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+
     static string? FilterProblem41(string source)
     {
         var tries = Try41.Matches(source);
         if (tries.Count != 1) return "not exactly one 'try { Path.GetFullPath(path); }' (any layout): " + tries.Count.ToString(CultureInfo.InvariantCulture);
         var at = tries[0].Index;
-        var method = source.LastIndexOf(" PathProblem(", at, StringComparison.Ordinal);
-        if (method < 0 || source[method..at].Contains("\n    }", StringComparison.Ordinal)) return "the GetFullPath try is not inside PathProblem";
+        // P10-45: brace scoping, not indentation: the try lies inside the body of the last 'PathProblem(<parameters>) {'
+        // declaration before it (BlockEnd45 skips braces in strings, chars and comments).
+        var declaration = Declaration45.Matches(source).Where(match => match.Index < at).LastOrDefault();
+        var close = declaration is null ? -1 : BlockEnd45(source, declaration.Index + declaration.Length - 1);
+        if (close < at) return "the GetFullPath try is not inside PathProblem (brace scoping: " + (declaration is null ? "no 'PathProblem(...) {' declaration before it" : close < 0 ? "its body is not closed" : "its body closes before the try") + ")";
         var filter = Catch41.Match(source, at + tries[0].Length);
         if (!filter.Success) return "no 'catch (Exception e) when (e is A or B ...)' filter directly follows the GetFullPath try (only whitespace and // comment lines may stand between)";
         var types = System.Text.RegularExpressions.Regex.Split(filter.Groups["types"].Value, @"\s+or\s+");
@@ -930,7 +936,70 @@ internal static class DeletedCwdPathTests
                 "P10-43 static pin reformat self-test: the reader refuses the split filter without UnauthorizedAccessException", FilterProblem41(splitMutant) ?? "accepted");
             Check(FilterProblem41(skillLock.Replace(OneLine, "catch (Exception error) when (other is ArgumentException)", StringComparison.Ordinal)) is not null,
                 "P10-43 static pin reformat self-test: the reader refuses a filter that tests another variable", "");
+            ScopingSelfTest45(skillLock, Check);
         }
+    }
+
+    // P10-45: the "inside PathProblem" check is brace scoping, not indentation. Mutants of the SkillLockTool source:
+    // a nested block inside PathProblem whose closing brace sits at four spaces (accepted), braces inside string, char and
+    // comment text before the try (accepted), and a PathProblem whose body closes before the try, the try sitting in the
+    // next method (refused, whatever the indentation). Plus the scanner itself on a small text.
+    static void ScopingSelfTest45(string skillLock, Action<bool, string, string> Check)
+    {
+        const string Try = "try { Path.GetFullPath(path); }";
+        const string Declaration = "public static string? PathProblem(string? path, string name)";
+        string Label(string what) => "P10-45 static pin brace scoping self-test: " + what;
+        var nested = skillLock.Replace(Try, "if (path.Length > 0)\n    {\n    }\n        " + Try, StringComparison.Ordinal);
+        Check(nested != skillLock && FilterProblem41(nested) is null,
+            Label("the reader accepts a nested block inside PathProblem closing at four spaces before the try"), FilterProblem41(nested) ?? (nested == skillLock ? "not planted" : ""));
+        var texts = skillLock.Replace(Try, "_ = \"}\" + '}' + @\"}\"\"}\" + $\"{{}}\"; /* } */\n        // }\n        " + Try, StringComparison.Ordinal);
+        Check(texts != skillLock && FilterProblem41(texts) is null,
+            Label("the reader accepts braces in string, char and comment text inside PathProblem before the try"), FilterProblem41(texts) ?? (texts == skillLock ? "not planted" : ""));
+        var outside = skillLock.Replace(Declaration, Declaration + " { return null; }\n\tstatic string? Other45(string? path, string name)", StringComparison.Ordinal);
+        Check(outside != skillLock && FilterProblem41(outside) is { } why && why.Contains("not inside PathProblem", StringComparison.Ordinal),
+            Label("the reader refuses a try in the method after PathProblem's closed body (tab indentation)"), FilterProblem41(outside) ?? (outside == skillLock ? "not planted" : "accepted"));
+        const string Block = "{ a = \"}\"; b = '{'; c = @\"x\"\"}\"; /* } */ // }\n { } }";
+        Check(BlockEnd45(Block, 0) == Block.Length - 1 && BlockEnd45("{ { }", 0) == -1 && BlockEnd45("x { }", 2) == 4,
+            Label("BlockEnd45 skips braces in strings, chars and comments and reports an unclosed block"),
+            BlockEnd45(Block, 0).ToString(CultureInfo.InvariantCulture) + " of " + (Block.Length - 1).ToString(CultureInfo.InvariantCulture));
+    }
+
+    // P10-45: index of the brace closing the block opened at source[open] == '{', or -1 when it is not closed. Braces in
+    // // and /* */ comments, string literals (regular, $, @ and $@/@$ verbatim, "" escapes) and char literals are skipped.
+    static int BlockEnd45(string source, int open)
+    {
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            var c = source[i];
+            var next = i + 1 < source.Length ? source[i + 1] : '\0';
+            if (c == '/' && next == '/')
+            {
+                var end = source.IndexOf('\n', i);
+                if (end < 0) return -1;
+                i = end;
+            }
+            else if (c == '/' && next == '*')
+            {
+                var end = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                if (end < 0) return -1;
+                i = end + 1;
+            }
+            else if (c == '"' || c == '\'')
+            {
+                var verbatim = c == '"' && i > 0 && (source[i - 1] == '@' || (source[i - 1] == '$' && i > 1 && source[i - 2] == '@'));
+                for (i++; i < source.Length; i++)
+                {
+                    if (source[i] == '\\' && !verbatim) { i++; continue; }
+                    if (source[i] != c) continue;
+                    if (verbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                    break;
+                }
+            }
+            else if (c == '{') depth++;
+            else if (c == '}' && --depth == 0) return i;
+        }
+        return -1;
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
@@ -1150,18 +1219,16 @@ internal static class DeletedCwdPathTests
     {
         string Label(string what) => "P10-43 MCP generic catch: " + what;
         var server = new Bim.Mcp.McpServer();
-        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
-        var tools = typeof(Bim.Mcp.McpServer).GetField("tools", flags)?.GetValue(server) as Array;
-        var spec = tools?.GetType().GetElementType();
-        var nameProperty = spec?.GetProperty("Name");
-        var parametersProperty = spec?.GetProperty("Parameters");
-        var executeProperty = spec?.GetProperty("Execute");
-        var clone = spec?.GetMethod("<Clone>$");
-        if (tools is null || nameProperty is null || parametersProperty is null || executeProperty is null || clone is null)
-        {
-            Check(false, Label("fixture: the server's tools array and ToolSpec Name, Parameters, Execute and clone are readable by reflection"), spec?.FullName ?? "no tools field");
-            return;
-        }
+        SweepFixtureSelfTest45(Check);
+        var fixture = SweepFixture45(server);
+        Check(fixture.Problem is null, Label("P10-45 fixture: McpServer's private instance ToolSpec[] 'tools' field, ToolSpec's string Name, array Parameters, settable Func<JsonElement,(string,bool)> Execute and record <Clone>$ are readable by reflection"),
+            fixture.Problem ?? "");
+        if (fixture.Problem is not null) return;
+        var tools = fixture.Tools!;
+        var nameProperty = fixture.Name!;
+        var parametersProperty = fixture.Parameters!;
+        var executeProperty = fixture.Execute!;
+        var clone = fixture.Clone!;
         var listing = System.Text.Json.Nodes.JsonNode.Parse(server.Handle("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}") ?? "null");
         var listed = listing?["result"]?["tools"]?.AsArray().Select(tool => tool?["name"]?.GetValue<string>() ?? "").ToArray() ?? Array.Empty<string>();
         var names = Enumerable.Range(0, tools.Length).Select(i => (string)nameProperty.GetValue(tools.GetValue(i))!).ToArray();
@@ -1196,10 +1263,12 @@ internal static class DeletedCwdPathTests
                 arguments[(string)parameterType.GetProperty("Name")!.GetValue(parameter)!] = Value((string)parameterType.GetProperty("Type")!.GetValue(parameter)!);
             }
             var problems = new List<string>();
+            // P10-45: the planted Execute counts its calls, so a server that stops reading the swapped array fails loudly.
+            var calls = 0;
             foreach (var (kind, make) in planted)
             {
                 var message = "Access to the path '" + Path.Combine(scratch, "p10-43-planted", name + ".json") + "' is denied (planted " + kind + ").";
-                Func<JsonElement, (string, bool)> throwing = _ => throw make(message);
+                Func<JsonElement, (string, bool)> throwing = _ => { calls++; throw make(message); };
                 var copy = clone.Invoke(original, null)!;
                 executeProperty.SetValue(copy, throwing);
                 var request = new System.Text.Json.Nodes.JsonObject { ["jsonrpc"] = "2.0", ["id"] = 43, ["method"] = "tools/call", ["params"] = new System.Text.Json.Nodes.JsonObject { ["name"] = name, ["arguments"] = arguments.DeepClone() } }.ToJsonString();
@@ -1229,6 +1298,8 @@ internal static class DeletedCwdPathTests
                 if (!ok || capturedError.ToString().Length > 0 || thrown.Length > 0)
                     problems.Add(kind + " => " + (response ?? "no response") + (capturedError.ToString().Length > 0 ? " stderr " + capturedError.ToString().Trim() : "") + thrown);
             }
+            if (calls != planted.Length)
+                problems.Add("P10-45 fixture: the planted Execute ran " + calls.ToString(CultureInfo.InvariantCulture) + " of " + planted.Length.ToString(CultureInfo.InvariantCulture) + " times (the server does not call the swapped tools array element)");
             swept++;
             Check(problems.Count == 0, Label(name + ": a planted throw escaping Execute answers isError {\"status\":\"failed\",\"code\":<its message>} (McpInvalidParamsException: -32602), nothing on stderr"),
                 string.Join(" || ", problems).Replace(scratch, "<scratch>", StringComparison.Ordinal));
@@ -1258,6 +1329,52 @@ internal static class DeletedCwdPathTests
         var cli = Invoke(entry, new[] { "plan", missing, desired });
         Check(cli.Exit == 1 && cli.Error.Length == 0 && cli.Line == planText, Label("plan with a missing store: the MCP text equals the CLI plan line (exit 1, empty stderr)"),
             ("exit " + cli.Exit.ToString(CultureInfo.InvariantCulture) + " " + cli.Line + " " + cli.Error + " | mcp " + planText).Replace(scratch, "<scratch>", StringComparison.Ordinal));
+    }
+
+    // P10-45: the sweep's reflection dependence on McpServer internals, named one by one so a rename or reshape fails loudly
+    // with the missing piece: a private instance field "tools" holding an array; its element type's string Name, array
+    // Parameters, writable Func<JsonElement, (string Text, bool IsError)> Execute and the record clone method "<Clone>$"
+    // returning that type. Problem is null when every piece is present.
+    static (Array? Tools, PropertyInfo? Name, PropertyInfo? Parameters, PropertyInfo? Execute, MethodInfo? Clone, string? Problem) SweepFixture45(object server)
+    {
+        var type = server.GetType();
+        var field = type.GetField("tools", BindingFlags.NonPublic | BindingFlags.Instance);
+        if (field is null) return (null, null, null, null, null, "no private instance field 'tools' on " + type.FullName);
+        if (field.GetValue(server) is not Array tools) return (null, null, null, null, null, "field 'tools' is not an array: " + field.FieldType.FullName);
+        var spec = tools.GetType().GetElementType()!;
+        var name = spec.GetProperty("Name");
+        if (name is null || name.PropertyType != typeof(string)) return (tools, null, null, null, null, spec.Name + " has no string property 'Name'");
+        var parameters = spec.GetProperty("Parameters");
+        if (parameters is null || !parameters.PropertyType.IsArray) return (tools, name, null, null, null, spec.Name + " has no array property 'Parameters'");
+        var execute = spec.GetProperty("Execute");
+        if (execute is null || execute.PropertyType != typeof(Func<JsonElement, (string, bool)>) || !execute.CanWrite)
+            return (tools, name, parameters, null, null, spec.Name + " has no writable Func<JsonElement, (string, bool)> property 'Execute'" + (execute is null ? "" : ": " + execute.PropertyType.Name + (execute.CanWrite ? "" : " read-only")));
+        var clone = spec.GetMethod("<Clone>$");
+        if (clone is null || clone.GetParameters().Length != 0 || !spec.IsAssignableFrom(clone.ReturnType)) return (tools, name, parameters, execute, null, spec.Name + " has no record clone method '<Clone>$' (not a record)");
+        return (tools, name, parameters, execute, clone, null);
+    }
+
+    sealed record NoExecute45(string Name, string[] Parameters);
+    sealed record WrongExecute45(string Name, string[] Parameters, Func<int, int> Execute);
+    sealed class Holder45<T>
+    {
+        readonly T[] tools;
+        public Holder45(T[] tools) => this.tools = tools;
+        public int Count => tools.Length;
+    }
+
+    // P10-45 self-test of SweepFixture45 (every host): an object without the field, a tools element without Execute and one
+    // with an Execute of another type are each refused with that piece named; the real McpServer is accepted.
+    static void SweepFixtureSelfTest45(Action<bool, string, string> Check)
+    {
+        var none = SweepFixture45(new object()).Problem ?? "accepted";
+        var noExecute = new Holder45<NoExecute45>(new[] { new NoExecute45("n", Array.Empty<string>()) });
+        var missing = SweepFixture45(noExecute).Problem ?? "accepted";
+        var wrongExecute = new Holder45<WrongExecute45>(new[] { new WrongExecute45("n", Array.Empty<string>(), x => x) });
+        var wrong = SweepFixture45(wrongExecute).Problem ?? "accepted";
+        Check(noExecute.Count == 1 && wrongExecute.Count == 1 && none.Contains("'tools'", StringComparison.Ordinal) && missing.Contains("'Execute'", StringComparison.Ordinal)
+            && wrong.Contains("'Execute': Func`2", StringComparison.Ordinal),
+            "P10-45 MCP generic catch: fixture self-test: a missing tools field and a missing or mistyped Execute are refused by name", none + " | " + missing + " | " + wrong);
     }
 
     // Linux, as measured (see the contract section P10-41): GetFullPath accepts the relative lock; the read of a lock under
@@ -1307,6 +1424,22 @@ internal static class DeletedCwdPathTests
         var wrong = accepted.Where(line => WriteFailed43(line, Denied) is not null).Concat(refused.Where(line => WriteFailed43(line, Denied) is null)).ToArray();
         Check(wrong.Length == 0, "P10-43 write_failed matcher self-test: accepts the measured shape and a reworded prefix, refuses another code, subject, suffix, path, member order or a missing detail",
             string.Join(" || ", wrong));
+    }
+
+    // P10-45: the restore problems of every call, each named by its call ("" when every call restored).
+    static string RestoreProblems45(params (string Call, string Problem)[] calls) =>
+        string.Join("; ", calls.Where(call => call.Problem.Length > 0).Select(call => call.Call + " call: " + call.Problem));
+
+    // P10-45 self-test (every host): a problem of the first call is kept when the second call restores, both are kept
+    // when both fail, none when both restore.
+    static void RestoreProblemsSelfTest45(Action<bool, string, string> Check)
+    {
+        var first = RestoreProblems45(("reference", "chmod IOException: planted"), ("locked", ""));
+        var both = RestoreProblems45(("reference", "chmod IOException: a"), ("locked", "cwd IOException: b"));
+        var none = RestoreProblems45(("reference", ""), ("locked", ""));
+        Check(first == "reference call: chmod IOException: planted" && both == "reference call: chmod IOException: a; locked call: cwd IOException: b" && none.Length == 0,
+            "P10-45 lock verbs restore aggregation self-test: the reference call's problem survives a clean locked call, both are kept, none when both restore",
+            first + " | " + both + " | " + none);
     }
 
     static void LockVerbsUnsearchable41(string root, string scratch, string cliDll, Action<bool, string, string> Check, Action<string, string> skip)
@@ -1376,10 +1509,11 @@ internal static class DeletedCwdPathTests
                         _ => new[] { "skills-lock", "unpin", skills, LockName39, Gamma },
                     };
                     var locked = mode == "cwd" ? cwd : parent;
-                    var restoreProblem = "";
-                    (int Exit, string Line, string Error, string Probe) Call(bool lockIt)
+                    // P10-45: each call returns its own restore problems, and the check below aggregates both calls'.
+                    (int Exit, string Line, string Error, string Probe, string Restore) Call(bool lockIt)
                     {
                         var probe = "";
+                        var restore = "";
                         (int Exit, string Line, string Error) run;
                         try
                         {
@@ -1394,9 +1528,9 @@ internal static class DeletedCwdPathTests
                         finally
                         {
                             // P10-43: each restore step on its own (Restore43), so a throwing chmod still restores the working directory.
-                            restoreProblem = Restore43(locked, original);
+                            restore = Restore43(locked, original);
                         }
-                        return (run.Exit, Normalize(run.Line), run.Error, probe);
+                        return (run.Exit, Normalize(run.Line), run.Error, probe, restore);
                     }
                     Reset();
                     var reference = Call(false);
@@ -1425,7 +1559,8 @@ internal static class DeletedCwdPathTests
                         Check(result.Exit == 1 && problem is null && result.Error.Length == 0,
                             label + ": write_failed, subject " + LockName39 + ", a detail naming " + denied + " and ending ' is denied.' (exit 1, empty stderr)", measured + (problem is null ? "" : " | " + problem));
                     }
-                    Check(Environment.CurrentDirectory == original && restoreProblem.Length == 0, label + ": the working directory and the owner mode are restored (finally)",
+                    var restoreProblem = RestoreProblems45(("reference", reference.Restore), ("locked", result.Restore));
+                    Check(Environment.CurrentDirectory == original && restoreProblem.Length == 0, label + ": the working directory and the owner mode are restored after both calls (finally)",
                         Environment.CurrentDirectory + (Environment.CurrentDirectory == original ? "" : " != " + original) + " " + restoreProblem);
                     var after = File.Exists(lockFile) ? File.ReadAllBytes(lockFile) : null;
                     var unchanged = lockBytes is null ? after is null : after is not null && after.AsSpan().SequenceEqual(lockBytes);
