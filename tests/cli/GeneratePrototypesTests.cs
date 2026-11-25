@@ -3541,6 +3541,15 @@ internal static class GeneratePrototypesTests
     //      after if (on) and a local of the same name in another method still leave the field followed;
     //   k. GltfExporter.WriteNew is followed into GltfExporter.cs (not listed in ExecuteExternalCalls): a stdout write in it
     //      and in the wrap lambda WriteGltf passes to it are rejected.
+    //   P7-46:
+    //   l. Stat's Func argument is followed through this.Stat(, an instance receiver input.Stat( and a local the method group
+    //      Stat is assigned to (var f = Stat; f(...), f = Stat; f?.Invoke(...)): a stdout lambda passed so is rejected; Stat
+    //      passed on as a method group, or a method-group local passed on, is unresolved naming the gap;
+    //   m. a Predicate<int> parameter and a parameter of a delegate type declared in the code are followed to their callers'
+    //      lambdas (stdout rejected); a called parameter of a type the code does not declare is unresolved naming its type;
+    //   n. a field used before a local of the same name is declared in the same block stays followed (stdout rejected);
+    //   o. the Func parameter of an expression-bodied method or local function is followed (stdout rejected); a lambda's
+    //      parameter (untyped or typed), called, is unresolved naming that limit.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -3708,6 +3717,62 @@ internal static class GeneratePrototypesTests
             var problems = mutated is null ? new List<string> { "an anchor does not match once" } : ExecuteWriteProblems(mutated, command, followed);
             if (reason is null) Check(problems.Count == 0, "P7-44 shadow self-test: Execute pin accepts " + label, Problems(problems));
             else Check(problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-44 shadow self-test: " + label + " is still rejected for " + reason, Problems(problems));
+        }
+
+        // P7-46 (l): Stat's Func argument is followed through a this. or instance receiver and through a local the method
+        // group Stat is assigned to (var f = Stat; f(...) / f?.Invoke(...)); Stat passed on as a method group is rejected
+        // loudly (unresolved, naming the gap). (m) A Predicate<T> parameter and one of a delegate type declared in the code
+        // are followed; a parameter of a type the code does not declare, called, is unresolved naming its type. (n) A local
+        // declared after the use does not shadow the field there. (o) Expression-bodied methods' and local functions'
+        // parameters are followed like block-bodied ones; a lambda's parameter, called, is unresolved naming that limit.
+        // Each mutant edits the followed code (BoundedInput.cs) or GenerateWrite.cs and names its expected problem.
+        const string StdoutLambda = "status => { Console.WriteLine(); return 0; }";
+        const string Poke = "Poke(path); var bytes = ReadBytes(path, MaxBytes, share);";
+        const string StatParameter = "Execute reaches call( [the Func<byte[], int> parameter of Stat: ";
+        var reachMutants = new (string Label, bool Followed, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(l) a stdout lambda passed via this.Stat(", true, new[] { (RequireRegular, "static bool Noisy(out int mode) => this.Stat(" + StdoutLambda + ", out mode); static void RequireUnixRegular(") },
+                Through + "call"),
+            ("(l) a stdout lambda passed via an instance receiver input.Stat(", true, new[] {
+                (RequireRegular, "static bool Noisy(Reader input, out int mode) => input.Stat(" + StdoutLambda + ", out mode); static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) a stdout lambda passed via var f = Stat; f(...)", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; return f(" + StdoutLambda + ", out mode); } static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) a stdout lambda passed via f = Stat; f?.Invoke(...) of a declared local", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { StatCall f; f = Stat; return f?.Invoke(" + StdoutLambda + ", out mode) ?? false; } static void RequireUnixRegular(") }, Through + "call"),
+            ("(l) Stat passed on as a method group", true, new[] { (RequireRegular, "static bool Noisy(out int mode) => Relay(Stat, out mode); static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group"),
+            ("(l) a method-group local passed on instead of called", true, new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; return Relay(f, out mode); } static void RequireUnixRegular(") }, StatParameter + "f (a local holding the method group Stat) used other than called"),
+            ("(m) a stdout lambda passed for a Predicate<int> parameter", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(value => { Console.WriteLine(path); return true; }); } static void Probe(Predicate<int> test) { test(1); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(m) a stdout lambda passed for a parameter of a delegate type declared in the code", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "delegate bool Probing(int value); static void Poke(string path) { Probe(value => { Console.WriteLine(path); return true; }); } static void Probe(Probing test) { test(1); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(m) a called parameter of a delegate type the code does not declare", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(value => true); } static void Probe(Notifier test) { test(1); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a Notifier parameter of Probe: not a Func, Action, Predicate"),
+            ("(n) a field used before a local of the same name is declared in the same block", false, new[] { (AfterParsed, Parsed + "Fire();"),
+                (BeforeFail, Field + "static void Arm() { Echo = () => Console.WriteLine(); } static void Fire() { Echo?.Invoke(); Action Echo = () => { }; Echo(); } static void Fail(") }, Through + "Echo"),
+            ("(o) a stdout lambda passed for a Func parameter of an expression-bodied method", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Probe(() => { Console.WriteLine(path); return 0; }); static int Probe(Func<int> test) => test(); static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(o) a stdout lambda passed for a Func parameter of an expression-bodied local function", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { int Probe(Func<int> test) => test(); Probe(() => { Console.WriteLine(path); return 0; }); } static void RequireUnixRegular(") },
+                Through + "test"),
+            ("(o) a lambda's parameter called", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test(); run(() => 0); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a parameter of a lambda: whoever invokes the lambda passes its arguments"),
+            ("(o) a typed lambda's parameter called", true, new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = (Func<int> test) => test(); run(() => 0); } static void RequireUnixRegular(") },
+                "Execute reaches test( [a parameter of a lambda typed Func<int>: "),
+        };
+        foreach (var (label, onFollowed, edits, reason) in reachMutants)
+        {
+            var mutated = Mutate(onFollowed ? followed : write, edits);
+            var problems = mutated is null ? new List<string>() : onFollowed ? ExecuteWriteProblems(write, command, mutated) : ExecuteWriteProblems(mutated, command, followed);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-46 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
