@@ -26,11 +26,15 @@ using Bim.Core;
 //      control (D2) proves the detector's StreamReader filter; a completed read records its result; E claims no collection.
 //   P1-39: one strip helper (StripCode: comments, literals, interpolation holes as code) and brace-matched member bodies.
 //   P1-43: Run ends with one summary line listing every FAIL name (::warning::, beyond the 10 error annotations a step
-//      shows); the Windows D2/B measured runtime is declared once and a different one is a named ::notice::; MemberBody
+//      shows); the Windows D2/B measured runtime is declared once and a different one is a named annotation; MemberBody
 //      reads its head at bracket depth 0 (a parameter list or attribute may hold ';', '=>', '{'); {x::} pinned as measured.
 //   P1-44: StripCode, MemberBody and the RevitDeadlineTransport argument parser live once in DeadlineSourceScan.cs
 //      (linked by tests/mcp); 2g's McpServer comment and 3a's construction are read inside RevitCallAll's own body; the
 //      2i control location names a missing git apart from 'not gitignored' and resolves symbolic links.
+//   P1-45: the whole cli-inputs step gets one FAIL summary line too (tests/cli/Program.cs, CliInputsSummary, pinned
+//      statically here); the Windows runtime annotation is a ::warning:: written from VisibilitySelfTest, the first
+//      thing RunSteps does, so the notice budget of the other gates cannot hide it; MemberBody(raw: true) counts
+//      brackets on CodeMask (comments and literals blanked in place) and no stray ')' takes that depth below 0.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -898,10 +902,12 @@ internal static class RevitCommandDeadlineTests
     const string WindowsMeasuredRun = "44873211457";
     static string WindowsMeasured => "Windows pins measured on " + WindowsMeasuredRuntime + ", " + WindowsMeasuredOs + " (CI run " + WindowsMeasuredRun + ")";
 
-    // null when the running runtime and OS are the measured ones; otherwise a named ::notice:: line (the pins still apply).
+    // null when the running runtime and OS are the measured ones; otherwise a named annotation line (the pins still
+    // apply). P1-45: a ::warning::, not a ::notice::, and written from VisibilitySelfTest: the step that runs cli-inputs
+    // also runs the gates that spend the ten-notice budget (see VisibilitySelfTest (b)).
     static string? RuntimeNotice(string framework, string os) =>
         framework == WindowsMeasuredRuntime && os.Contains(WindowsMeasuredOs, StringComparison.Ordinal) ? null
-            : "::notice::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
+            : "::warning::cli-inputs P1-43 Windows runtime differs from the measured one: " + WindowsMeasured + "; this run " + framework + ", " + os
                 + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
 
     // ---- P1-45: the step-wide FAIL summary line and the runtime warning's level and place ----
@@ -983,12 +989,14 @@ internal static class RevitCommandDeadlineTests
 
         var framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
         var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
+        // P1-45: written here, the first thing RunSteps does, and as a ::warning:: (reason under (b) below).
+        if (OperatingSystem.IsWindows() && RuntimeNotice(framework, os) is { } notice) Console.WriteLine(notice);
         var same = RuntimeNotice(WindowsMeasuredRuntime, "Microsoft " + WindowsMeasuredOs);
         var newer = RuntimeNotice(".NET 8.0.99", "Microsoft " + WindowsMeasuredOs);
         var otherOs = RuntimeNotice(WindowsMeasuredRuntime, "Microsoft Windows 10.0.20348");
-        check(same is null && newer is { } n && n.StartsWith("::notice::", StringComparison.Ordinal) && n.Contains(WindowsMeasured, StringComparison.Ordinal) && n.Contains(".NET 8.0.99", StringComparison.Ordinal)
-            && otherOs is { } o && o.StartsWith("::notice::", StringComparison.Ordinal) && o.Contains("10.0.20348", StringComparison.Ordinal),
-            "P1-43 runtime self-test: the measured runtime and OS give no notice; a different runtime or OS is a named ::notice:: naming both",
+        check(same is null && newer is { } n && n.StartsWith("::warning::", StringComparison.Ordinal) && n.Contains(WindowsMeasured, StringComparison.Ordinal) && n.Contains(".NET 8.0.99", StringComparison.Ordinal)
+            && otherOs is { } o && o.StartsWith("::warning::", StringComparison.Ordinal) && o.Contains("10.0.20348", StringComparison.Ordinal),
+            "P1-43 runtime self-test: the measured runtime and OS give no annotation; a different runtime or OS is a named ::warning:: naming both (P1-45 level)",
             (same ?? "null") + " ; " + (newer ?? "null") + " ; " + (otherOs ?? "null"));
         var selfPath = Path.Combine(root, "tests", "cli", "RevitCommandDeadlineTests.cs");
         var self = File.Exists(selfPath) ? File.ReadAllText(selfPath) : "";
@@ -2054,11 +2062,11 @@ internal static class RevitCommandDeadlineTests
             // decoder fault), so the same filter would see B's fault; where it completes (Windows) it reads end of stream.
             var disposeControl = Step("D2", false, false, false);
             // P1-41: the failure text names the runtime the Windows D2/B pins were measured on and the one of this run.
-            // P1-43: that runtime is declared once (WindowsMeasured*); on Windows a different one is a named ::notice::.
+            // P1-43: that runtime is declared once (WindowsMeasured*); on Windows a different one is a named annotation,
+            // P1-45: written at the start of the step (VisibilitySelfTest), not from here.
             var framework = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
             var os = System.Runtime.InteropServices.RuntimeInformation.OSDescription;
             var runtime = WindowsMeasured + "; this run " + framework + ", " + os;
-            if (OperatingSystem.IsWindows() && RuntimeNotice(framework, os) is { } notice) Console.WriteLine(notice);
             check(disposeControl.Collected && disposeControl.Outcome.Count == 3 && disposeControl.Outcome[0] == "unobserved" && disposeControl.Outcome[1] == "served p1-37 D2"
                 && (OperatingSystem.IsWindows()
                     ? disposeControl.Outcome[2].StartsWith("completed null in ", StringComparison.Ordinal) && disposeControl.Faults.Length == 0

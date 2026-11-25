@@ -9,9 +9,11 @@ using System.Text.Json;
 // Runs the real Release CLI dll exactly as tests/mcp does; scripts/verify.ps1 builds interfaces/cli first.
 var work=Path.Combine(Path.GetTempPath(),"cli-inputs-"+Guid.NewGuid().ToString("N"));
 int passed=0, failed=0, skipped=0;
+var failedNames=new List<string>(); // P1-45: every FAIL name of this step, for the one summary line printed below
 void Check(bool condition,string name,string detail="") {
     if(condition) { Console.WriteLine("PASS "+name); passed++; return; }
     Console.WriteLine("::error::cli-inputs FAIL "+name+(detail.Length>0?" | "+detail:""));
+    lock(failedNames) failedNames.Add(name);
     failed++;
 }
 void Skip(string name,string why) { Console.WriteLine("SKIP "+name+": "+why); skipped++; }
@@ -1555,16 +1557,32 @@ try {
     Console.Error.WriteLine(exception);
     Environment.ExitCode=1;
 } finally {
+    // P1-45: the one step-wide summary line, printed from the finally block so a harness error still carries it.
+    Console.WriteLine(CliInputsSummary.Line(failedNames));
     try { if(Directory.Exists(work)) Directory.Delete(work,true); } catch(IOException) { } catch(UnauthorizedAccessException) { }
 }
 
 // P1-45: one step-wide FAIL summary line for the cli-inputs step. GitHub Actions shows at most ten error annotations
 // per step, so the ::error:: FAIL lines after the tenth are only in the log; this line lists every FAIL name of the
-// whole step as one ::warning:: (its own budget, used in this step by the deadline summary and the failing
-// P10-30/P10-32 probes alone), and with no failure it is a plain line.
-// STUB (P1-45 red): the real line lands with the Check that records the names.
+// whole step as one ::warning:: (its own budget, used in this step by the deadline summary, the Windows runtime
+// warning and the failing P10-30/P10-32 probes alone), and with no failure it is a plain line. Names are escaped as
+// GitHub Actions requires (% CR LF) and the list is cut to one annotation's length, the count and the rest kept.
 internal static class CliInputsSummary {
     internal const string Title="cli-inputs step";
     internal const int Cap=3000; // one annotation message; every FAIL line stays in the step log
-    internal static string Line(IReadOnlyList<string> failed) => Title+": "+failed.Count.ToString(System.Globalization.CultureInfo.InvariantCulture)+" FAIL";
+    static string Number(int value)=>value.ToString(System.Globalization.CultureInfo.InvariantCulture);
+    static string Escape(string text)=>text.Replace("%","%25",StringComparison.Ordinal).Replace("\r","%0D",StringComparison.Ordinal).Replace("\n","%0A",StringComparison.Ordinal);
+    internal static string Line(IReadOnlyList<string> failed) {
+        if(failed.Count==0) return Title+": 0 FAIL";
+        var listed=new StringBuilder();
+        var shown=0;
+        for(var k=0;k<failed.Count;k++) {
+            var item=(k>0?"; ":"")+"#"+Number(k+1)+" "+Escape(failed[k]);
+            if(listed.Length+item.Length>Cap) break;
+            listed.Append(item);
+            shown++;
+        }
+        var left=failed.Count-shown;
+        return "::warning::"+Title+": "+Number(failed.Count)+" FAIL: "+listed.ToString()+(left>0?"; +"+Number(left)+" more":"");
+    }
 }
