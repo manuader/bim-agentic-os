@@ -574,6 +574,18 @@ internal static class InternalErrorDelegationTests
                     ("the pinned read in a new-modifier method returning ref readonly int", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
                     ("the pinned read in a for (;;) body", declaration + "\nstatic void W() { for (;;) { try { " + read + " } catch (Exception) { throw; } break; } }\n", true),
                     ("the pinned read in a using (...) body", declaration + "\nstatic void W() { using (var s = new MemoryStream()) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    // P3-45: a new-modifier method returning a generic nested three deep around a tuple, an unsafe local
+                    // function returning a pointer without `new`, attribute sections not at the start of a header (on a
+                    // parameter or a type parameter, holding braces and `new[]`), and clean controls incl. a multiplication
+                    // in an if/for header.
+                    ("the read moved into a local function inside a new-modifier method returning Dictionary<A<B<(int, int)>>, C> (planted)", declaration + "\nclass C : B { public new Dictionary<A<B<(int, int)>>, C> M() { void Later() { " + read + " } Later(); return null; } }\n", false),
+                    ("the read moved into an unsafe local function returning int* (planted)", declaration + "\nstatic void W() { unsafe int* Later() { " + read + " return null; } Later(); }\n", false),
+                    ("the read moved into a local function with a parameter carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic void W() { void Later([A(new[] { 1 })] int n) { " + read + " } Later(0); }\n", false),
+                    ("the read moved into a local function with a type parameter carrying [A(new[] { 1 })]", declaration + "\nstatic void W() { void Later<[A(new[] { 1 })] T>() { " + read + " } Later<int>(); }\n", false),
+                    ("the pinned read in a new-modifier method returning Dictionary<A<B<(int, int)>>, C>", declaration + "\nclass C : B { public new Dictionary<A<B<(int, int)>>, C> M() { try { " + read + " } catch (Exception) { throw; } return null; } }\n", true),
+                    ("the pinned read in a method with a parameter carrying [A(new[] { 1 })]", declaration + "\nstatic void W([A(new[] { 1 })] int n) { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in an if (n * n > 0) body", declaration + "\nstatic void W(int n) { if (n * n > 0) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
+                    ("the pinned read in a for (var i = 0; i * i < n; i++) body", declaration + "\nstatic void W(int n) { for (var i = 0; i * i < n; i++) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                 };
                 // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
                 // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
@@ -632,7 +644,8 @@ internal static class InternalErrorDelegationTests
             // now planted) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 planted, 3 clean controls)
             // for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new
             // seams; plus 16 bracket/collection-expression/generic-tuple-or-pointer/for-using header cases (P3-43: 10 planted,
-            // 6 clean controls) for each of the 9 seams and its 2 header-span pins: 981.
+            // 6 clean controls) for each of the 9 seams and its 2 header-span pins; plus 8 deeper-generic/pointer/inner-
+            // attribute/multiplication header cases (P3-45: 4 planted, 4 clean controls) for each of the 9 seams: 1053.
             // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
             // inside the parentheses do not split it).
             foreach (var (code, header) in new[] { ("{ for (;;) {", "for (;;)"), ("{ using (var s = new MemoryStream()) {", "using (var s = new MemoryStream())") })
@@ -641,12 +654,26 @@ internal static class InternalErrorDelegationTests
                 Check(code[HeaderStart(code, open)..open].Trim() == header, "P3-29 seam hygiene self-test: the header of [" + code + "] spans [" + header + "]", code[HeaderStart(code, open)..open]);
                 selfTests++;
             }
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16) + 2 * (16 + 1) + 2 * (16 + 2) + 2 && selfTests == 981, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8) + 2 * (16 + 1) + 2 * (16 + 2) + 2 && selfTests == 1053, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
             // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
             // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
-            foreach (var field in new[] { "InitializerArguments", "LeadingAttributes" })
+            // P3-45: so does every regex InBlockLambda and MethodBody use (the lambda/anonymous-method header, the
+            // constraint, type-keyword, object-creation, accessor, operator and method header tests, and the inner
+            // attribute sections): each is a named static field, every static Regex field of the class carries the 1 s
+            // timeout, and the helpers' source (InBlockLambda through MethodBody) calls no static Regex method.
+            var headerRegexes = new[] { "InitializerArguments", "LeadingAttributes", "InnerAttributes", "LambdaHeader", "Constraint", "TypeKeyword", "ObjectCreation", "AccessorHeader", "OperatorHeader", "MethodHeader" };
+            foreach (var field in headerRegexes)
                 Check(typeof(InternalErrorDelegationTests).GetField(field, Any)?.GetValue(null) is System.Text.RegularExpressions.Regex pattern && pattern.MatchTimeout == TimeSpan.FromSeconds(1),
                     "P3-29 seam hygiene: the header regex " + field + " has a 1 s match timeout", (typeof(InternalErrorDelegationTests).GetField(field, Any)?.GetValue(null) as System.Text.RegularExpressions.Regex)?.MatchTimeout.ToString("c", CultureInfo.InvariantCulture) ?? "<missing>");
+            var regexFields = typeof(InternalErrorDelegationTests).GetFields(Any).Where(f => f.FieldType == typeof(System.Text.RegularExpressions.Regex)).ToArray();
+            Check(regexFields.Length == headerRegexes.Length && regexFields.All(f => headerRegexes.Contains(f.Name, StringComparer.Ordinal)
+                    && f.GetValue(null) is System.Text.RegularExpressions.Regex timed && timed.MatchTimeout == TimeSpan.FromSeconds(1)),
+                "P3-29 seam hygiene: every static Regex field is a pinned header regex with a 1 s match timeout", string.Join(", ", regexFields.Select(f => f.Name)));
+            var helpers = File.ReadAllText(Path.Combine(root, "tests", "cli", "InternalErrorDelegationTests.cs"));
+            var helpersFrom = helpers.LastIndexOf("static bool InBlockLambda(", StringComparison.Ordinal);
+            var helpersTo = helpersFrom < 0 ? -1 : helpers.IndexOf("static (bool Clean, int Mentions, string Detail) LexerGuard(", helpersFrom, StringComparison.Ordinal);
+            var inlineCalls = helpersTo < 0 ? -1 : System.Text.RegularExpressions.Regex.Matches(helpers[helpersFrom..helpersTo], @"\bRegex\s*\.\s*(?:IsMatch|Match|Matches|Replace|Split)\s*\(").Count;
+            Check(inlineCalls == 0, "P3-29 seam hygiene: InBlockLambda, HeaderStart and MethodBody call no static Regex method (every header regex is a timed field)", inlineCalls.ToString(CultureInfo.InvariantCulture));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
