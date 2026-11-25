@@ -35,6 +35,9 @@ using Bim.Core;
 //      statically here); the Windows runtime annotation is a ::warning:: written from VisibilitySelfTest, the first
 //      thing RunSteps does, so the notice budget of the other gates cannot hide it; MemberBody(raw: true) counts
 //      brackets on CodeMask (comments and literals blanked in place) and no stray ')' takes that depth below 0.
+//   P1-47: the step summary print sits inside the last finally block; the cap's '; +N more' count is pinned; FailSummary
+//      is CliInputsSummary.Line under its own title (shared escape and cap); MemberBody(raw: true) skips a signature with
+//      any character in a comment or literal, and agrees with the stripped path on interpolated literals.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -882,12 +885,8 @@ internal static class RevitCommandDeadlineTests
     // own, which cli-inputs only uses for failing P10-30/P10-32 probes); with no failure a plain line says 0 FAIL.
     const string SummaryTitle = "cli-inputs P1-21..P1-43 deadline tests";
 
-    static string FailSummary(IReadOnlyList<string> failed)
-    {
-        if (failed.Count == 0) return SummaryTitle + ": 0 FAIL";
-        static string Escape(string text) => text.Replace("%", "%25", StringComparison.Ordinal).Replace("\r", "%0D", StringComparison.Ordinal).Replace("\n", "%0A", StringComparison.Ordinal);
-        return "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL: " + string.Join("; ", failed.Select((name, k) => "#" + N(k + 1) + " " + Escape(name)));
-    }
+    // P1-47: CliInputsSummary.Line (tests/cli/Program.cs) under this title: one escape (% CR LF) and one cap, '; +N more'.
+    static string FailSummary(IReadOnlyList<string> failed) => Retitled(CliInputsSummary.Line(failed), SummaryTitle);
 
     // The check the steps call: records each FAIL name (in order) and passes every call on unchanged.
     static Action<bool, string, string> Collecting(Action<bool, string, string> check, List<string> failed) => (condition, name, detail) =>
@@ -934,9 +933,23 @@ internal static class RevitCommandDeadlineTests
         if (prints.Count != 1) problems.Add("the step-wide summary line is printed " + N(prints.Count) + " times, not once");
         else
         {
-            var last = System.Text.RegularExpressions.Regex.Match(code, @"\}\s*finally\s*\{");
-            if (!last.Success) problems.Add("no finally block was found");
-            else if (prints[0].Index < last.Index) problems.Add("the step-wide summary line is printed before the finally block");
+            // P1-47: the LAST '} finally {' is the step's own (an earlier one is a nested cleanup), and the print must sit
+            // inside that final block, between its '{' and the matching '}'.
+            var finallies = System.Text.RegularExpressions.Regex.Matches(code, @"\}\s*finally\s*\{");
+            if (finallies.Count == 0) problems.Add("no finally block was found");
+            else
+            {
+                var last = finallies[^1];
+                var open = last.Index + last.Length - 1;
+                var close = -1;
+                for (int k = open, depth = 0; k < code.Length; k++)
+                {
+                    if (code[k] == '{') depth++;
+                    else if (code[k] == '}' && --depth == 0) { close = k; break; }
+                }
+                if (prints[0].Index < open) problems.Add("the step-wide summary line is printed before the final finally block");
+                else if (close < 0 || prints[0].Index > close) problems.Add("the step-wide summary line is printed after the final finally block closes");
+            }
         }
         return problems.ToArray();
     }
