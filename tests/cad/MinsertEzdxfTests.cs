@@ -18,7 +18,7 @@ using Point2 = Bim.Cad.Point2;
 // region and an area-missing uncertainty). A normal within 1e-6 of +-Z (here (2e-7,0,-1), also the 1/64 branch) is
 // kept and placed through the computed arbitrary axes, including the elevation (group 30) times N.
 //
-// ezdxf cross-check: tests/cad/tools/minsert_ezdxf_centres.py (offline only, never run in CI) builds the same block
+// ezdxf cross-check: tests/cad/tools/minsert_ezdxf_centres.py (its --check runs in CI since P6-46) builds the same block
 // and inserts with ezdxf 1.4.2 (MIT; tag v1.4.2, commit 8240df5793daf2fd7db95d118a78e17ec92043ec, imported from a
 // source checkout under Python 3 with numpy 2.5.3) and prints, per MINSERT cell (Insert.multi_insert, row-major), the
 // four WCS corners of the cell's outline (virtual_entities + ezdxf.path.make_path) and their mean; and the OCS axes
@@ -99,12 +99,12 @@ using Point2 = Bim.Cad.Point2;
 // P6-44 (section RunJustified at the end): justified TEXT (72 = 1/2/4, 73 != 0) keeps its group 10 point, ezdxf 1.4.2
 // places it on group 11 (documented limit, measured and pinned); a non-finite group 30 and 31 on a justified near-Z
 // attribute fail at group 30's line; the A1/J1/K1 constants are cross-referenced.
-// P6-44 generator check (offline only, reason pinned): CI does not run tests/cad/tools/minsert_ezdxf_centres.py
-// because ezdxf is not a dependency of any CI job (a pinned `pip install ezdxf==1.4.2` step would edit
-// .github/workflows/ci.yml, outside the P6-44 files) and PyPI was unreachable where the constants were made. The
-// committed constants are checked reproducibly offline: with an ezdxf 1.4.2 checkout (tag v1.4.2, commit 8240df57)
-//     PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check
-// compares every constant row the generator prints with this file (exact doubles) and exits 1 on any difference.
+// P6-44 generator check, run in CI since P6-46: the engineering-gates ifc job (Linux, Python 3.12) installs the pinned
+// ezdxf==1.4.2 from PyPI into its own venv and, with EZDXF_DISABLE_C_EXT=1 (the pure-Python ezdxf, as in the source
+// checkout the constants were made with), runs tests/cad/tools/minsert_ezdxf_centres.py --check, which compares the
+// constant rows the generator prints with this file both ways (a row matches by its names and its full number list,
+// exact doubles) and exits 1 on any difference or on a planted self-test it does not catch. Offline, the same check:
+//     PYTHONPATH=<ezdxf v1.4.2 checkout, commit 8240df57>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -1648,14 +1648,15 @@ internal static class MinsertEzdxfTests
         return record;
     }
 
-    // The header lines that record why the ezdxf generator is offline only (pinned by RunJustified).
-    private static readonly string[] OfflineReason =
+    // The header lines that record how CI runs the ezdxf generator check (pinned by RunJustified).
+    private static readonly string[] GeneratorCheck =
     {
-        "// P6-44 generator check (offline only, reason pinned): CI does not run tests/cad/tools/minsert_ezdxf_centres.py",
-        "// because ezdxf is not a dependency of any CI job (a pinned `pip install ezdxf==1.4.2` step would edit",
-        "// .github/workflows/ci.yml, outside the P6-44 files) and PyPI was unreachable where the constants were made. The",
-        "// committed constants are checked reproducibly offline: with an ezdxf 1.4.2 checkout (tag v1.4.2, commit 8240df57)",
-        "//     PYTHONPATH=<ezdxf checkout>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check",
+        "// P6-44 generator check, run in CI since P6-46: the engineering-gates ifc job (Linux, Python 3.12) installs the pinned",
+        "// ezdxf==1.4.2 from PyPI into its own venv and, with EZDXF_DISABLE_C_EXT=1 (the pure-Python ezdxf, as in the source",
+        "// checkout the constants were made with), runs tests/cad/tools/minsert_ezdxf_centres.py --check, which compares the",
+        "// constant rows the generator prints with this file both ways (a row matches by its names and its full number list,",
+        "// exact doubles) and exits 1 on any difference or on a planted self-test it does not catch. Offline, the same check:",
+        "//     PYTHONPATH=<ezdxf v1.4.2 checkout, commit 8240df57>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check",
     };
 
     private static void RunJustified(Action<bool, string, string> c)
@@ -1776,6 +1777,13 @@ internal static class MinsertEzdxfTests
                 ("TEXT 72 2 near -Z 31 inf only (31 not read for TEXT)", Plain("30 500|11 160|21 70|31 inf", "|72 2", NearMinus), null, null),
                 ("ATTDEF 72 1 exact -Z 30 NaN, 31 inf (tolerated)", Definition("30 NaN|11 160|21 70|31 inf", "|72 1", MinusZ), null, null),
                 ("ATTRIB 74 2 +Z 30 1e999, 31 NaN (tolerated)", Attribute("30 1e999|11 160|21 70|31 NaN", "|74 2", ""), null, null),
+                // P6-46: vertical-only justification. TEXT's vertical group is 73 (its 30 is placed through the OCS, 31
+                // never read); ATTRIB/ATTDEF's is 74, their 73 is the field length, so 73 alone leaves them unjustified
+                // (group 10 with the z of group 30 placed, 31 never read).
+                ("TEXT 73 1 (vertical only) near +Z 30 NaN, 31 inf", Plain("30 NaN|11 160|21 70|31 inf", "|73 1", NearPlus), "30", "NaN"),
+                ("TEXT 73 3 (vertical only) near -Z 31 -inf written before 30 1e999", Plain("11 160|21 70|31 -inf|30 1e999", "|73 3", NearMinus), "30", "1e999"),
+                ("ATTDEF 73 2 only (field length, not justified) near +Z 30 NaN, 31 inf", Definition("30 NaN|11 160|21 70|31 inf", "|73 2", NearPlus), "30", "NaN"),
+                ("ATTRIB 73 1 only (field length, not justified) near -Z 30 500, 31 NaN (31 not read)", Attribute("30 500|11 160|21 70|31 NaN", "|73 1", NearMinus), null, null),
             };
             foreach (var (label, drawingText, code, value) in cases)
             {
@@ -1810,16 +1818,34 @@ internal static class MinsertEzdxfTests
             c(false, "justified error order unexpected exception", error.GetType().Name + ": " + error.Message);
         }
 
-        // Generator check: offline only, the reason pinned in this file's header; the generator has the --check mode.
+        // Generator check (P6-46): run in CI by the ifc job, recorded in this file's header; the generator has the
+        // two-way --check mode with planted self-tests.
         try
         {
             var root = RepoRoot();
             var source = File.ReadAllText(Path.Combine(root, "tests", "cad", "MinsertEzdxfTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var header = source[..source.IndexOf("internal static class MinsertEzdxfTests", StringComparison.Ordinal)];
-            var reason = string.Join("\n", OfflineReason) + "\n";
-            c(header.Contains(reason, StringComparison.Ordinal),
-                "justified: generator: the file header records why the ezdxf generator is offline only and the --check command",
-                "header has the reason block: " + header.Contains(reason, StringComparison.Ordinal));
+            var reason = string.Join("\n", GeneratorCheck) + "\n";
+            c(header.Contains(reason, StringComparison.Ordinal) && !header.Contains("offline only", StringComparison.Ordinal),
+                "justified: generator: the file header records how CI runs the ezdxf generator --check (no stale offline-only claim)",
+                "header has the CI block: " + header.Contains(reason, StringComparison.Ordinal) + " offline-only claim left: " + header.Contains("offline only", StringComparison.Ordinal));
+            // The CI step: in the Linux ifc job, a pinned ezdxf 1.4.2 in its own venv, the pure-Python reading, --check.
+            var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
+            const string StepName = "      - name: ezdxf 1.4.2 generator constant check, two-way (P6-46)\n";
+            var ifcJob = workflow.IndexOf("\n  ifc:\n", StringComparison.Ordinal);
+            var rhinoJob = workflow.IndexOf("\n  rhino:\n", StringComparison.Ordinal);
+            var step = workflow.IndexOf(StepName, StringComparison.Ordinal);
+            var stepEnd = step < 0 ? -1 : workflow.IndexOf("\n      - ", step + StepName.Length - 1, StringComparison.Ordinal);
+            var stepText = step < 0 || stepEnd < 0 ? "" : workflow[step..stepEnd];
+            string[] needed =
+            {
+                "python -m venv .tools/ezdxf", ".tools/ezdxf/bin/python -m pip install ezdxf==1.4.2", ".tools/ezdxf/bin/python -m pip check",
+                "EZDXF_DISABLE_C_EXT=1 .tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check",
+            };
+            var absent = needed.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
+            c(ifcJob > 0 && rhinoJob > ifcJob && step > ifcJob && step < rhinoJob && workflow.IndexOf(StepName, step + 1, StringComparison.Ordinal) < 0 && absent.Count == 0,
+                "justified: generator: .github/workflows/ci.yml runs the --check once, in the Linux ifc job, against a pinned ezdxf==1.4.2 in its own venv with C extensions disabled",
+                "ifc " + ifcJob.ToString(CultureInfo.InvariantCulture) + " step " + step.ToString(CultureInfo.InvariantCulture) + " rhino " + rhinoJob.ToString(CultureInfo.InvariantCulture) + " missing " + string.Join(" | ", absent));
             var generator = File.ReadAllText(Path.Combine(root, "tests", "cad", "tools", "minsert_ezdxf_centres.py")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var sections = new[] { "def main():", "def bulge_main():", "def chain_main():", "def z_main():", "def leaf_main():", "def follow_main():", "def align_main():", "def justify_main():", "def check_main(cs_path):" };
             var missing = sections.Where(s => !generator.Contains("\n" + s + "\n", StringComparison.Ordinal)).ToList();
@@ -1827,6 +1853,16 @@ internal static class MinsertEzdxfTests
             c(missing.Count == 0 && checkedSections && generator.Contains("if sys.argv[1:2] == [\"--check\"]:", StringComparison.Ordinal) && generator.Contains("commit 8240df5793daf2fd7db95d118a78e17ec92043ec", StringComparison.Ordinal),
                 "justified: generator: tests/cad/tools/minsert_ezdxf_centres.py has every section, a --check mode over all of them, and records ezdxf 1.4.2 commit 8240df57",
                 "missing " + string.Join(",", missing) + " check covers all " + checkedSections);
+            // P6-46: two-way (C# constants no generator row produces are reported), rows matched whole, planted self-tests.
+            string[] twoWay =
+            {
+                "def _committed_rows(source):", "def _compare(generated, committed):", "def _self_tests(generated, source):",
+                "\"not produced by the generator: \"", "\"not committed: \"",
+            };
+            var twoWayMissing = twoWay.Where(t => !generator.Contains(t, StringComparison.Ordinal)).ToList();
+            c(twoWayMissing.Count == 0 && !generator.Contains("def _contains(", StringComparison.Ordinal),
+                "justified: generator: --check is two-way (committed constants no generator row produces fail), matches whole rows (no contiguous-run matcher) and runs planted self-tests",
+                "missing " + string.Join(" | ", twoWayMissing) + " contiguous-run matcher left " + generator.Contains("def _contains(", StringComparison.Ordinal));
         }
         catch (Exception error)
         {
