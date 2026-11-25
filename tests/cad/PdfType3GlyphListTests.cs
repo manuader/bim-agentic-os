@@ -699,19 +699,22 @@ internal static class PdfType3GlyphListTests
                 (inputHash, 1),
             };
             var cadCommandAnchors = new[] { "internal static class CadCommand", "static void Execute(bool draft", "static Options ParseOptions(", "static void Fail(" };
-            // P6-47: each pin is counted with all whitespace removed from both the pin and the stripped source (as the DXF
-            // reader-option pin does), so a reformatted line still counts; problems name the pin as written.
-            static string Compact(string text) => string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
+            // P6-47: each pin is counted with whitespace removed from both the pin and the stripped source (as the DXF
+            // reader-option pin does), so a reformatted line still counts; problems name the pin as written. P6-49: through
+            // CodePins (tests/cad/CodePins.cs, shared with the DXF pin): one space is kept between identifier characters and
+            // a pin counts only at identifier boundaries (xpdf = PdfReader.Parse is not the pinned pdf = read).
             static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins)
             {
-                var compact = Compact(source);
-                return string.Join("; ", pins.Where(pin => Occurrences(compact, Compact(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(compact, Compact(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+                var squeezed = CodePins.Squeeze(source);
+                return string.Join("; ", pins.Where(pin => CodePins.Count(squeezed, CodePins.Squeeze(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(CodePins.Count(squeezed, CodePins.Squeeze(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
             }
-            // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code).
+            // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code;
+            // P6-49: matched squeezed, so a reformatted hash line or if (draft) keeps its place).
             static string? HashPlace(string stripped)
             {
-                int draftAt = stripped.IndexOf("if (draft)", StringComparison.Ordinal), hashAt = stripped.IndexOf(inputHash, StringComparison.Ordinal), briefAt = stripped.IndexOf(dxfCall, StringComparison.Ordinal);
-                return draftAt >= 0 && hashAt > draftAt && briefAt > hashAt ? null : "input hash at " + I(hashAt) + " not inside the cad-draft branch (if (draft) at " + I(draftAt) + ", FromDxf at " + I(briefAt) + ")";
+                var squeezed = CodePins.Squeeze(stripped);
+                int draftAt = CodePins.IndexOf(squeezed, CodePins.Squeeze("if (draft)")), hashAt = CodePins.IndexOf(squeezed, CodePins.Squeeze(inputHash)), briefAt = CodePins.IndexOf(squeezed, CodePins.Squeeze(dxfCall));
+                return draftAt >= 0 && hashAt > draftAt && briefAt > hashAt ? null : "input hash at " + I(hashAt) + " not inside the cad-draft branch (if (draft) at " + I(draftAt) + ", FromDxf at " + I(briefAt) + ", squeezed code)";
             }
             static string? CodeProblems(string source, IEnumerable<(string Line, int Count)> pins, IReadOnlyList<string> anchors)
             {
@@ -740,6 +743,28 @@ internal static class PdfType3GlyphListTests
             C(cadCommand.Length > 0 && reformattedDrift != cadCommand && CodeProblems(reformattedDrift, cadCommandPins, cadCommandAnchors) is { } splitCaught && splitCaught.Contains("'" + pdfRead + "' x0", StringComparison.Ordinal),
                 "p6-47 cli options self-test: an extra PdfReadOptions argument in the reformatted PDF read is caught by name",
                 reformattedDrift == cadCommand ? "self-test anchor not found" : CodeProblems(reformattedDrift, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            // P6-49 self-tests: the whitespace-free matches keep identifier boundaries, so xpdf = PdfReader.Parse(...) is not
+            // counted as the pinned pdf = read; the input hash and the cad-draft branch with their spacing changed still pass
+            // the hash-place check (it matches whitespace-free too).
+            var widened = cadCommand.Replace(pdfRead, "x" + pdfRead, StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && widened != cadCommand && CodeProblems(widened, cadCommandPins, cadCommandAnchors) is { } widenedCaught && widenedCaught.Contains("'" + pdfRead + "' x0", StringComparison.Ordinal),
+                "p6-49 cli pins self-test: xpdf = PdfReader.Parse(...) in CadCommand.cs is not counted as the pinned pdf = read (identifier boundary)",
+                widened == cadCommand ? "self-test anchor not found" : CodeProblems(widened, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            var respaced = cadCommand.Replace(inputHash, "var sha =\n                    SHA256.HashData( bytes );", StringComparison.Ordinal).Replace("if (draft)", "if(draft)", StringComparison.Ordinal);
+            C(cadCommand.Length > 0 && respaced != cadCommand && Occurrences(respaced, inputHash) == 0 && CodeProblems(respaced, cadCommandPins, cadCommandAnchors) is null,
+                "p6-49 hash self-test: the input hash and the cad-draft branch reformatted in CadCommand.cs still pass the hash-place check (whitespace-free)",
+                respaced == cadCommand ? "self-test anchor not found" : CodeProblems(respaced, cadCommandPins, cadCommandAnchors) ?? "tolerated");
+            // P6-49 one stripper: StripCommentsAndLiterals has one block-bodied definition among the tests/cad sources, in
+            // CodePins.cs, and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class).
+            var cadTestsDir = Path.Combine(root, "tests", "cad");
+            var stripperHomes = string.Join(",", Directory.GetFiles(cadTestsDir, "*.cs")
+                .Where(f => System.Text.RegularExpressions.Regex.IsMatch(StripCommentsAndLiterals(File.ReadAllText(f)), @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*\{"))
+                .Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
+            var minsertPath = Path.Combine(cadTestsDir, "MinsertEzdxfTests.cs");
+            var minsertCode = File.Exists(minsertPath) ? StripCommentsAndLiterals(File.ReadAllText(minsertPath)) : "";
+            C(stripperHomes == "CodePins.cs" && Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(") >= 1 && Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)") == 0,
+                "p6-49 one stripper: StripCommentsAndLiterals is defined once, in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
+                "defined in [" + stripperHomes + "], MinsertEzdxfTests calls CodePins x" + I(Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(")) + ", typeof(PdfType3GlyphListTests) x" + I(Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)")));
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
             // check names it as missing.
@@ -1009,96 +1034,8 @@ internal static class PdfType3GlyphListTests
         return problems.Count == 0 ? null : string.Join("; ", problems);
     }
 
-    // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
-    // replaced by an empty one ("" or ''), so a static check matches code only.
-    private static string StripCommentsAndLiterals(string source)
-    {
-        var output = new StringBuilder(source.Length);
-        var n = source.Length;
-        var i = 0;
-        while (i < n)
-        {
-            var c = source[i];
-            if (c == '/' && i + 1 < n && source[i + 1] == '/')
-            {
-                while (i < n && source[i] != '\n') i++;
-                continue;
-            }
-            if (c == '/' && i + 1 < n && source[i + 1] == '*')
-            {
-                var close = source.IndexOf("*/", i + 2, StringComparison.Ordinal);
-                i = close < 0 ? n : close + 2;
-                output.Append(' ');
-                continue;
-            }
-            if (c == '\'')
-            {
-                var k = i + 1;
-                while (k < n && source[k] != '\'' && source[k] != '\n')
-                {
-                    if (source[k] == '\\') k++;
-                    k++;
-                }
-                output.Append("''");
-                i = Math.Min(n, k + 1);
-                continue;
-            }
-            if (c is '$' or '@' or '"')
-            {
-                var k = i;
-                var verbatim = false;
-                while (k < n && source[k] is '$' or '@')
-                {
-                    if (source[k] == '@') verbatim = true;
-                    k++;
-                }
-                if (k < n && source[k] == '"')
-                {
-                    var quotes = 0;
-                    while (k + quotes < n && source[k + quotes] == '"') quotes++;
-                    // A verbatim string is never raw: @"""" is one escaped quote, not the start of a raw literal.
-                    if (quotes >= 3 && !verbatim)
-                    {
-                        var close = source.IndexOf(new string('"', quotes), k + quotes, StringComparison.Ordinal);
-                        i = close < 0 ? n : close + quotes;
-                    }
-                    else if (quotes == 2 && !verbatim) i = k + 2;
-                    else if (verbatim)
-                    {
-                        k++;
-                        while (k < n)
-                        {
-                            if (source[k] == '"')
-                            {
-                                if (k + 1 < n && source[k + 1] == '"') { k += 2; continue; }
-                                break;
-                            }
-                            k++;
-                        }
-                        i = k + 1;
-                    }
-                    else
-                    {
-                        k++;
-                        while (k < n && source[k] != '"' && source[k] != '\n')
-                        {
-                            if (source[k] == '\\') k++;
-                            k++;
-                        }
-                        i = k + 1;
-                    }
-                    output.Append("\"\"");
-                    continue;
-                }
-                output.Append(source, i, Math.Max(k - i, 1));
-                i = Math.Max(k, i + 1);
-                continue;
-            }
-            output.Append(c);
-            i++;
-        }
-        return output.ToString();
-    }
+    // P6-27 stripper, moved to tests/cad/CodePins.cs in P6-49 (one definition shared with the DXF reader-option pin).
+    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);
 
     // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
     // block body up to its matching '}'; (-1, -1) when the signature is absent.

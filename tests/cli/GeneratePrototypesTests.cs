@@ -66,6 +66,11 @@ using Bim.Generative;
 //      (M<A, B>()) cut neither a lambda body nor an argument list; method-group alias chains (g = f) are followed and a
 //      field alias used other than called is a gap; generic methods with where clauses expose their parameters; a lambda
 //      or non-delegate parameter passed on where a delegate argument is followed is named unresolved.
+//      P7-50: a where is a method head's clause only as a constraint (not a LINQ where, nor one inside an attribute or a
+//      default value); a cast (List<A, B>)x and a pattern is Dictionary<A, B> d are one type-argument list, a comparison
+//      with an operator none (a < b > (c) is a generic call, as in C#: the stated limit); a parameter passed on wrapped
+//      ((test), test!, a cast, a conditional or ??) is named; a field alias's over-approximated name match is stated in
+//      its gap; a method group in a conditional or after ?? stays a named gap.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -2890,6 +2895,16 @@ internal static class GeneratePrototypesTests
     //     => ) are seen (HeadClose);
     //   - a lambda's parameter or a parameter of a type that is no followed delegate, reached as the whole argument a caller
     //     passes for a followed delegate parameter (passed on, not called), is unresolved naming that limit.
+    // P7-50:
+    //   - HeadClose takes a where only as a constraint (where Name : at bracket depth 0 walking back from the body, and
+    //     Declarations likewise): a where inside an attribute or a default value, or a LINQ where, opens no method head;
+    //   - TypeArgumentsEnd takes a list followed by C#'s disambiguating tokens (a cast (List<A, B>)x) or by a designation
+    //     after is / case / out (a pattern is Dictionary<A, B> d); a comparison with an operator or followed by a name is
+    //     none. Stated limit: a < b > (c) and a < b, c > (d) are a generic call, as C# itself parses them;
+    //   - a parameter passed on wrapped as (test), test!, a cast (T)test, a conditional's branch or a side of ?? (Values,
+    //     inside an argument Arguments returned: IsArgument; not inside a lambda's body) is named like the bare one;
+    //   - a field alias's uses are matched by name over the whole read code (over-approximated), which its gap states; a
+    //     method group in a conditional or after ?? is not followed: it stays a named gap.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -2970,7 +2985,14 @@ internal static class GeneratePrototypesTests
 
     // P7-48: the index of the > closing the type-argument list whose < is at index, when that < follows a name and the
     // list is followed by ( . or { (M<A, B>(), List<A>.Empty, new Dictionary<A, B> { }), else -1 (a comparison).
-    static readonly System.Text.RegularExpressions.Regex TypeArgumentList = new(@"\G" + TypeArguments + @"(?=\s*[(.{])");
+    // P7-50: followed by any of C#'s disambiguating tokens ( ) ] } : ; , . ? == != | ^ & [ (or {), so a cast (List<A, B>)x is
+    // one list too; or by a designation when the type follows is / case / out / not / and / or (a pattern
+    // x is Dictionary<A, B> d, a declaration out List<A, B> l). A comparison holding an operator (a < b + 1, c > d) or
+    // followed by a name is no list. Stated limit: a < b > (c) and a < b, c > (d) are taken as a generic call, as C# itself
+    // parses them (the spec's grammar ambiguity rule).
+    static readonly System.Text.RegularExpressions.Regex TypeArgumentList = new(@"\G" + TypeArguments + @"(?=\s*(?:[(.{)\]}:;,?\[|^&]|==|!=))");
+    static readonly System.Text.RegularExpressions.Regex PatternTypeArgumentList = new(@"\G" + TypeArguments + @"(?=\s*[A-Za-z_])");
+    static readonly HashSet<string> PatternWords = new(StringComparer.Ordinal) { "is", "case", "out", "not", "and", "or" };
     static int TypeArgumentsEnd(string code, int index)
     {
         if (code[index] != '<') return -1;
@@ -2978,7 +3000,91 @@ internal static class GeneratePrototypesTests
         while (j >= 0 && char.IsWhiteSpace(code[j])) j--;
         if (j < 0 || !(char.IsLetterOrDigit(code[j]) || code[j] == '_')) return -1;
         var list = TypeArgumentList.Match(code, index);
+        if (!(list.Success && list.Length > 0))
+        {
+            var k = j;
+            while (k >= 0 && (char.IsLetterOrDigit(code[k]) || code[k] is '_' or '.')) k--;
+            if (!PatternWords.Contains(Before(code, k + 1).Word)) return -1;
+            list = PatternTypeArgumentList.Match(code, index);
+        }
         return list.Success && list.Length > 0 ? index + list.Length - 1 : -1;
+    }
+
+    // P7-50: a where constraint clause starting at the index (where T :, not where T :: nor a LINQ where cond).
+    static readonly System.Text.RegularExpressions.Regex Constraint = new(@"\Gwhere\s+[A-Za-z_]\w*\s*:(?!:)");
+
+    // P7-50: the spans whose value is the value of the expression [start, end), trimmed: the expression itself and,
+    // recursively, x of a parenthesized (x), of a null-forgiving x! and of a cast (T)x, both branches of a conditional
+    // c ? a : b (not c) and both sides of a ?? b.
+    static readonly System.Text.RegularExpressions.Regex CastType = new(@"^\s*(?:global::)?[A-Za-z_][\w.]*\s*(?:<[\w\s,.?<>\[\]()]*>)?\s*\??\s*(?:\[[\s,]*\]\s*)*$");
+    static List<(int Start, int End)> Values(string code, int start, int end)
+    {
+        var values = new List<(int Start, int End)>();
+        void Add(int s, int e)
+        {
+            while (s < e && char.IsWhiteSpace(code[s])) s++;
+            while (e > s && char.IsWhiteSpace(code[e - 1])) e--;
+            if (e <= s) return;
+            values.Add((s, e));
+            // A lambda's value is the lambda: its body's branches are not passed on.
+            var level = 0;
+            for (var i = s; i + 1 < e; i++)
+            {
+                if (code[i] is '(' or '[' or '{') level++;
+                else if (code[i] is ')' or ']' or '}') level--;
+                else if (level == 0 && code[i] == '=' && code[i + 1] == '>' && !(i > s && code[i - 1] is '=' or '!' or '<' or '>')) return;
+            }
+            if (code[e - 1] == '!') { Add(s, e - 1); return; }
+            if (code[s] == '(')
+            {
+                var close = Closing(code, s, '(', ')');
+                if (close == e - 1) { Add(s + 1, e - 1); return; }
+                var after = close + 1;
+                while (after < e && char.IsWhiteSpace(code[after])) after++;
+                // A cast, not a lambda's parameter list (x) =>.
+                if (close > s && after < e && code[after] != '=' && CastType.IsMatch(code[(s + 1)..close])) { Add(close + 1, e); return; }
+            }
+            // The first ? of a conditional (not ?? ?. ?[ nor a nullable type's ? before > , ) ]) and the first ?? at depth 0.
+            var depth = 0;
+            var question = -1;
+            var coalesce = -1;
+            for (var i = s; i < e; i++)
+            {
+                var c = code[i];
+                if (c is '(' or '[' or '{') depth++;
+                else if (c is ')' or ']' or '}') depth--;
+                else if (depth == 0 && c == '?')
+                {
+                    var next = i + 1 < e ? code[i + 1] : '\0';
+                    if (next == '?') { if (coalesce < 0) coalesce = i; i++; }
+                    else if (question < 0 && next is not ('.' or '[' or '>' or ',' or ')' or ']')) question = i;
+                }
+            }
+            if (question >= 0)
+            {
+                var nested = 0;
+                depth = 0;
+                for (var i = question + 1; i < e; i++)
+                {
+                    var c = code[i];
+                    if (c is '(' or '[' or '{') depth++;
+                    else if (c is ')' or ']' or '}') depth--;
+                    else if (depth > 0) continue;
+                    else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
+                    else if (c == '?' && !(i + 1 < e && code[i + 1] is '.' or '[' or '>' or ',' or ')' or ']')) nested++;
+                    else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
+                    {
+                        Add(question + 1, i);
+                        Add(i + 1, e);
+                        return;
+                    }
+                }
+                return;
+            }
+            if (coalesce >= 0) { Add(s, coalesce); Add(coalesce + 2, e); }
+        }
+        Add(start, end);
+        return values;
     }
 
     // The index of the bracket closing the one at open, or -1.
@@ -3017,7 +3123,8 @@ internal static class GeneratePrototypesTests
             var at = paren + 1;
             while (at < code.Length && char.IsWhiteSpace(code[at])) at++;
             // Generic constraints: where T : ... up to the body.
-            if (System.Text.RegularExpressions.Regex.IsMatch(code[at..Math.Min(code.Length, at + 6)], @"^where\b"))
+            // P7-50: only a constraint (where Name :), not a LINQ where after a call.
+            if (Constraint.IsMatch(code, at))
                 while (at < code.Length && code[at] != '{' && code[at] != ';' && !(code[at] == '=' && at + 1 < code.Length && code[at + 1] == '>')) at++;
             var end = -1;
             if (at < code.Length && code[at] == '{') end = Closing(code, at, '{', '}');
@@ -3051,6 +3158,10 @@ internal static class GeneratePrototypesTests
         readonly Dictionary<(string, string), List<(int Start, int End)>> assignments = new();
         readonly Dictionary<string, List<(int Start, int End)>> methods = new(StringComparer.Ordinal);
         readonly Dictionary<string, List<(int Start, int End)>> declarators = new(StringComparer.Ordinal);
+        readonly HashSet<(int Start, int End)> argumentSpans = new();
+
+        // P7-50: whether [start, end) is an argument Arguments returned (passed for a followed delegate parameter).
+        public bool IsArgument(int start, int end) => argumentSpans.Contains((start, end));
 
         public CodeMap(string code)
         {
@@ -3270,16 +3381,23 @@ internal static class GeneratePrototypesTests
         // P7-48: the ) closing the parameter list of the head that a body opening at at ({ or =>) follows: the ) right before
         // it, or the ) before the first of the where clauses between them (M<T>(Func<T> f) where T : class, new() {), when
         // those clauses hold no ; { } or =>; else -1.
+        // P7-50: a where is a clause only as a constraint (where Name : at bracket depth 0 walking back from at, so not inside
+        // an attribute's [ ] or a parameter list's ( ), and not a LINQ where cond); the walk stops at a ; { } or => at that
+        // depth or at an unmatched ( or [ (at is inside it, so no head is before).
         readonly Dictionary<int, int> headCloses = new();
         int HeadClose(int at)
         {
             if (headCloses.TryGetValue(at, out var known)) return known;
             var first = -1;
-            for (var i = at - 1; i >= 0 && Code[i] is not (';' or '{' or '}'); i--)
+            var depth = 0;
+            for (var i = at - 1; i >= 0; i--)
             {
-                if (Code[i] == '>' && i > 0 && Code[i - 1] == '=') break;
-                if (Code[i] == 'w' && string.CompareOrdinal(Code, i, "where", 0, 5) == 0 && (i == 0 || !(char.IsLetterOrDigit(Code[i - 1]) || Code[i - 1] == '_'))
-                    && i + 5 < Code.Length && !(char.IsLetterOrDigit(Code[i + 5]) || Code[i + 5] == '_')) first = i;
+                var c = Code[i];
+                if (c is ')' or ']') { depth++; continue; }
+                if (c is '(' or '[') { if (--depth < 0) break; continue; }
+                if (depth > 0) continue;
+                if (c is ';' or '{' or '}' || (c == '>' && i > 0 && Code[i - 1] == '=')) break;
+                if (c == 'w' && (i == 0 || !(char.IsLetterOrDigit(Code[i - 1]) || Code[i - 1] == '_')) && Constraint.IsMatch(Code, i)) first = i;
             }
             var j = (first >= 0 ? first : at) - 1;
             while (j >= 0 && char.IsWhiteSpace(Code[j])) j--;
@@ -3319,7 +3437,7 @@ internal static class GeneratePrototypesTests
             while (k >= 0 && (char.IsLetterOrDigit(Code[k]) || Code[k] == '_')) k--;
             var method = Code[(k + 1)..end];
             // P7-48: async and static (CallKeywords) are lambda modifiers (static async (T x) =>), not a method's name.
-            if (method.Length == 0 || char.IsDigit(method[0]) || CallKeywords.Contains(method) || LambdaModifiers.Contains(method)) return (null, open, parameters);
+            if (method.Length == 0 || char.IsDigit(method[0]) || CallKeywords.Contains(method)) return (null, open, parameters);
             var (last, word, spaced) = Before(Code, k + 1);
             if (!spaced || !(char.IsLetterOrDigit(last) || last is '_' or '>' or ']' or ')' or '?') || DeclarationBlockers.Contains(word)) return (null, open, parameters);
             return (method, k + 1, parameters);
@@ -3422,9 +3540,12 @@ internal static class GeneratePrototypesTests
                 var arguments = Split(Code, open + 1, close, false);
                 var named = new System.Text.RegularExpressions.Regex(@"^" + name + @"\s*:(?!:)\s*");
                 var at = arguments.FindIndex(a => named.IsMatch(Code[a.Start..a.End]));
-                if (at >= 0) found.Add((arguments[at].Start + named.Match(Code[arguments[at].Start..arguments[at].End]).Length, arguments[at].End));
+                (int Start, int End)? argument = null;
+                if (at >= 0) argument = (arguments[at].Start + named.Match(Code[arguments[at].Start..arguments[at].End]).Length, arguments[at].End);
                 else if (position < arguments.Count && !arguments.Take(position + 1).Any(a => System.Text.RegularExpressions.Regex.IsMatch(Code[a.Start..a.End], @"^[A-Za-z_]\w*\s*:(?!:)")))
-                    found.Add(arguments[position]);
+                    argument = arguments[position];
+                // P7-50: remembered as an argument (IsArgument), so References names a parameter passed on inside it.
+                if (argument is { } taken) { found.Add(taken); argumentSpans.Add(taken); }
             }
             foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(Code, @"\b" + method + @"\b"))
             {
@@ -3449,7 +3570,9 @@ internal static class GeneratePrototypesTests
                 var alias = Alias(from, m.Index + m.Length);
                 if (alias is null)
                 {
-                    gaps.Add(method + " used as a method group (passed on or assigned other than alias = " + method + ";), so the arguments for its parameter " + name + " are not all seen");
+                    // P7-50: a method group in a conditional or after ?? (f = on ? M : null; g ?? M) stays such a named gap.
+                    gaps.Add(method + " used as a method group (passed on, in a conditional ?: or ??, or assigned other than alias = " + method + ";), so the arguments for its parameter "
+                        + name + " are not all seen");
                     continue;
                 }
                 if (queued.Add(alias.Value.At)) aliases.Enqueue(alias.Value);
@@ -3478,7 +3601,10 @@ internal static class GeneratePrototypesTests
                         if (queued.Add(next.At)) aliases.Enqueue(next);
                         continue;
                     }
-                    gaps.Add(aliasName + " (a " + (local ? "local" : "field") + " holding the method group " + method + ") used other than called, so the arguments for " + name + " are not all seen");
+                    // P7-50: a field alias's uses are matched by name over the whole read code (over-approximated), stated in its gap.
+                    gaps.Add(aliasName + " (a " + (local ? "local" : "field") + " holding the method group " + method + ") used other than called"
+                        + (local ? "" : " (a field alias is matched by name over the whole read code, so a same-named local, parameter or member elsewhere counts as its use: over-approximated)")
+                        + ", so the arguments for " + name + " are not all seen");
                 }
             }
             return (found, gaps);
@@ -3590,6 +3716,8 @@ internal static class GeneratePrototypesTests
         var code = map.Code;
         var found = new List<(string Name, List<(int Start, int End)> Targets, string? Unresolved)>();
         var none = new List<(int Start, int End)>();
+        // P7-50: the value spans of the text when it is an argument passed for a followed delegate parameter.
+        var values = map.IsArgument(start, end) ? Values(code, start, end) : new List<(int Start, int End)>();
         foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(code[start..end], @"\b([A-Za-z_]\w*)" + TypeArguments + @"(\s*[({])?"))
         {
             var name = m.Groups[1].Value;
@@ -3637,7 +3765,8 @@ internal static class GeneratePrototypesTests
             {
                 // P7-48: the whole text is this name (the argument a caller passes for a followed delegate parameter, as
                 // Arguments returns it): a lambda's or a non-delegate parameter passed on there is named, not dropped.
-                var passedOn = !call && m.Index == 0 && m.Groups[1].Length == end - start;
+                // P7-50: or the name is a value of that argument (Values: (test), test!, (T)test, c ? test : d, test ?? d).
+                var passedOn = !call && values.Contains((at, at + m.Groups[1].Length));
                 const string PassedOn = ", passed on (not called) for a followed delegate parameter";
                 if (parameter.Lambda)
                 {
@@ -3886,6 +4015,17 @@ internal static class GeneratePrototypesTests
     //      followed (stdout rejected);
     //   u. a lambda's parameter or a Notifier parameter passed on as the argument of a followed Func parameter is
     //      unresolved naming that it was passed on, not called.
+    //   P7-50:
+    //   v. a where inside an attribute or a default value, or a LINQ where after a call (in a foreach head, before a lambda),
+    //      opens no method head: test stays M's delegate parameter; a where T : constraint (block- or expression-bodied)
+    //      still exposes it;
+    //   w. TypeArgumentsEnd and Split: a cast (List<A, B>)x, a pattern is / case Dictionary<A, B> d and a call N<A, B>(x)
+    //      are one list (not cut); a < b + 1, c > (d) and a < b, c > d are comparisons; a < b > (c) is a generic call (the
+    //      stated limit, as C# parses it);
+    //   x. a lambda's parameter passed on as (test), test!, a conditional's branch or a side of ??, and a Notifier
+    //      parameter passed on through a cast (Func<int>)test, are unresolved naming that they were passed on;
+    //   y. a field alias's gap states its name match is over-approximated (a same-named local elsewhere passed on);
+    //   z. Stat as a method group in a conditional or after ?? is a gap naming that use.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -4174,6 +4314,84 @@ internal static class GeneratePrototypesTests
         Check(lambdaDeclarators.Count == 1 && lambdaDeclarators[0].Start == LambdaHeads.IndexOf("x => 1", StringComparison.Ordinal),
             "P7-48 declarator self-test: Declarators counts the expression-bodied property x => and no lambda head x =>",
             "declarators at [" + string.Join(", ", lambdaDeclarators.Select(d => d.Start.ToString(CultureInfo.InvariantCulture))) + "]");
+
+        // P7-50 (v): HeadClose takes a where only as a constraint (where T : at the head's bracket depth): a where inside an
+        // attribute or a default value, or a LINQ where after a call, opens no method head, so test is still M's parameter.
+        var headTexts = new (string Label, string Code)[]
+        {
+            ("a where inside an attribute", "class C { [Tag(where: 1)] static void M(Func<int> test) { test(); } }"),
+            ("a where as a default value", "class C { static void M(Func<int> test, int n = where) { test(); } }"),
+            ("a LINQ where after a call in a foreach head", "class C { static void M(Func<int> test) { foreach (var z in from z in Zs orderby Key(z.test) where z.Ok select z) { test(); } } }"),
+            ("a LINQ where after a call before a lambda", "class C { static void M(Func<int> test) { Run(from z in Zs orderby Key(z.test) where z.Ok select z, () => test()); } }"),
+            ("a where T : class, new() constraint", "class C { static void M<T>(Func<T> test) where T : class, new() { test(); } }"),
+            ("an expression-bodied method's where T : IComparable<T> constraint", "class C { static int M<T>(Func<T> test) where T : IComparable<T> => test(); }"),
+        };
+        foreach (var (label, text) in headTexts)
+        {
+            var parameter = new CodeMap(text).Parameter("test", text.LastIndexOf("test()", StringComparison.Ordinal));
+            Check(parameter is { Method: "M", Delegate: true, Lambda: false }, "P7-50 head self-test: " + label + " leaves test the delegate parameter of M",
+                parameter is { } found ? found.Method + " " + found.Kind : "<no parameter>");
+        }
+
+        // P7-50 (w): TypeArgumentsEnd takes a type-argument list followed by C#'s disambiguating tokens ( ) ] } : ; , . ? ==
+        // != | ^ & [ or {, or by a designation after is / case / out (patterns): a cast and a pattern are one list (Split does
+        // not cut them); a comparison with an operator, or followed by a name, is no list. Stated limit: a < b > (c) and
+        // a < b, c > (d) are a generic call, as C# itself parses them.
+        var angleTexts = new (string Label, string Code, bool List, int Items)[]
+        {
+            ("a cast (List<A, B>)x", "M((List<A, B>)x, y)", true, 2),
+            ("a declaration pattern is Dictionary<A, B> d", "M(x is Dictionary<A, B> d, y)", true, 2),
+            ("a case pattern case Dictionary<A, B> d", "M(case Dictionary<A, B> d: y)", true, 1),
+            ("a generic call N<A, B>(x)", "M(N<A, B>(x), y)", true, 2),
+            ("a comparison with an operator a < b + 1, c > (d)", "M(a < b + 1, c > (d))", false, 2),
+            ("a comparison a < b, c > d", "M(a < b, c > d)", false, 2),
+            ("a < b > (c), a generic call as C# parses it (the stated limit)", "M(a < b > (c))", true, 1),
+        };
+        foreach (var (label, text, list, items) in angleTexts)
+        {
+            var open = text.IndexOf('<');
+            var end = TypeArgumentsEnd(text, open);
+            var split = Split(text, text.IndexOf('(') + 1, text.LastIndexOf(')'), false).Count;
+            Check((list ? end == text.IndexOf('>', open) : end == -1) && split == items,
+                "P7-50 type-argument self-test: " + label + (list ? " is one type-argument list" : " is a comparison") + " and " + items.ToString(CultureInfo.InvariantCulture) + " argument(s)",
+                "end " + end.ToString(CultureInfo.InvariantCulture) + ", items " + split.ToString(CultureInfo.InvariantCulture));
+        }
+
+        // P7-50 (x): a lambda's or non-delegate parameter passed on wrapped ((test), test!, a cast, a conditional's branch, a
+        // side of ??) for a followed Func parameter is named like the bare one; (y) a field alias's name match is stated
+        // as over-approximated in its gap; (z) Stat as a method group in a conditional or after ?? stays a named gap.
+        const string PassedOnLambda = "Execute reaches test [a parameter of a lambda, passed on (not called)";
+        const string ProbeTail = " static int Probe(Func<int> act) => act(); static void RequireUnixRegular(";
+        var wrappedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(x) a lambda's parameter passed on parenthesized (test)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on null-forgiving test!", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(test!); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on as a conditional's branch", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(path.Length > 0 ? test : null); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a lambda's parameter passed on as a side of ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(test ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(x) a Notifier parameter passed on through a cast (Func<int>)test", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe((Func<int>)test);" + ProbeTail) },
+                "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
+            ("(y) a field alias of Stat whose name a local elsewhere passes on", new[] {
+                (RequireRegular, "static StatCall StatAlias = Stat; static bool Noisy(out int mode) => StatAlias(sink => 0, out mode); static void Other() { int StatAlias = 0; Use(StatAlias); } static void RequireUnixRegular(") },
+                StatParameter + "StatAlias (a field holding the method group Stat) used other than called (a field alias is matched by name"),
+            ("(z) Stat as a method group in a conditional", new[] {
+                (RequireRegular, "static bool Noisy(bool on, out int mode) { StatCall f = on ? Stat : null; return f(sink => 0, out mode); } static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group (passed on, in a conditional ?: or ??"),
+            ("(z) Stat as a method group after ??", new[] {
+                (RequireRegular, "static bool Noisy(StatCall custom, out int mode) { var f = custom ?? Stat; return f(sink => 0, out mode); } static void RequireUnixRegular(") },
+                StatParameter + "Stat used as a method group (passed on, in a conditional ?: or ??"),
+        };
+        foreach (var (label, edits, reason) in wrappedMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-50 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
 
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
         const string ThirteenCall = @"var\s+r\s*=\s*ForcedRun\s*\(\s*runMethod\s*,\s*seams\s*,\s*stdout\s*,\s*null\s*,\s*null\s*,\s*stage\s*,\s*args\s*\)\s*;";
