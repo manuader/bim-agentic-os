@@ -134,6 +134,22 @@ using Bim.Core;
 //      jurisdiction-resolve success, jurisdiction_unknown and usage and for a skill-list listing; a stdout pipe the reader
 //      closes right after start (every OS) is not a failure the process sees (the runtime's console stream drops
 //      EPIPE / ERROR_NO_DATA): the exits are those of an open pipe (0, 1, 1, 0) and stderr is empty.
+//  19. P5-39 skill-list containment of an exception whose Message getter throws. Forced through either existing seam
+//      (ListingWorkProbe, LoadedProbe) for the default directory, an explicit --skills and a missing directory:
+//      SkillListCommand.List throws (the one case it does: its catch's IntentPlan.Internal reads error.Message for the
+//      diagnostic, so the getter's InvalidOperationException leaves List), and Run contains it in its own catch, which
+//      wraps that readable exception instead: stdout is exactly the typed skill_list_internal_error line, stderr exactly
+//      "skill-list internal error: System.InvalidOperationException: <the getter's message>" once, exit 1, nothing
+//      escapes Run. The original exception's type is lost from the diagnostic (it names the getter's exception): pinned
+//      as measured. With a rejecting stdout, a rejecting stderr or both, still exit 1 with nothing escaping and one
+//      attempt per stream. PINNED AS MEASURED, a stated limit: two levels (an exception whose Message getter throws an
+//      exception whose own Message getter throws too) escape Run unhandled with the exit code untouched, because Run's
+//      catch calls IntentPlan.Internal once, unguarded; containing it needs a change inside that catch, which would
+//      rewrite the P5-31/P5-33 pinned bytes read by sections 13 and 15 (CommandDeltaP533, CommandBeforeP533Sha256) that
+//      P5-39 may not edit. Control: a probe throwing a readable-message exception keeps the section 11/13 line and
+//      diagnostic, and with both seams null a listing and a root_missing refusal keep their bytes. Static:
+//      SkillListCommand.cs is unchanged by P5-39 (SHA-256, "\n") and Run's catch is the one unguarded
+//      IntentPlan.Internal("skill-list", error) call.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
@@ -503,6 +519,9 @@ internal static class SkillListTests
 
         // ---- 18. P5-37 Run's try scope (Resolve's one throwing case) and stdout read-only / closed-pipe processes ----
         ResolveTryScope(root, dotnet, cliDll, check);
+
+        // ---- 19. P5-39 skill-list containment of an exception whose Message getter throws ----
+        MessageGetterContainment(root, scratch, check);
     }
 
     // Section 11 (P5-29): see oracle 11 in the header.
@@ -1915,6 +1934,179 @@ internal static class SkillListTests
         }
     }
 
+    // Section 19 (P5-39): see oracle 19 in the header.
+    static void MessageGetterContainment(string root, string scratch, Action<bool, string, string> check)
+    {
+        void Check(bool condition, string name, string detail = "") => check(condition, "skill-list: P5-39: " + name, detail);
+        const string InternalLine = "{\"status\":\"failed\",\"code\":\"skill_list_internal_error\"}";
+        // The diagnostic names the getter's exception, not the exception the probe threw (IntentPlan.InternalDiagnostic
+        // reads error.GetType().FullName and error.Message of whatever reached Run's catch).
+        const string GetterDiagnostic = "skill-list internal error: System.InvalidOperationException: " + MessageGetterThrowsException.GetterMessage;
+        var newline = Environment.NewLine;
+        var skills = Path.GetFullPath(Path.Combine(root, "skills"));
+        var absent = Path.Combine(scratch, "p539-absent");
+
+        // run in process with stdout = outWriter and stderr = errorWriter (fresh StringWriters when null): the captured
+        // stdout and stderr ("" for a writer passed in), the exit code and any escaping exception; globals restored.
+        static (int Exit, string Out, string Err, string Thrown) Inline(Action run, TextWriter? outWriter = null, TextWriter? errorWriter = null)
+        {
+            var previousOut = Console.Out;
+            var previousError = Console.Error;
+            var previousExit = Environment.ExitCode;
+            var capturedOut = new StringWriter();
+            var capturedError = new StringWriter();
+            var thrown = "";
+            int exit;
+            try
+            {
+                Environment.ExitCode = 0;
+                Console.SetOut(outWriter ?? capturedOut);
+                Console.SetError(errorWriter ?? capturedError);
+                try { run(); }
+                catch (Exception failure) { thrown = failure.GetType().FullName + ": " + Message(failure); }
+            }
+            finally
+            {
+                exit = Environment.ExitCode;
+                Environment.ExitCode = previousExit;
+                Console.SetOut(previousOut);
+                Console.SetError(previousError);
+            }
+            return (exit, capturedOut.ToString(), capturedError.ToString(), thrown);
+        }
+        // The Message of an exception whose getter may itself throw (so a measurement can be reported either way).
+        static string Message(Exception failure)
+        {
+            try { return failure.Message; }
+            catch (Exception inner) { return "<Message threw " + inner.GetType().FullName + ">"; }
+        }
+        static string D((int Exit, string Out, string Err, string Thrown) r) =>
+            "exit " + r.Exit.ToString(CultureInfo.InvariantCulture) + " " + JsonSerializer.Serialize(r.Out) + " stderr " + JsonSerializer.Serialize(r.Err) + (r.Thrown.Length > 0 ? " threw " + r.Thrown : "");
+        // SkillListCommand.List, which oracle 11 pins as never throwing: the envelope or the escaping exception.
+        static (Bim.Cli.IntentEnvelope? Envelope, string Thrown) ListEnvelope(string? skillsDirectory)
+        {
+            try { return (Bim.Cli.SkillListCommand.List(skillsDirectory), ""); }
+            catch (Exception failure) { return (null, failure.GetType().FullName + ": " + Message(failure)); }
+        }
+        static string E(Bim.Cli.IntentEnvelope? e) => e is null ? "<none>" : e.Line + " exit " + e.Exit.ToString(CultureInfo.InvariantCulture) + " diagnostic " + JsonSerializer.Serialize(e.Diagnostic);
+
+        Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null in production");
+        Check(!Directory.Exists(absent), "fixture: the missing directory does not exist");
+
+        // 19a. Either seam throwing an exception whose Message getter throws, for three skills directories.
+        var directories = new (string Label, string[] Arguments, string? Directory)[]
+        {
+            ("the default directory", [], null),
+            ("--skills " + skills, ["--skills", skills], skills),
+            ("a missing --skills directory", ["--skills", absent], absent),
+        };
+        foreach (var seam in new[] { "ListingWorkProbe", "LoadedProbe" })
+        {
+            void Arm()
+            {
+                if (seam == "ListingWorkProbe") Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new MessageGetterThrowsException();
+                else Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new MessageGetterThrowsException();
+            }
+            void Disarm()
+            {
+                Bim.Cli.SkillListCommand.ListingWorkProbe = null;
+                Bim.Cli.SkillListCommand.LoadedProbe = null;
+            }
+            foreach (var (label, arguments, directory) in directories)
+            {
+                var where = seam + " throwing, " + label;
+                Arm();
+                (Bim.Cli.IntentEnvelope? Envelope, string Thrown) listed;
+                try { listed = ListEnvelope(directory); }
+                finally { Disarm(); }
+                Check(listed.Envelope is null && listed.Thrown == "System.InvalidOperationException: " + MessageGetterThrowsException.GetterMessage,
+                    "List with " + where + ": the getter's InvalidOperationException leaves List (the one case it throws; its catch's IntentPlan.Internal reads error.Message)",
+                    E(listed.Envelope) + " threw " + listed.Thrown);
+
+                Arm();
+                (int Exit, string Out, string Err, string Thrown) run;
+                try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list", .. arguments])); }
+                finally { Disarm(); }
+                Check(run.Exit == 1 && run.Out == InternalLine + newline && run.Err == GetterDiagnostic + newline && run.Thrown.Length == 0,
+                    "Run with " + where + ": exit 1, the typed internal-error line, the diagnostic naming the getter's exception once, nothing escapes Run", D(run));
+            }
+
+            // Rejecting streams: one attempt each, still exit 1, nothing escapes.
+            foreach (var (label, rejectOut, rejectError) in new (string, bool, bool)[] { ("a rejecting stdout", true, false), ("a rejecting stderr", false, true), ("both streams rejecting", true, true) })
+            {
+                var outWriter = rejectOut ? new RejectingWriter(new IOException("stdout P5-39")) : null;
+                var errorWriter = rejectError ? new RejectingWriter(new ObjectDisposedException("stderr P5-39")) : null;
+                Arm();
+                (int Exit, string Out, string Err, string Thrown) run;
+                try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"]), outWriter, errorWriter); }
+                finally { Disarm(); }
+                var attempts = (outWriter?.Attempts ?? 0) + (errorWriter?.Attempts ?? 0);
+                Check(run.Exit == 1 && run.Thrown.Length == 0 && attempts == (rejectOut ? 1 : 0) + (rejectError ? 1 : 0)
+                    && (rejectOut || run.Out == InternalLine + newline) && (rejectError || run.Err == GetterDiagnostic + newline),
+                    "Run with " + seam + " throwing a Message-getter exception and " + label + ": exit 1, nothing escapes Run, one write attempt per rejecting stream",
+                    D(run) + " attempts " + attempts.ToString(CultureInfo.InvariantCulture));
+            }
+
+            // Control: a readable-message exception keeps the section 11/13 line and diagnostic.
+            Bim.Cli.SkillListCommand.ListingWorkProbe = null;
+            Bim.Cli.SkillListCommand.LoadedProbe = null;
+            if (seam == "ListingWorkProbe") Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new IOException("readable P5-39");
+            else Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new IOException("readable P5-39");
+            (int Exit, string Out, string Err, string Thrown) readable;
+            try { readable = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"])); }
+            finally { Disarm(); }
+            Check(readable.Exit == 1 && readable.Out == InternalLine + newline && readable.Err == "skill-list internal error: System.IO.IOException: readable P5-39" + newline && readable.Thrown.Length == 0,
+                "control: " + seam + " throwing an IOException with a readable message keeps the typed line and the diagnostic naming that exception", D(readable));
+        }
+        Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null again");
+
+        // 19b. PINNED AS MEASURED (a stated limit): two levels escape Run unhandled. Run's catch calls IntentPlan.Internal
+        // once, unguarded, so when the exception that left List has a throwing Message getter too, that second getter's
+        // exception leaves Run and the exit code is never set. Containing it needs a change inside Run's catch, which
+        // would rewrite the P5-31/P5-33 pinned bytes read by sections 13 and 15 (P5-39 may not edit those sections).
+        foreach (var seam in new[] { "ListingWorkProbe", "LoadedProbe" })
+        {
+            if (seam == "ListingWorkProbe") Bim.Cli.SkillListCommand.ListingWorkProbe = () => throw new DoubleMessageGetterThrowsException();
+            else Bim.Cli.SkillListCommand.LoadedProbe = _ => throw new DoubleMessageGetterThrowsException();
+            (int Exit, string Out, string Err, string Thrown) run;
+            try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"])); }
+            finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; Bim.Cli.SkillListCommand.LoadedProbe = null; }
+            Check(run.Thrown == typeof(MessageGetterThrowsException).FullName + ": <Message threw System.InvalidOperationException>" && run.Exit == 0 && run.Out.Length == 0 && run.Err.Length == 0,
+                "MEASURED LIMIT: " + seam + " throwing an exception whose Message getter throws an exception whose Message getter throws too escapes Run unhandled, exit code untouched, nothing printed (→ a future P5 row)", D(run));
+        }
+        Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null after the measured limit");
+
+        // 19c. With both seams null the bytes are unchanged (in process).
+        foreach (var (label, arguments, exit, part) in new (string, string[], int, string)[]
+        {
+            ("listing", ["skill-list", "--skills", skills], 0, "{\"status\":\"succeeded\""),
+            ("root_missing", ["skill-list", "--skills", absent], 1, "\"code\":\"root_missing\""),
+            ("usage", ["skill-list", "--skills"], 1, "\"code\":\"skill_list_usage\""),
+        })
+        {
+            var run = Inline(() => Bim.Cli.SkillListCommand.Run(arguments));
+            Check(run.Exit == exit && run.Out.Contains(part, StringComparison.Ordinal) && run.Err.Length == 0 && run.Thrown.Length == 0,
+                "control with both seams null (" + label + "): exit " + exit.ToString(CultureInfo.InvariantCulture) + ", the usual line, stderr untouched", D(run));
+        }
+        Check(!Directory.Exists(absent), "the missing directory is not created");
+
+        // 19d. Static: SkillListCommand.cs is unchanged by P5-39 and Run's catch holds the one unguarded
+        // IntentPlan.Internal("skill-list", error) call (the statement that can throw a second time).
+        static string Squeeze(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", "");
+        var commandPath = Path.Combine(root, "interfaces", "cli", "SkillListCommand.cs");
+        var commandSource = File.Exists(commandPath) ? File.ReadAllText(commandPath).ReplaceLineEndings("\n") : "";
+        Check(Sha256(commandSource) == CommandP539Sha256 && commandSource.Length == CommandP539Length,
+            "SkillListCommand.cs is the P5-35-era file byte for byte (\"\\n\"): P5-39 changes no product code there",
+            Sha256(commandSource) + " " + commandSource.Length.ToString(CultureInfo.InvariantCulture));
+        var runBody = Squeeze(BodyAfter(ApplyIntentTests.CodeOf(commandSource, blankStrings: false), @"\bpublic\s+static\s+void\s+Run\s*\(\s*string\s*\[\s*\]\s*args\s*\)"));
+        Check(runBody.Contains("catch(Exceptionerror){envelope=IntentPlan.Internal(\"skill-list\",error);}", StringComparison.Ordinal),
+            "Run's catch is one unguarded IntentPlan.Internal(\"skill-list\", error) assignment", runBody);
+    }
+
+    // P5-39: SkillListCommand.cs ("\n" line endings), unchanged by P5-39 (the P5-33 text section 15 reads with its delta).
+    const string CommandP539Sha256 = "57b8ac0d87151dbc7b0037a6f7a4a6174cc4b2e73cf9161f32c0e6877e9de02a";
+    const int CommandP539Length = 8338;
+
     // P5-37: the P5-35 JurisdictionResolveCommand.cs ("\n" line endings), unchanged by P5-37.
     const string ResolveP535Sha256 = "7537d0a68e994c9d0475db2790a02bdffbda9e556a61736f5beb27f990900948";
 
@@ -1935,6 +2127,16 @@ internal static class SkillListTests
         public MessageGetterThrowsException(string message) : base(message) { }
         public MessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
         public override string Message => throw new InvalidOperationException(GetterMessage);
+    }
+
+    // P5-39: an exception whose Message getter throws MessageGetterThrowsException, whose own Message getter throws too
+    // (two levels), so a second IntentPlan.Internal over the escaping exception throws again.
+    sealed class DoubleMessageGetterThrowsException : Exception
+    {
+        public DoubleMessageGetterThrowsException() { }
+        public DoubleMessageGetterThrowsException(string message) : base(message) { }
+        public DoubleMessageGetterThrowsException(string message, Exception inner) : base(message, inner) { }
+        public override string Message => throw new MessageGetterThrowsException();
     }
 
     // P5-35 documented delta (new text, P5-33 text), "\n" line endings.
