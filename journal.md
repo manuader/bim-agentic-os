@@ -2285,3 +2285,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay291
 - 2026-11-25T18:52:51Z lock taken (session_014pxpsTXXqvAHEjehu3MDej relay291; was FREE, relay290 released 2026-11-25T18:35:10Z)
+- 2026-11-25T18:53:14Z picked P10-50 (phase 10), P6-49 (phase 6), P7-50 (phase 7) — oldest-touched (relay287); P6-50 serializes with P6-49 (left); disjoint files (tests/mcp/RepeatedEnvelopeKeyTests.cs P10-36/P10-40..48 blocks; tests/cad PdfType3GlyphListTests + MinsertEzdxfTests reader-options pin + new helper; tests/cli/GeneratePrototypesTests.cs sections 14-16). Workers spawned in background; heartbeat loop every 20 min.
