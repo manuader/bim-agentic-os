@@ -699,8 +699,14 @@ internal static class PdfType3GlyphListTests
                 (inputHash, 1),
             };
             var cadCommandAnchors = new[] { "internal static class CadCommand", "static void Execute(bool draft", "static Options ParseOptions(", "static void Fail(" };
-            static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins) =>
-                string.Join("; ", pins.Where(pin => Occurrences(source, pin.Line) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(source, pin.Line)) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+            // P6-47: each pin is counted with all whitespace removed from both the pin and the stripped source (as the DXF
+            // reader-option pin does), so a reformatted line still counts; problems name the pin as written.
+            static string Compact(string text) => string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
+            static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins)
+            {
+                var compact = Compact(source);
+                return string.Join("; ", pins.Where(pin => Occurrences(compact, Compact(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Occurrences(compact, Compact(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+            }
             // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code).
             static string? HashPlace(string stripped)
             {
