@@ -55,7 +55,14 @@ internal static class SkillListCommand
     {
         IntentEnvelope envelope;
         try { envelope = Execute(args); }
-        catch (Exception error) { envelope = IntentPlan.Internal("skill-list", error); }
+        catch (Exception error)
+        {
+            // P5-41: an exception whose Message getter throws (what List lets escape when the one it caught had a throwing
+            // getter too) makes IntentPlan.Internal throw here; the fallback reads only types: the same typed line, exit 1,
+            // and a diagnostic naming the exception that reached Run and the type its Message getter threw.
+            try { envelope = IntentPlan.Internal("skill-list", error); }
+            catch (Exception unreadable) { envelope = new IntentEnvelope(JsonSerializer.Serialize(new { status = "failed", code = "skill_list_internal_error" }), 1, "skill-list internal error: " + error.GetType().FullName + ": <Message threw " + unreadable.GetType().FullName + ">"); }
+        }
         WriteDiagnostic(envelope);
         try { (envelope with { Diagnostic = null }).Print(); }
         catch (Exception) { Environment.ExitCode = 1; }

@@ -12,8 +12,9 @@ Console.SetOut(Console.Error);
 // "mcp stdout failed: <type>: <message>", never an unhandled exception; a stderr that throws too is ignored.
 // P5-39: that line stays exactly one line: the message is folded with ReplaceLineEndings(" ") (CR, LF, CRLF and the other
 // Unicode line breaks each become one space) and a Message that is null prints as empty instead of losing the line to a
-// NullReferenceException. A Message getter that throws still drops the line (the guarded write), exit 1 alone.
+// NullReferenceException. P5-41: a Message getter that throws no longer drops the line: the message part becomes
+// "<Message threw <the getter's exception type>>" (only types are read), exit 1.
 if(McpServer.Run(input,output,new McpServer{ReadTimeout=readTimeout}) is {} stdoutFailure) {
     Environment.ExitCode=1;
-    try { string? failureMessage=stdoutFailure.Message; Console.Error.WriteLine("mcp stdout failed: "+stdoutFailure.GetType().FullName+": "+(failureMessage?.ReplaceLineEndings(" ")??"")); } catch(Exception) { }
+    try { string failureText; try { failureText=stdoutFailure.Message?.ReplaceLineEndings(" ")??""; } catch(Exception getterFailure) { failureText="<Message threw "+getterFailure.GetType().FullName+">"; } Console.Error.WriteLine("mcp stdout failed: "+stdoutFailure.GetType().FullName+": "+failureText); } catch(Exception) { }
 }
