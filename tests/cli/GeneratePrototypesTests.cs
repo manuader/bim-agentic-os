@@ -4004,6 +4004,66 @@ internal static class GeneratePrototypesTests
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
+        // P7-48 (p) async / static lambda heads are lambdas; (q) a lambda head is no declarator (the wrap lambda may be
+        // called stream again); (r) a generic call's commas cut neither a lambda body nor an argument list; (s) method-group
+        // alias chains are followed and a field alias passed on is a gap; (t) generic methods with where clauses expose
+        // their parameters; (u) a lambda or non-delegate parameter passed on for a followed delegate parameter is named.
+        // Each mutant edits the followed code (BoundedInput.cs, GltfExporter.cs) and names its expected problem.
+        const string LambdaCalled = "Execute reaches test( [a parameter of a lambda: whoever invokes the lambda passes its arguments";
+        const string TypedLambdaCalled = "Execute reaches test( [a parameter of a lambda typed Func<int>: ";
+        var tidyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(p) an async lambda's parameter called", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, Task<int>> run = async test => test(); run(() => 0); } static void RequireUnixRegular(") }, LambdaCalled),
+            ("(p) a static lambda's parameter called", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = static test => test(); run(() => 0); } static void RequireUnixRegular(") }, LambdaCalled),
+            ("(p) a static async typed lambda's parameter called", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, Task<int>> run = static async (Func<int> test) => test(); run(() => 0); } static void RequireUnixRegular(") },
+                TypedLambdaCalled),
+            ("(q) a stdout write in the wrap lambda GltfExporter.WriteGltf passes to WriteNew, its parameter named stream", new[] {
+                (@"ExportGltf\s*\(\s*project\s*\)\s*\)\s*,\s*path\s*,\s*stream\s*=>\s*stream\s*\)", "ExportGltf(project)), path, stream => { Console.WriteLine(); return stream; })") }, Through + "wrap"),
+            ("(r) a typed lambda's parameter called inside a generic call with two type arguments", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = (Func<int> test) => Pick<int, int>(test()); run(() => 0); } static void RequireUnixRegular(") },
+                TypedLambdaCalled),
+            ("(r) a stdout lambda passed after a generic argument with two type arguments", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(0, () => 0); } static void Loud() { Probe(Pick<int, int>(0), () => { Console.WriteLine(); return 0; }); } "
+                    + "static void Probe(int seed, Func<int> test) { test(); } static void RequireUnixRegular(") }, Through + "test"),
+            ("(s) a stdout lambda passed via a local alias chain var f = Stat; var g = f; g(...)", new[] {
+                (RequireRegular, "static bool Noisy(out int mode) { var f = Stat; var g = f; return g(" + StdoutLambda + ", out mode); } static void RequireUnixRegular(") }, Through + "call"),
+            ("(s) a stdout lambda passed via a field alias chain StatAlias = Stat; StatChain = StatAlias; StatChain(...)", new[] {
+                (RequireRegular, "static StatCall StatAlias = Stat; static StatCall StatChain = StatAlias; static bool Noisy(out int mode) => StatChain(" + StdoutLambda + ", out mode); static void RequireUnixRegular(") },
+                Through + "call"),
+            ("(s) a field alias of Stat passed on instead of called", new[] {
+                (RequireRegular, "static StatCall StatAlias = Stat; static bool Noisy(out int mode) => Relay(StatAlias, out mode); static void RequireUnixRegular(") },
+                StatParameter + "StatAlias (a field holding the method group Stat) used other than called"),
+            ("(t) a stdout lambda passed for a Func parameter of a block-bodied generic method with where clauses", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(() => 0); } static void Loud() { Probe(() => { Console.WriteLine(); return 0; }); } "
+                    + "static void Probe<T>(Func<T> test) where T : IComparable<T>, new() { test(); } static void RequireUnixRegular(") }, Through + "test"),
+            ("(t) a stdout lambda passed for a Func parameter of an expression-bodied generic method with where clauses", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Probe(() => 0); } static void Loud() { Probe(() => { Console.WriteLine(); return 0; }); } "
+                    + "static void Probe<T>(Func<T> test) where T : IComparable<T>, new() => test(); static void RequireUnixRegular(") }, Through + "test"),
+            ("(u) a lambda's parameter passed on for a followed Func parameter", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(test); run(() => 0); } static int Probe(Func<int> act) => act(); static void RequireUnixRegular(") },
+                "Execute reaches test [a parameter of a lambda, passed on (not called)"),
+            ("(u) a non-delegate parameter passed on for a followed Func parameter", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe(test); static int Probe(Func<int> act) => act(); static void RequireUnixRegular(") },
+                "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
+        };
+        foreach (var (label, edits, reason) in tidyMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-48 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+        // (q) Declarators: an expression-bodied property x => is a declarator of x; the lambda heads x =>, async x => and
+        // static x => are not.
+        const string LambdaHeads = "class C { int x => 1; void M() { Run(x => x); Run(async x => x); Run(static x => x); } }";
+        var lambdaDeclarators = new CodeMap(LambdaHeads).Declarators("x");
+        Check(lambdaDeclarators.Count == 1 && lambdaDeclarators[0].Start == LambdaHeads.IndexOf("x => 1", StringComparison.Ordinal),
+            "P7-48 declarator self-test: Declarators counts the expression-bodied property x => and no lambda head x =>",
+            "declarators at [" + string.Join(", ", lambdaDeclarators.Select(d => d.Start.ToString(CultureInfo.InvariantCulture))) + "]");
+
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
         const string ThirteenCall = @"var\s+r\s*=\s*ForcedRun\s*\(\s*runMethod\s*,\s*seams\s*,\s*stdout\s*,\s*null\s*,\s*null\s*,\s*stage\s*,\s*args\s*\)\s*;";
         const string Thirteen = "var r = ForcedRun(runMethod, seams, stdout, null, null, stage, args);";
