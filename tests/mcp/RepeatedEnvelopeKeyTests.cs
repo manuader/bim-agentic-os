@@ -783,24 +783,36 @@ internal static class RepeatedEnvelopeKeyTests
             // ---- notification: never answered ----
             ("N1 notification with a nested repeat", """{"jsonrpc":"2.0","method":"notifications/initialized","params":{"_meta":{"a":1,"a":2}}}""", "none"),
         };
-        var measured = new List<string>();
-        var bad = new List<string>();
-        foreach (var (label, line, expected) in cases)
+        // P10-46: each case counts its own transport sends (the counter before and after its Handle), so a stray send fails
+        // the case that made it and nothing earlier counts; every case's response and send count is listed.
+        List<string> RunNested(IEnumerable<(string Label, string Line, string Expected)> list, List<string> measured)
         {
-            string response;
-            try { response = server.Handle(line) ?? "none"; }
-            catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
-            measured.Add(label + " => " + (response.Length > 200 ? response[..200] + "..." : response));
-            if (response != expected) bad.Add(label);
+            var failing = new List<string>();
+            foreach (var (label, line, expected) in list)
+            {
+                var before = sends;
+                string response;
+                try { response = server.Handle(line) ?? "none"; }
+                catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
+                var made = sends - before;
+                var ok = response == expected;
+                measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 200 ? response[..200] + "..." : response));
+                if (!ok) failing.Add(label);
+            }
+            return failing;
         }
-        Check(bad.Count == 0 && sends == 0,
-            "members repeated inside capabilities, clientInfo and _meta are answered exactly as without the repeat (never read), the params' own repeats stay -32602, no transport send (sends "
-            + sends.ToString(CultureInfo.InvariantCulture) + ") | failing " + bad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", bad)
-            + " | measured: " + string.Join(" ; ", measured));
+        var measured = new List<string>();
+        var bad = RunNested(cases, measured);
+        Check(bad.Count == 0,
+            "members repeated inside capabilities, clientInfo and _meta are answered exactly as without the repeat (never read), the params' own repeats stay -32602, no transport send by any case (own per-case count) | failing "
+            + bad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", bad) + " | measured: " + string.Join(" ; ", measured));
 
-        // tools/list with a member repeated inside _meta: the plain tools/list bytes of a separate server.
+        // tools/list with a member repeated inside _meta: the plain tools/list bytes of a separate server (own send count).
+        var listBefore = sends;
         var listed = server.Handle(Request("30", "tools/list", """{"cursor":"x","_meta":{"progressToken":1,"progressToken":2}}"""));
-        Check(ToolsListMatches(listed, "30") && sends == 0, "tools/list with a member repeated inside _meta answers the plain tools/list bytes | " + (listed is { Length: > 300 } ? listed[..300] + "..." : listed ?? "none"));
+        var listSends = sends - listBefore;
+        Check(ToolsListMatches(listed, "30") && listSends == 0, "tools/list with a member repeated inside _meta answers the plain tools/list bytes, no send (sends "
+            + listSends.ToString(CultureInfo.InvariantCulture) + ") | " + (listed is { Length: > 300 } ? listed[..300] + "..." : listed ?? "none"));
 
         // P10-42: members repeated inside a tools/call arguments value (one level or more below the arguments object), for
         // the validate tool. The arguments object's own names are checked (P10-31: -32602 repeated argument); a value is
@@ -809,7 +821,8 @@ internal static class RepeatedEnvelopeKeyTests
         // raw args/document values are written into the command envelope, which RevitCommandProtocol.Parse reads with its
         // own duplicate-member check), and a lone-surrogate member name nested in a value. These cases run on their own
         // server and count transport sends per case, so a stray send fails the case that made it (and nothing earlier
-        // counts). Measured: each failing case's response is reported in the failure message; expected literal bytes.
+        // counts). Measured: every case's response and send count is listed in the check message (P10-46: ok and FAIL alike);
+        // expected literal bytes.
         {
             const string Guid1 = "00000000-0000-0000-0000-000000000001";
             const string Guid2 = "00000000-0000-0000-0000-000000000002";
@@ -850,8 +863,8 @@ internal static class RepeatedEnvelopeKeyTests
                 + ",\"created\":[],\"modified\":[],\"deleted\":[],\"readback\":null,\"receipt\":null,\"warnings\":[]}";
 
             var argumentSends = 0;
-            string? forwarded = null;
-            var argumentServer = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { argumentSends++; forwarded = line; return null; }, null);
+            var forwarded = new List<string>();
+            var argumentServer = new McpServer(RevitCommandCatalogue.All, RevitCommandPolicy.None, (pipe, line) => { argumentSends++; forwarded.Add(line); return null; }, null);
             // Each case: its response must equal the literal bytes and it must make exactly its own expected number of sends.
             List<string> RunCases(IEnumerable<(string Label, string Line, string Expected, int Sends)> list, List<string> measured)
             {
@@ -863,9 +876,11 @@ internal static class RepeatedEnvelopeKeyTests
                     try { response = argumentServer.Handle(line) ?? "none"; }
                     catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
                     var made = argumentSends - before;
-                    if (response == expected && made == expectedSends) continue;
-                    failing.Add(label);
-                    measured.Add(label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 400 ? response[..400] + "..." : response));
+                    // P10-46: every case is listed (ok or FAIL), not only the failing ones.
+                    var ok = response == expected && made == expectedSends;
+                    if (ok) continue;
+                    measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") => " + (response.Length > 400 ? response[..400] + "..." : response));
+                    if (!ok) failing.Add(label);
                 }
                 return failing;
             }
@@ -919,22 +934,104 @@ internal static class RepeatedEnvelopeKeyTests
                     ToolText("63", RevitFailure("envelope_invalid", "document.path", "unexpected or duplicate member"), true), 0),
                 // ---- a lone-surrogate member name nested in an arguments value (P10-44), pinned as measured: the deserializer
                 // cannot read the name, so its JsonException message becomes the failed code (McpServer generic catch);
-                // the Revit command envelope cannot be built or read with it, so RevitCall answers envelope_invalid with the reader message ----
-                ("L1 validate project lone-surrogate name", Validate("70", head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("70", NotConverted("Project", "$", 81), true), 0),
-                ("L2 validate element lone-surrogate name", Validate("71", head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}"), ToolText("71", NotConverted("Element", "$.Elements[0]", 227), true), 0),
-                ("L3 diff after lone-surrogate name", Diff("72", empty, head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("72", NotConverted("Project", "$", 81), true), 0),
-                ("L4 revit args lone-surrogate name", Revit("73", """{"category":"OST_Walls","\ud800":1}"""),
+                // the Revit command envelope cannot be built or read with it, so RevitCall answers envelope_invalid with the reader message.
+                // P10-46: these expected bytes carry .NET 8 / System.Text.Json 8 runtime message text (wording and byte position),
+                // so each label names that dependence; L1-L3 are also compared with the CLI's answer below ----
+                ("L1 validate project lone-surrogate name (System.Text.Json 8 runtime message as code)", Validate("70", head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("70", NotConverted("Project", "$", 81), true), 0),
+                ("L2 validate element lone-surrogate name (System.Text.Json 8 runtime message as code)", Validate("71", head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}"), ToolText("71", NotConverted("Element", "$.Elements[0]", 227), true), 0),
+                ("L3 diff after lone-surrogate name (System.Text.Json 8 runtime message as code)", Diff("72", empty, head + "\"Elements\":[],\"\\ud800\":1}"), ToolText("72", NotConverted("Project", "$", 81), true), 0),
+                ("L4 revit args lone-surrogate name (System.Text.Json 8 runtime message as detail)", Revit("73", """{"category":"OST_Walls","\ud800":1}"""),
                     ToolText("73", RevitFailure("envelope_invalid", null, "Cannot read incomplete UTF-16 JSON text as string with missing low surrogate."), true), 0),
             };
-            forwarded = null;
+            forwarded.Clear();
             var argumentMeasured = new List<string>();
             var argumentBad = RunCases(argumentCases, argumentMeasured);
             Check(argumentBad.Count == 0,
-                "members repeated inside a validate/diff arguments value answer last-wins as System.Text.Json 8 on .NET 8 reads them, revit_query_elements refuses a repeated args/document member typed, a nested lone-surrogate name answers as measured (literal bytes, own per-case send count) | failing "
+                "members repeated inside a validate/diff arguments value answer last-wins as System.Text.Json 8 on .NET 8 reads them, revit_query_elements refuses a repeated args/document member typed, a nested lone-surrogate name answers the measured System.Text.Json 8 runtime message (L1-L4) (literal bytes, own per-case send count) | failing "
                 + argumentBad.Count.ToString(CultureInfo.InvariantCulture) + ": " + string.Join(", ", argumentBad) + " | measured: " + string.Join(" ; ", argumentMeasured));
-            // R0 forwarded the raw args value unchanged into the canonical command (sorted members, default escaping).
-            Check(forwarded is not null && forwarded.Contains("\"Command\":{\"args\":{\"category\":\"OST_Walls\"},\"command\":\"query.elements\",", StringComparison.Ordinal),
-                "revit_query_elements forwards the args value into the canonical command | " + (forwarded ?? "none"));
+            // P10-46: R0 forwarded exactly one line, compared in full: the add-in request shape (DocumentPath, Operation,
+            // UniqueId, Metres) and the canonical command (sorted members, default escaping) with the raw args value; the
+            // temp document path (machine-dependent) is substituted as its JSON string (default escaping, as the writer).
+            var forwardLine = """{"DocumentPath":<path>,"Operation":"revit.command","UniqueId":"00000000-0000-0000-0000-000000000000-00000001","Metres":[],"Command":{"args":{"category":"OST_Walls"},"command":"query.elements","document":{"path":<path>,"unique_id":"00000000-0000-0000-0000-000000000000-00000001"},"operation_id":"p10-44","protocol_version":1}}"""
+                .Replace("<path>", absent, StringComparison.Ordinal);
+            Check(forwarded.Count == 1 && forwarded[0] == forwardLine,
+                "revit_query_elements R0 forwards exactly the full wire line (temp DocumentPath substituted) | forwarded " + forwarded.Count.ToString(CultureInfo.InvariantCulture)
+                + ": " + string.Join(" ; ", forwarded) + " | expected: " + forwardLine);
+
+            // P10-46: the nested lone-surrogate answers on validate/diff (a System.Text.Json message through the McpServer
+            // generic catch) compared with the real Release CLI on the same project text in files: the MCP tool text equals
+            // the CLI stdout line and isError equals a non-zero exit. Equal, so the code is shared CLI parity (a P10-43-class
+            // runtime message as code on both surfaces), recorded in the contract, not changed here.
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir is not null && !File.Exists(Path.Combine(dir.FullName, "global.json"))) dir = dir.Parent;
+            var cliDll = dir is null ? null : Path.Combine(dir.FullName, "interfaces", "cli", "bin", "Release", "net8.0", "Bim.Cli.dll");
+            Check(cliDll is not null && File.Exists(cliDll), "CLI parity precondition: the Release Bim.Cli.dll exists | " + (cliDll ?? "repository root with global.json not found"));
+            var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(cliWork);
+            try
+            {
+                (string Stdout, int Exit) Cli(params string[] arguments)
+                {
+                    var host = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } path ? path : "dotnet";
+                    var start = new System.Diagnostics.ProcessStartInfo(host) { RedirectStandardOutput = true, UseShellExecute = false, StandardOutputEncoding = new System.Text.UTF8Encoding(false) };
+                    start.ArgumentList.Add(cliDll!);
+                    foreach (var argument in arguments) start.ArgumentList.Add(argument);
+                    using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("CLI process did not start: " + host);
+                    var stdout = process.StandardOutput.ReadToEnd();
+                    if (!process.WaitForExit(120000)) { process.Kill(true); throw new TimeoutException("CLI timed out: " + string.Join(" ", arguments)); }
+                    return (stdout.TrimEnd('\r', '\n'), process.ExitCode);
+                }
+                string Input(string name, string content) { var path = Path.Combine(cliWork, name); File.WriteAllText(path, content); return path; }
+                var surrogateProject = head + "\"Elements\":[],\"\\ud800\":1}";
+                var surrogateElement = head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}";
+                var parity = new (string Label, string Line, string[] Arguments)[]
+                {
+                    ("L1", Validate("80", surrogateProject), new[] { "validate", Input("l1.json", surrogateProject) }),
+                    ("L2", Validate("81", surrogateElement), new[] { "validate", Input("l2.json", surrogateElement) }),
+                    ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }),
+                };
+                var parityBad = new List<string>();
+                var parityMeasured = new List<string>();
+                foreach (var (label, line, arguments) in parity)
+                {
+                    var response = argumentServer.Handle(line) ?? "none";
+                    var (stdout, exit) = Cli(arguments);
+                    string? text = null;
+                    bool? isError = null;
+                    try
+                    {
+                        var result = JsonNode.Parse(response)?["result"];
+                        text = result?["content"]?[0]?["text"]?.GetValue<string>();
+                        isError = result?["isError"]?.GetValue<bool>();
+                    }
+                    catch (Exception error) when (error is JsonException or InvalidOperationException) { }
+                    var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith("{\"status\":\"failed\",\"code\":\"The JSON value could not be converted to Bim.Core.", StringComparison.Ordinal);
+                    parityMeasured.Add((ok ? "ok " : "FAIL ") + label + " mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?") + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture));
+                    if (!ok) parityBad.Add(label);
+                }
+                Check(parityBad.Count == 0,
+                    "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI (MCP text == CLI stdout, isError == non-zero exit; shared P10-43-class runtime-message code) | failing "
+                    + string.Join(", ", parityBad) + " | " + string.Join(" ; ", parityMeasured));
+            }
+            finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+
+            // P10-46: the RunCases listing (own-counter self-test above) names every case, the passing one too.
+            Check(selfMeasured.Count == 2 && selfMeasured[0].StartsWith("FAIL S1 planted send (sends 1) => ", StringComparison.Ordinal)
+                    && selfMeasured[1].StartsWith("ok S2 after it (sends 0) => ", StringComparison.Ordinal),
+                "measured listing: RunCases lists every case's response and send count, ok and FAIL alike | " + string.Join(" ; ", selfMeasured));
+
+            // P10-46: the P10-40 cases count sends per case. Self-test on that server: a send planted before the cases fails
+            // none; a case that sends when it expects none fails alone, and the listing names both cases.
+            sends++;
+            var nestedSelf = new List<string>();
+            var nestedSelfFailing = RunNested(new (string, string, string)[]
+            {
+                ("S1 planted send", Revit("94", """{"category":"OST_Walls"}"""), ToolText("94", RevitFailure("no_response", "pipe_name", "pipe closed without a response line"), true)),
+                ("S2 after it", Request("95", "ping", "{}"), Ping("95")),
+            }, nestedSelf);
+            Check(nestedSelfFailing.Count == 1 && nestedSelfFailing[0] == "S1 planted send" && nestedSelf.Count == 2
+                    && nestedSelf[0].StartsWith("FAIL S1 planted send (sends 1) => ", StringComparison.Ordinal) && nestedSelf[1].StartsWith("ok S2 after it (sends 0) => ", StringComparison.Ordinal),
+                "P10-40 per-case send count: a send before the cases fails none, a sending case fails alone, every case listed | failing: " + string.Join(", ", nestedSelfFailing) + " | " + string.Join(" ; ", nestedSelf));
         }
     }
 }
