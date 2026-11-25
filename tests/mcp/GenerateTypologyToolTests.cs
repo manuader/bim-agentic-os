@@ -499,6 +499,10 @@ internal static class GenerateTypologyToolTests
     // mcp-pipe-capacity-macOS notice and the step's notice of the capacity PASS line. BareGrepPipes scans the P3-38 step
     // alone and flags an unguarded grep anywhere in a pipeline or inside $(...). Each capacity run must finish within
     // CapacityRunMs (the 1.5 s settle plus a stated slack); the budget check keeps only non-redundant comparisons.
+    // P3-46. BareGrepPipes masks quoted text (a `)` or `}` inside a double-quoted argument no longer ends the command) and
+    // accepts `|| true` after the whole pipeline for a grep inside it; a grep piped inside $(...) has its own self-tests.
+    // The notice-grep check runs over the names this section's checks printed in the run, not literal samples; each
+    // capacity run's margin under CapacityRunMs is printed in the capacity notice and the budget check.
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -949,27 +953,87 @@ internal static class GenerateTypologyToolTests
             // and summary greps are guarded (`|| true`).
             // P3-44: BareGrepPipes scans the P3-38 step alone (up to the next step) and counts every grep that sits in a
             // pipeline (first, middle or last) or inside $(...) without its own `|| true`; such a grep fails the pipeline
-            // or the assignment when nothing matches. Comment lines are skipped and single-quoted text is blanked (a `|` in a
-            // pattern is not a pipe). Limits, both on the safe side (a guarded form rejected): a `|| true` after the whole
-            // pipeline does not count for a grep inside it, and a `)` or `}` inside a grep's double-quoted argument ends its
-            // command early.
+            // or the assignment when nothing matches.
+            // P3-46: each line is first masked (Mask): single-quoted text, double-quoted text outside a nested $(...),
+            // escaped characters and comments become inert, so a `|`, `)` or `}` inside a quoted argument is no operator and
+            // a grep inside quoted text is no command. From each grep the scan walks forward: nested groups are skipped, a
+            // `)` or `}` closing the grep's own group continues into the enclosing command (a group's or substitution's
+            // status is its last pipeline's), `;` before such a `}` continues too, a `|` makes it piped, `|| true` guards
+            // it (after the whole pipeline as well), and any other `||`, `;`, `&&`, `&` or the line end stops it (2>&1 is a
+            // redirection). Remaining limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep
+            // on a backslash-continued line counts as unguarded.
             var stepEnd = macTail.IndexOf("\n      - name: ", 1, StringComparison.Ordinal);
             var macStepText = stepEnd > 0 ? macTail[..stepEnd] : macTail;
+            static string Mask(string line)
+            {
+                var masked = line.ToCharArray();
+                var frames = new Stack<char>();
+                for (var i = 0; i < line.Length; i++)
+                {
+                    var c = line[i];
+                    var next = i + 1 < line.Length ? line[i + 1] : '\0';
+                    if (c == '\\' && i + 1 < line.Length) { masked[i] = masked[i + 1] = '_'; i++; continue; }
+                    if (frames.Count > 0 && frames.Peek() == '"')
+                    {
+                        if (c == '"') frames.Pop();
+                        else if (c == '$' && next == '(') { frames.Push('('); i++; }
+                        else masked[i] = '_';
+                        continue;
+                    }
+                    if (c == '\'')
+                    {
+                        var close = line.IndexOf('\'', i + 1);
+                        if (close < 0) close = line.Length;
+                        for (var j = i + 1; j < close; j++) masked[j] = '_';
+                        i = close;
+                        continue;
+                    }
+                    if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                    {
+                        for (var j = i; j < line.Length; j++) masked[j] = ' ';
+                        break;
+                    }
+                    if (c == '"') frames.Push('"');
+                    else if (c == '(') frames.Push('(');
+                    else if (c == ')' && frames.Count > 0) frames.Pop();
+                }
+                return new string(masked);
+            }
             static int BareGrepPipes(string text)
             {
                 var bare = 0;
                 foreach (var raw in text.Split('\n'))
                 {
-                    if (raw.TrimStart().StartsWith('#')) continue;
-                    var line = Regex.Replace(raw, "'[^']*'", "''");
+                    var line = Mask(raw.TrimEnd('\r'));
+                    var continued = line.TrimEnd().EndsWith('\\');
                     foreach (Match grep in Regex.Matches(line, @"(?<=^|[\s;|&({])grep\s"))
                     {
-                        var before = line[..grep.Index].TrimEnd();
-                        var end = Regex.Match(line[grep.Index..], @"\|\||\||;|&&|\)|\}");
-                        var guarded = end.Success && end.Value == "||" && line[(grep.Index + end.Index + 2)..].TrimStart().StartsWith("true", StringComparison.Ordinal);
-                        var piped = (end.Success && end.Value == "|") || (before.EndsWith('|') && !before.EndsWith("||", StringComparison.Ordinal));
-                        var substituted = before.LastIndexOf("$(", StringComparison.Ordinal) > before.LastIndexOf(')');
-                        if (!guarded && (piped || substituted)) bare++;
+                        var before = line[..grep.Index];
+                        var open = new Stack<bool>();
+                        for (var i = 0; i < before.Length; i++)
+                        {
+                            if (before[i] == '(') open.Push(i > 0 && before[i - 1] == '$');
+                            else if (before[i] == ')' && open.Count > 0) open.Pop();
+                        }
+                        var substituted = open.Contains(true);
+                        var piped = Regex.IsMatch(before, @"(?<!\|)\|\s*(?:(?<!\$)\(\s*|\{\s*)*$");
+                        var guarded = false;
+                        var depth = 0;
+                        for (var i = grep.Index + 4; i < line.Length; i++)
+                        {
+                            var c = line[i];
+                            var next = i + 1 < line.Length ? line[i + 1] : '\0';
+                            if (c is '(' or '{') { depth++; continue; }
+                            if (c is ')' or '}') { if (depth > 0) depth--; continue; }
+                            if (depth > 0) continue;
+                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*true(?![\w-])"); break; }
+                            if (c == '|') { piped = true; continue; }
+                            if (c == '&' && i > 0 && line[i - 1] is '>' or '<') continue;
+                            if (c == '&') break;
+                            if (c == ';') { if (line[(i + 1)..].TrimStart().StartsWith('}')) continue; break; }
+                        }
+                        if (continued) guarded = false;
+                        if (!guarded && (piped || substituted || continued)) bare++;
                     }
                 }
                 return bare;
