@@ -1542,6 +1542,16 @@ internal static class RevitCommandDeadlineTests
         return current;
     }
 
+    // P1-46: the outcome of the symbolic-link self-test, recorded either way. A created link passes only when the
+    // resolution checks hold. A link that could not be created fails off Windows; on Windows (which may refuse a link
+    // without the privilege) it passes with a ::warning:: line naming the skip reason, so the skip is never silent. A
+    // warning, not a notice: this step's notice budget is spent by other gates (P1-45, VisibilitySelfTest (b)).
+    static (bool Pass, string? Warning, string Record) LinkOutcome(bool created, bool resolved, bool windows, string reason)
+    {
+        if (created) return (resolved, null, "symbolic link created; resolution " + (resolved ? "exercised" : "FAILED"));
+        return (windows, null, "symbolic link not created (" + reason + ")");
+    }
+
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
     // between the temp folder and the root (a path reached through a link to the root is inside it). Self-test in a
     // scratch repository under the temp folder: real/repo (git init) and alias -> real.
@@ -1554,29 +1564,83 @@ internal static class RevitCommandDeadlineTests
         check(visible.Contains("not gitignored", StringComparison.Ordinal) && !visible.StartsWith("git missing", StringComparison.Ordinal),
             "P1-44 control location self-test: a visible root folder is named 'not gitignored'", visible);
 
+        // P1-46: the not-gitignored message keeps git's exit code (1), as the other failures do.
+        check(visible.StartsWith("inside the repository root and not gitignored (git check-ignore exit 1): ", StringComparison.Ordinal),
+            "P1-46 control location self-test: the not-gitignored message keeps the git check-ignore exit code", visible);
+
+        // P1-46: a root that is not a repository makes git check-ignore fail (exit 128, 'not a git repository'): named
+        // 'check-ignore failed' with git's exit code, not 'not gitignored'. The scratch root sits under the temp folder,
+        // which verify.ps1 points inside the repository (.bim/verification/tmp, gitignored), so git would find the outer
+        // repository: a .git file naming a missing git directory stops git's discovery at the scratch root.
+        var notRepository = Path.Combine(Path.GetTempPath(), "p1-46-not-a-repository-" + Guid.NewGuid().ToString("N"));
+        string failed;
+        string probe;
+        try
+        {
+            Directory.CreateDirectory(notRepository);
+            File.WriteAllText(Path.Combine(notRepository, ".git"), "gitdir: " + Path.Combine(notRepository, "missing").Replace('\\', '/') + "\n");
+            var revParse = GitRun(notRepository, "rev-parse", "--git-dir");
+            probe = "git rev-parse exit " + N(revParse.Exit) + (revParse.Error.Length > 0 ? " (" + revParse.Error + ")" : "");
+            failed = ControlLocationProblem(notRepository, Path.Combine(notRepository, "visible", "Copy.cs"));
+        }
+        finally
+        {
+            try { if (Directory.Exists(notRepository)) Directory.Delete(notRepository, recursive: true); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
+        }
+        check(failed.StartsWith("git check-ignore failed (exit 128", StringComparison.Ordinal) && failed.Contains("not a git repository", StringComparison.OrdinalIgnoreCase)
+            && !failed.Contains("not gitignored", StringComparison.Ordinal) && !failed.StartsWith("git missing", StringComparison.Ordinal),
+            "P1-46 control location self-test: a root that is not a repository is named 'check-ignore failed' with git's exit code (128), not 'not gitignored' or 'git missing'",
+            failed + " | " + probe);
+        check(!Directory.Exists(notRepository), "P1-46 control location self-test: the not-a-repository scratch folder is removed", notRepository);
+
+        // P1-46: the symbolic-link outcome rule itself (LinkOutcome): no silent pass.
+        var outcomes = new (string Label, bool Created, bool Resolved, bool Windows, bool Pass, bool Line)[]
+        {
+            ("created and resolved", true, true, false, true, false),
+            ("created and resolved on Windows", true, true, true, true, false),
+            ("created, not resolved", true, false, true, false, false),
+            ("not created off Windows", false, false, false, false, false),
+            ("not created on Windows", false, false, true, true, true),
+        };
+        foreach (var (label, created, resolved, windows, pass, line) in outcomes)
+        {
+            var outcome = LinkOutcome(created, resolved, windows, "IOException: P1-46 synthetic reason\r\nsecond line");
+            check(outcome.Pass == pass && (outcome.Warning is not null) == line
+                && (outcome.Warning is not { } warningLine || (warningLine.StartsWith("::warning::", StringComparison.Ordinal) && !warningLine.Contains('\n') && !warningLine.Contains('\r')
+                    && warningLine.Contains("not created", StringComparison.Ordinal) && warningLine.Contains("IOException: P1-46 synthetic reason", StringComparison.Ordinal)))
+                && outcome.Record.Contains(created ? "link created" : "link not created", StringComparison.Ordinal),
+                "P1-46 link outcome self-test: " + label + (pass ? " passes" : " fails") + (line ? " with a ::warning:: line naming the skip reason" : ""),
+                "pass " + outcome.Pass + "; warning " + (outcome.Warning ?? "none") + "; record " + outcome.Record);
+        }
+
         var scratch = Path.Combine(Path.GetTempPath(), "p1-44-link-" + Guid.NewGuid().ToString("N"));
         var real = Path.Combine(scratch, "real");
         var repo = Path.Combine(real, "repo");
         var alias = Path.Combine(scratch, "alias");
-        bool linked;
+        var linkCreated = false;
+        var resolvedThroughLink = false;
+        var skipReason = "";
         string detail;
         try
         {
             Directory.CreateDirectory(repo);
             var init = GitRun(repo, "init", "-q");
             Directory.CreateSymbolicLink(alias, real);
+            linkCreated = true;
             var aliasRoot = ControlLocationProblem(Path.Combine(alias, "repo"), Path.Combine(repo, "visible", "Copy.cs"));
             var aliasPath = ControlLocationProblem(repo, Path.Combine(alias, "repo", "visible", "Copy.cs"));
             var beside = ControlLocationProblem(Path.Combine(alias, "repo"), Path.Combine(real, "beside", "Copy.cs"));
-            linked = init.Exit == 0 && aliasRoot.Contains("not gitignored", StringComparison.Ordinal) && aliasPath.Contains("not gitignored", StringComparison.Ordinal) && beside.Length == 0;
+            resolvedThroughLink = init.Exit == 0 && aliasRoot.Contains("not gitignored", StringComparison.Ordinal) && aliasPath.Contains("not gitignored", StringComparison.Ordinal) && beside.Length == 0;
             detail = "git init exit " + N(init.Exit) + "; root via link: " + (aliasRoot.Length > 0 ? aliasRoot : "accepted") + "; path via link: " + (aliasPath.Length > 0 ? aliasPath : "accepted")
                 + "; beside via link: " + (beside.Length > 0 ? beside : "accepted");
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
         {
-            // Windows may refuse a symbolic link without the privilege; the resolution is then not exercised there.
-            linked = OperatingSystem.IsWindows();
-            detail = "no symbolic link (" + error.GetType().Name + ": " + error.Message + ")" + (linked ? "; not exercised on this Windows runner" : "");
+            // Windows may refuse a symbolic link without the privilege; the resolution is then not exercised there
+            // (P1-46: recorded and written as a warning by LinkOutcome, never a silent pass).
+            skipReason = error.GetType().Name + ": " + error.Message;
+            detail = (linkCreated ? "link created, then " : "no symbolic link (") + skipReason + (linkCreated ? "" : ")");
         }
         finally
         {
@@ -1596,7 +1660,10 @@ internal static class RevitCommandDeadlineTests
             }
             catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
         }
-        check(linked, "P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)", detail);
+        var link = LinkOutcome(linkCreated, resolvedThroughLink, OperatingSystem.IsWindows(), skipReason);
+        if (link.Warning is { } skipWarning) Console.WriteLine(skipWarning);
+        check(link.Pass, "P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)", link.Record + "; " + detail);
+        check(link.Pass, "P1-46 control location self-test: " + link.Record, detail);
         check(!Directory.Exists(scratch), "P1-44 control location self-test: the scratch link folder is removed", scratch);
     }
 

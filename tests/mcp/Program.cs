@@ -568,18 +568,58 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
 {
     var serverSource=File.ReadAllText(Path.Combine(root,"interfaces","mcp","McpServer.cs"));
     // The ParseOptions body: from its signature to the brace matching the first '{' after it (no layout assumption).
-    var p122Start=serverSource.IndexOf("static string? ParseOptions(",StringComparison.Ordinal);
-    var p122Open=p122Start<0 ? -1 : serverSource.IndexOf('{',p122Start);
-    var p122End=-1;
-    for(int p122At=Math.Max(p122Open,0),p122Depth=0;p122Open>=0 && p122At<serverSource.Length;p122At++) {
-        if(serverSource[p122At]=='{') p122Depth++;
-        else if(serverSource[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
+    // P1-46: the IndexOf-and-brace cut, kept for the red run only.
+    const string P122Signature="static string? ParseOptions(";
+    string P122Body(string p122Text) {
+        var p122Start=p122Text.IndexOf(P122Signature,StringComparison.Ordinal);
+        var p122Open=p122Start<0 ? -1 : p122Text.IndexOf('{',p122Start);
+        var p122End=-1;
+        for(int p122At=Math.Max(p122Open,0),p122Depth=0;p122Open>=0 && p122At<p122Text.Length;p122At++) {
+            if(p122Text[p122At]=='{') p122Depth++;
+            else if(p122Text[p122At]=='}' && --p122Depth==0) { p122End=p122At+1; break; }
+        }
+        return p122End<0 ? "" : p122Text[p122Start..p122End];
     }
-    var parseBody=p122End<0 ? "" : serverSource[p122Start..p122End];
+    // P1-46: what the pin reads in a ParseOptions body: the shared option loop is called, and no value grammar, range
+    // or refusal text of its own is there ("" when none is missing or found).
+    var p122Tokens=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("};
+    string P122Problems(string p122Text) {
+        var p122Read=P122Body(p122Text);
+        if(p122Read.Length==0) return "no ParseOptions block";
+        var p122Found=p122Tokens.Where(token=>p122Read.Contains(token,StringComparison.Ordinal)).ToArray();
+        return (p122Read.Contains("RevitOptionGrammar.Options(",StringComparison.Ordinal) ? "" : "no RevitOptionGrammar.Options( call; ")
+            +(p122Found.Length==0 ? "" : "own grammar ["+string.Join(", ",p122Found)+"]");
+    }
+    var parseBody=P122Body(serverSource);
     // P1-24: the value is read inside the shared option loop RevitOptionGrammar.Options (which calls its ReadTimeout).
     Check(parseBody.Length>0 && parseBody.Contains("RevitOptionGrammar.Options(",StringComparison.Ordinal),"McpServer.ParseOptions reads --read-timeout-seconds through the shared RevitOptionGrammar option loop");
-    var ownGrammar=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("}.Where(token=>parseBody.Contains(token,StringComparison.Ordinal)).ToArray();
+    var ownGrammar=p122Tokens.Where(token=>parseBody.Contains(token,StringComparison.Ordinal)).ToArray();
     Check(parseBody.Length>0 && ownGrammar.Length==0,"McpServer.ParseOptions has no value grammar, range or refusal text of its own ["+string.Join(", ",ownGrammar)+"]");
+    Check(P122Problems(serverSource)=="","P1-46 McpServer.ParseOptions pin reads the member's own block | "+P122Problems(serverSource));
+    // P1-46 mutation self-test: the ParseOptions block is found on the comment- and literal-stripped code, so a
+    // signature in a comment, a brace in a literal or an expression-bodied ParseOptions cannot hide an own grammar, and
+    // prose in a comment is not read as code.
+    const string P122Member="    public static string? ParseOptions(IReadOnlyList<string> args, out TimeSpan readTimeout)\n    {\n        ArgumentNullException.ThrowIfNull(args);\n"
+        +"        var options = RevitOptionGrammar.Options(args, 0, [ReadTimeoutOption], RevitCommandCodes.McpOptionUnknown, OptionsUsage, null, out var refusal);\n"
+        +"        readTimeout = options?.ReadTimeout ?? RevitCommandService.DefaultReadTimeout;\n        return refusal;\n    }\n";
+    const string P122Own="        if (!int.TryParse(args[1], out var seconds)) return \"--read-timeout-seconds takes whole seconds\";\n";
+    string P122Class(string p122Inside)=>"sealed class S\n{\n"+p122Inside+"}\n";
+    foreach(var (p122Label,p122Source) in new[]{
+        ("today's member",P122Class(P122Member)),
+        ("a '{' and a '}' in string literals",P122Class(P122Member.Replace("        return refusal;","        var braces = \"{\" + \"}}\";\n        return refusal;",StringComparison.Ordinal))),
+        ("refusal prose only in a comment",P122Class(P122Member.Replace("        return refusal;","        // the loop says 'takes whole seconds' and 'unknown option', not this method\n        return refusal;",StringComparison.Ordinal)))})
+        Check(P122Problems(p122Source)=="","P1-46 MCP ParseOptions body self-test: "+p122Label+" passes | "+P122Problems(p122Source));
+    foreach(var (p122Label,p122Source) in new[]{
+        ("the signature and the loop call only in a comment, an own grammar in the member",
+            P122Class("    // static string? ParseOptions( { RevitOptionGrammar.Options( }\n"+P122Member.Replace("        ArgumentNullException.ThrowIfNull(args);\n","        ArgumentNullException.ThrowIfNull(args);\n"+P122Own,StringComparison.Ordinal).Replace("RevitOptionGrammar.Options(","Grammar.Options(",StringComparison.Ordinal))),
+        ("a '}' in a string literal before an own grammar",
+            P122Class(P122Member.Replace("        return refusal;","        var close = \"}\";\n"+P122Own+"        return refusal;",StringComparison.Ordinal))),
+        ("an expression-bodied ParseOptions with an own grammar, the loop call in the next member",
+            P122Class("    public static string? ParseOptions(IReadOnlyList<string> args, out TimeSpan readTimeout) => Own(args, out readTimeout, \"takes whole seconds\");\n"
+                +"    static void Next()\n    {\n        var options = RevitOptionGrammar.Options(args, 0, [ReadTimeoutOption], RevitCommandCodes.McpOptionUnknown, OptionsUsage, null, out var refusal);\n    }\n")),
+        ("an own refusal text in a string literal",
+            P122Class(P122Member.Replace("        return refusal;","        return refusal ?? \"repeated option\";",StringComparison.Ordinal)))})
+        Check(P122Problems(p122Source)!="","P1-46 MCP ParseOptions body self-test: "+p122Label+" is flagged");
     Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
     // Each project compiles the shared file itself (a Compile Include resolving to interfaces/cli/RevitCommandOptions.cs,
     // either path separator), read as XML so attribute order and layout do not matter.
