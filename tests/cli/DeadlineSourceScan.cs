@@ -8,7 +8,8 @@ using System.Text.RegularExpressions;
 // `new RevitDeadlineTransport(` construction (P1-40, P1-42): split at depth 0 and mapped onto the constructor's
 // parameters as C# does. RevitCommandDeadlineTests (sections 2g, 2i, 3a) and the tests/mcp RevitCallAll pin call it.
 // P1-45: CodeMask (comments and literals blanked at their positions) and MemberBody(raw: true), for a pin that reads
-// the source as written instead of StripCode output.
+// the source as written instead of StripCode output. P1-47: the raw path skips a signature with any character (not only
+// the first) in a comment or literal.
 internal static class DeadlineSourceScan
 {
     // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
@@ -186,7 +187,8 @@ internal static class DeadlineSourceScan
     {
         var scan = raw ? CodeMask(code) : code;
         var start = code.IndexOf(signature, StringComparison.Ordinal);
-        while (raw && start >= 0 && scan[start] != code[start]) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
+        // P1-47: every character of the signature must be code (unmasked), not only the first.
+        while (raw && start >= 0 && string.CompareOrdinal(scan, start, code, start, signature.Length) != 0) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
         if (start < 0) return null;
         var nested = 0;
         for (var k = start; k < scan.Length; k++)
