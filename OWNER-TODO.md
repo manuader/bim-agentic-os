@@ -467,3 +467,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay286 (2026-11-25, cloud)
 - No new required action. `git pull` (main 9caa236d, CI 45590940815 green 9/9). Test/CI/docs-only changes (P3-44, P10-47, P7-47). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3.
+
+## Relay287 (2026-11-25, cloud)
+- No new required action. `git pull` (main 9d04fde4, CI 45607649475 green 9/9). Test-only changes (P10-48, P6-47, P7-48). Still open: decide ADR0010 (P2-11) and ADR0011 (P9-03); ONE -Catalogue run then catalogue-report; N21 run 3.
