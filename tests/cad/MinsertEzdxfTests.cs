@@ -82,12 +82,13 @@ using Point2 = Bim.Cad.Point2;
 // refused entity-invalid like 41/42 = 0; a negative 43 is kept. A z group that is not a finite number reads as 0.
 //
 // P6-43 (RunCli, reader-options pin): InProcessDocument reads the drawing with CliDxfReadOptions, the in-process copy of
-// CadCommand's DXF reader options, and that copy is pinned against interfaces/cli/CadCommand.cs: the raw source (comments
-// included, so a commented-out copy counts) names DxfReadOptions and DxfReader. once each, the DXF read is exactly the
-// line CliDxfRead (MaxInputBytes only, nothing else on the line) and MaxInputBytes is declared once as a product of
-// integers equal to CliMaxInputBytes (32 MiB). Self-tests: an extra reader argument, a commented-out copy beside a
-// changed read and a changed cap are each caught. The options are pinned rather than shared because CadCommand reads the
-// input once for cad-draft and cad-brief (the reason recorded for the PDF reader options in the cad-brief contract).
+// CadCommand's DXF reader options, and that copy is pinned against interfaces/cli/CadCommand.cs: the source names
+// DxfReadOptions and DxfReader. once each, the DXF read is the statement CliDxfRead (MaxInputBytes only) and
+// MaxInputBytes is declared once as a product of integers equal to CliMaxInputBytes (32 MiB). How the source is read
+// changed in P6-45 (code only, whitespace removed; below); P6-43 itself counted on the source as written.
+// Self-tests: an extra reader argument, a commented-out copy beside a changed read and a changed cap are each caught.
+// The options are pinned rather than shared because CadCommand reads the input once for cad-draft and cad-brief (the
+// reason recorded for the PDF reader options in the cad-brief contract).
 // P6-45 (one pin style): the pin reads CadCommand.cs through PdfType3GlyphListTests.StripCommentsAndLiterals, the same
 // stripping as the PDF reader-option pin (called by reflection, so there is one stripper and no copy), so the counts are
 // of code only and a comment naming DxfReadOptions or DxfReader. does not fail it; the read is matched as one statement
@@ -95,6 +96,10 @@ using Point2 = Bim.Cad.Point2;
 // "pdf"); and the always-true self-comparison is replaced by the in-process copy against new DxfReadOptions(cap) with
 // the cap parsed from CadCommand.cs, which fails when either side changes. Self-tests: // and /* */ comments naming both
 // tokens and the read over several lines pass; a second DxfReader. call in code is caught.
+// P6-47 (pin tidy): the stripper stays PdfType3GlyphListTests.StripCommentsAndLiterals reached by reflection, and the
+// pin label says so (a shared helper would move code outside this pin's scope); the MaxInputBytes= count skips a
+// MaxInputBytes == comparison (self-tests: a comparison in code passes, a second assignment is caught); the PDF
+// reader-option pin in PdfType3GlyphListTests matches stripped code with all whitespace removed, as this pin does.
 //
 // P6-44 (section RunJustified at the end): justified TEXT (72 = 1/2/4, 73 != 0) keeps its group 10 point, ezdxf 1.4.2
 // places it on group 11 (documented limit, measured and pinned); a non-finite group 30 and 31 on a justified near-Z
@@ -432,6 +437,7 @@ internal static class MinsertEzdxfTests
     private static int Occurs(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
 
     // P6-45: the PDF reader-option pin's stripper (comments removed, literals emptied), one implementation for both pins.
+    // P6-47: reached by reflection (it is private to PdfType3GlyphListTests); the pin label states the dependence.
     private static string StripCode(string source) =>
         (string)(typeof(PdfType3GlyphListTests).GetMethod("StripCommentsAndLiterals", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)
             ?? throw new MissingMethodException("PdfType3GlyphListTests.StripCommentsAndLiterals")).Invoke(null, new object[] { source })!;
@@ -456,8 +462,12 @@ internal static class MinsertEzdxfTests
             if (factors.Length > 0 && factors.All(f => f.Length > 0 && f.All(char.IsAsciiDigit) && f.Length < 10))
                 cap = factors.Aggregate(1L, (product, f) => product * long.Parse(f, CultureInfo.InvariantCulture));
         }
-        if (Occurs(compact, "MaxInputBytes=") != 1 || cap is null)
-            problems.Add("MaxInputBytes declared x" + capCount.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one integer product)");
+        // P6-47: assignments only; a MaxInputBytes == comparison reads the cap and is not counted.
+        var assigned = 0;
+        for (var at = compact.IndexOf("MaxInputBytes=", StringComparison.Ordinal); at >= 0; at = compact.IndexOf("MaxInputBytes=", at + 1, StringComparison.Ordinal))
+            if (at + "MaxInputBytes=".Length >= compact.Length || compact[at + "MaxInputBytes=".Length] != '=') assigned++;
+        if (assigned != 1 || cap is null)
+            problems.Add("MaxInputBytes assigned x" + assigned.ToString(CultureInfo.InvariantCulture) + ", declared x" + capCount.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one declaration, one integer product)");
         // P6-45: replaces the always-true CliDxfReadOptions == new DxfReadOptions(CliMaxInputBytes); this one compares the
         // in-process copy with the options CadCommand's parsed cap gives, so it fails when either side changes.
         else if (new DxfReadOptions(cap.Value) != CliDxfReadOptions)
@@ -473,7 +483,7 @@ internal static class MinsertEzdxfTests
             var cadCommandPath = Path.Combine(RepoRoot(), "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath) : "";
             c(cadCommand.Length > 0 && ReaderOptionsProblems(cadCommand) is null,
-                "p6-43 reader options: CadCommand.cs code (comments and literals stripped, P6-45) reads a DXF with DxfReadOptions(MaxInputBytes) only, the in-process copy equals DxfReadOptions of CadCommand's parsed MaxInputBytes (32 MiB)",
+                "p6-43 reader options: CadCommand.cs code (comments and literals stripped, P6-45, by PdfType3GlyphListTests.StripCommentsAndLiterals reached by reflection, P6-47) reads a DXF with DxfReadOptions(MaxInputBytes) only, the in-process copy equals DxfReadOptions of CadCommand's parsed MaxInputBytes (32 MiB)",
                 cadCommandPath + " " + (cadCommand.Length == 0 ? "missing" : ReaderOptionsProblems(cadCommand) ?? "pins hold") + " in-process " + CliDxfReadOptions);
             const string realCall = "new DxfReadOptions(MaxInputBytes)";
             foreach (var (label, drifted, expect) in new[]
@@ -483,6 +493,8 @@ internal static class MinsertEzdxfTests
                 ("a /* */ commented-out copy beside a changed read", cadCommand.Replace(CliDxfRead, CliDxfRead.Replace("(MaxInputBytes)", "(64 * 1024 * 1024)", StringComparison.Ordinal) + " /* " + CliDxfRead + " */", StringComparison.Ordinal), "the DXF read statement"),
                 ("a second DxfReader. call in code", cadCommand.Replace(CliDxfRead, CliDxfRead + " var again = DxfReader.Parse(bytes, sourceFile);", StringComparison.Ordinal), "'DxfReader.' x2"),
                 ("a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
+                // P6-47: the == exclusion of the MaxInputBytes= count does not drop a second assignment.
+                ("(P6-47) a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
             })
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
                     "p6-43 reader options self-test: " + label + " in CadCommand.cs is caught",
@@ -494,6 +506,8 @@ internal static class MinsertEzdxfTests
                 ("a // comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, "// DxfReader.Parse with DxfReadOptions(MaxInputBytes) (pinned by tests/cad)\n            " + CliDxfRead, StringComparison.Ordinal)),
                 ("a /* */ comment naming DxfReadOptions and DxfReader.", cadCommand.Replace(CliDxfRead, CliDxfRead + " /* not DxfReader.ReadFile, no other DxfReadOptions */", StringComparison.Ordinal)),
                 ("the read statement reformatted over several lines", cadCommand.Replace(CliDxfRead, "if (format == \"dxf\")\n                drawing = DxfReader.Parse(\n                    bytes,\n                    sourceFile,\n                    new DxfReadOptions( MaxInputBytes ));", StringComparison.Ordinal)),
+                // P6-47: a comparison reads MaxInputBytes; it neither declares nor assigns it.
+                ("(P6-47) a MaxInputBytes == comparison in code", cadCommand.Replace(CliDxfRead, "var atCap = MaxInputBytes == bytes.Length; " + CliDxfRead, StringComparison.Ordinal)),
             })
                 c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
                     "p6-45 reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
