@@ -1845,7 +1845,12 @@ try {
                         @{ Name = 'message names $tool.Tool'; Pairs = @(, @('"P7-33 $($caseLabel): reformatted"', '"P7-33 $($tool.Tool) $($caseLabel): reformatted"')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
                         @{ Name = 'constant message'; Pairs = @(, @('("P7-35 {0}: formatted" -f $caseLabel)', '''P7-35 caseLabel: constant''')); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 1 casefinally 1 wrapper 0' },
                         @{ Name = 'second case finally and the old wrapper'; Pairs = @(, @('    try { $x = 1 }', "    function Remove-P733Directory { }`n    try { Remove-P733Directory } finally { Remove-PackageCaseDirectory 'P7-33' `$p733Case }`n    try { `$x = 1 }")); Want = 'header P7-39,P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 2 wrapper 2' },
-                        @{ Name = 'header without P7-39'; Pairs = @(, @('# P7-39: quiet cleanup report', '# P7-37: the previous header line')); Want = 'header P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
+                        @{ Name = 'header without P7-39'; Pairs = @(, @('# P7-39: quiet cleanup report', '# P7-37: the previous header line')); Want = 'header P7-41 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        # P7-45: a report planted in another top-level try that does not remove $work is outer but not work, and
+                        # Remove-Item $work counts only as a direct statement of the report's finally (not nested in a block).
+                        @{ Name = 'report planted in a top-level try that does not remove $work'; Pairs = @(, @('param([string]$Dotnet)', "param([string]`$Dotnet)`ntry { `$y = 2 } finally { Write-PackageCleanupWarnings }")); Want = 'header P7-39,P7-41 outer 2 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work removal nested in a scriptblock'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    & { Remove-Item -LiteralPath $work }')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' },
+                        @{ Name = '$work removal nested in an if'; Pairs = @(, @('    Remove-Item -LiteralPath $work', '    if ($true) { Remove-Item -LiteralPath $work }')); Want = 'header P7-39,P7-41 outer 1 work 0 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' })
                     foreach ($mutant in $p741Mutants) {
                         $text = $p741Text
                         foreach ($pair in $mutant.Pairs) {
@@ -1899,11 +1904,20 @@ try {
                     Assert ($null -ne $p743Bad.Error -and $p743Bad.Summary.StartsWith('unparsable: ')) "P7-43 self-test: unparsable text is an object with Error set: $($p743Bad.Summary)"
 
                     New-Item -ItemType Directory -Force $p743Probe | Out-Null
+                    # P7-45: the stand-in counts its calls (one per Remove-PackageCaseDirectory call), so a check that passed
+                    # because the real Remove-Item ran (or none ran) is caught.
+                    $p745Calls = [Collections.Generic.List[string]]::new()
                     $p743Into = [Collections.Generic.List[string]]::new(); $p743Before = $packageCleanupWarnings.Count
-                    $p743Warning = & { function Remove-Item { }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
+                    $p743Warning = & { function Remove-Item { $p745Calls.Add('P7-43 -Into') }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into }
+                    Assert ($p745Calls.Count -eq 1) "P7-45: the stand-in Remove-Item ran once for the -Into call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Warning -and $p743Into.Count -eq 1 -and $p743Into[0] -ceq $p743Warning -and $p743Warning.StartsWith('P7-43: ') -and $p743Warning.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p743Before) "P7-43: Remove-PackageCaseDirectory -Into collects a leftover (stand-in remover, any user) into the passed list only (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new): $p743Warning"
-                    $p743Silent = & { function Remove-Item { }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
+                    $p743Silent = & { function Remove-Item { $p745Calls.Add('P7-43 -Into -Silent') }; Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Into -Silent }
+                    Assert ($p745Calls.Count -eq 2) "P7-45: the stand-in Remove-Item ran once for the -Into -Silent call (calls: $($p745Calls -join ', '))"
                     Assert ($null -ne $p743Silent -and $p743Into.Count -eq 1 -and $packageCleanupWarnings.Count -eq $p743Before -and (Test-Path -LiteralPath $p743Probe)) "P7-43: -Silent with -Into returns the warning and collects it nowhere (passed $($p743Into.Count), run-wide $($packageCleanupWarnings.Count - $p743Before) new)"
+                    # P7-45: -Silent without -Into returns the warning and leaves the default (run-wide) list untouched.
+                    $p745Default = @($packageCleanupWarnings)
+                    $p745Silent = & { function Remove-Item { $p745Calls.Add('P7-45 -Silent') }; Remove-PackageCaseDirectory 'P7-45' $p743Probe -Silent }
+                    Assert ($p745Calls.Count -eq 3 -and $null -ne $p745Silent -and $p745Silent.StartsWith('P7-45: ') -and $p745Silent.Contains($p743Probe) -and $packageCleanupWarnings.Count -eq $p745Default.Count -and ($packageCleanupWarnings -join "`n") -ceq ($p745Default -join "`n") -and $p743Into.Count -eq 1) "P7-45: -Silent without -Into returns the warning and leaves the default list untouched (stand-in calls $($p745Calls.Count), run-wide $($packageCleanupWarnings.Count - $p745Default.Count) new): $p745Silent"
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
                 finally {
                     # P7-43: this block's own leftover goes to its own list and is reported here, not in the run-wide report.
