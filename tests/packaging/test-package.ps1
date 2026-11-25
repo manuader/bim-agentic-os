@@ -40,6 +40,8 @@
 # PowerShell AST (planted reformat and mutants); Remove-PackageCaseDirectory -Into collects a leftover into a passed list.
 # P7-43: the cleanup pin is an object; the report call must sit in the finally of the top-level try that removes $work and is
 # removed from a copy by its AST extent; -Into is checked for any user (stand-in remover) and the P7-43 block reports its own leftover.
+# P7-45: Remove-Item $work counts only as a direct statement of the report's finally (scriptblock/if mutants, a report planted in
+# another top-level try); the stand-in remover counts its calls; -Silent without -Into leaves the run-wide list untouched.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1118,7 +1120,8 @@ try {
     # uses $tool.Tool; casefinally = finally blocks calling Remove-PackageCaseDirectory 'P7-33' $p733Case; wrapper =
     # definitions or calls of the old Remove-P733Directory. P7-43: returns an object (counts as properties, Summary = the
     # P7-41 text, Error = the first parse error or $null); work = the outer calls in a finally that also runs Remove-Item
-    # on $work, and WorkReports = those CommandAsts (their Extent locates the call in the text).
+    # on $work, and WorkReports = those CommandAsts (their Extent locates the call in the text). P7-45: that Remove-Item
+    # must be a direct statement of the same finally (nested in a scriptblock or if it does not count).
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -1139,7 +1142,9 @@ try {
         foreach ($try in @($top | Where-Object { $_ -is [Management.Automation.Language.TryStatementAst] -and $null -ne $_.Finally })) {
             $reports = @($try.Finally.FindAll({ param($n) & $isCommand $n 'Write-PackageCleanupWarnings' }, $true))
             $outer += $reports.Count
-            $cleansWork = @($try.Finally.FindAll({ param($n) (& $isCommand $n 'Remove-Item') -and @($n.CommandElements | Where-Object { & $isVariable $_ 'work' }).Count -gt 0 }, $true)).Count -gt 0
+            # P7-45: Remove-Item $work must be a direct statement of this finally (one-command pipeline), not nested in a
+            # scriptblock, if or other block.
+            $cleansWork = @($try.Finally.Statements | Where-Object { $_ -is [Management.Automation.Language.PipelineAst] -and $_.PipelineElements.Count -eq 1 -and (& $isCommand $_.PipelineElements[0] 'Remove-Item') -and @($_.PipelineElements[0].CommandElements | Where-Object { & $isVariable $_ 'work' }).Count -gt 0 }).Count -gt 0
             if ($cleansWork) { foreach ($report in $reports) { $workReports.Add($report) } }
         }
         $loops = @($ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'tool' -and @($n.Condition.FindAll({ param($c) & $isVariable $c 'p737Ranked' }, $true)).Count -gt 0 }, $true))
