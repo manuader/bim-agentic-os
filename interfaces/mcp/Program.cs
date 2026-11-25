@@ -10,7 +10,10 @@ using var output=new StreamWriter(Console.OpenStandardOutput(),utf8){AutoFlush=t
 Console.SetOut(Console.Error);
 // P5-37: a reply stdout rejects ends serving (McpServer.Run returns the write's exception): exit 1 and one stderr line
 // "mcp stdout failed: <type>: <message>", never an unhandled exception; a stderr that throws too is ignored.
+// P5-39: that line stays exactly one line: the message is folded with ReplaceLineEndings(" ") (CR, LF, CRLF and the other
+// Unicode line breaks each become one space) and a Message that is null prints as empty instead of losing the line to a
+// NullReferenceException. A Message getter that throws still drops the line (the guarded write), exit 1 alone.
 if(McpServer.Run(input,output,new McpServer{ReadTimeout=readTimeout}) is {} stdoutFailure) {
     Environment.ExitCode=1;
-    try { Console.Error.WriteLine("mcp stdout failed: "+stdoutFailure.GetType().FullName+": "+stdoutFailure.Message); } catch(Exception) { }
+    try { string? failureMessage=stdoutFailure.Message; Console.Error.WriteLine("mcp stdout failed: "+stdoutFailure.GetType().FullName+": "+(failureMessage?.ReplaceLineEndings(" ")??"")); } catch(Exception) { }
 }

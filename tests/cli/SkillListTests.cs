@@ -143,8 +143,9 @@ using Bim.Core;
 //      escapes Run. The original exception's type is lost from the diagnostic (it names the getter's exception): pinned
 //      as measured. With a rejecting stdout, a rejecting stderr or both, still exit 1 with nothing escaping and one
 //      attempt per stream. PINNED AS MEASURED, a stated limit: two levels (an exception whose Message getter throws an
-//      exception whose own Message getter throws too) escape Run unhandled with the exit code untouched, because Run's
-//      catch calls IntentPlan.Internal once, unguarded; containing it needs a change inside that catch, which would
+//      exception whose own Message getter throws too) escape Run unhandled, as the second getter's
+//      InvalidOperationException and with the exit code untouched, because Run's catch calls IntentPlan.Internal once,
+//      unguarded over whatever left List; containing it needs a change inside that catch, which would
 //      rewrite the P5-31/P5-33 pinned bytes read by sections 13 and 15 (CommandDeltaP533, CommandBeforeP533Sha256) that
 //      P5-39 may not edit. Control: a probe throwing a readable-message exception keeps the section 11/13 line and
 //      diagnostic, and with both seams null a listing and a root_missing refusal keep their bytes. Static:
@@ -2071,8 +2072,11 @@ internal static class SkillListTests
             (int Exit, string Out, string Err, string Thrown) run;
             try { run = Inline(() => Bim.Cli.SkillListCommand.Run(["skill-list"])); }
             finally { Bim.Cli.SkillListCommand.ListingWorkProbe = null; Bim.Cli.SkillListCommand.LoadedProbe = null; }
-            Check(run.Thrown == typeof(MessageGetterThrowsException).FullName + ": <Message threw System.InvalidOperationException>" && run.Exit == 0 && run.Out.Length == 0 && run.Err.Length == 0,
-                "MEASURED LIMIT: " + seam + " throwing an exception whose Message getter throws an exception whose Message getter throws too escapes Run unhandled, exit code untouched, nothing printed (→ a future P5 row)", D(run));
+            // Measured (CI run 45552500501, Linux/Windows/macOS): the exception that escapes Run is the SECOND getter's
+            // InvalidOperationException — Run's catch reads the Message of what left List (the first getter's exception),
+            // and that read throws in turn.
+            Check(run.Thrown == "System.InvalidOperationException: " + MessageGetterThrowsException.GetterMessage && run.Exit == 0 && run.Out.Length == 0 && run.Err.Length == 0,
+                "MEASURED LIMIT: " + seam + " throwing an exception whose Message getter throws an exception whose Message getter throws too escapes Run unhandled as the second getter's InvalidOperationException, exit code untouched, nothing printed (→ a future P5 row)", D(run));
         }
         Check(Bim.Cli.SkillListCommand.ListingWorkProbe is null && Bim.Cli.SkillListCommand.LoadedProbe is null, "both seams are null after the measured limit");
 
