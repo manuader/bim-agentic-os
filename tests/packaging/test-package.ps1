@@ -2893,6 +2893,43 @@ try {
                 Assert ($p439Got -ceq $p439Mutant.Want) "P4-39 self-test: mutant '$($p439Mutant.Name)': $p439Got (want $($p439Mutant.Want))"
             }
         } catch { $failures.Add("P4-39 tokenizer/declaration/source pin self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-40 self-test: closing braces right after a raw interpolation hole: fewer extra } than the $ count are content (as
+        # C# reads $$"""{{x}}} y""": the hole is {{x}}, then '}'; named limit, value pinned), as many or more are refused by
+        # name; compound (+=, ??=) and expression-bodied (=>) CleanupFailed forms are refused by name with one message; a
+        # CleanupFailed literal followed by + is named a concatenation (not an assignment); the header lists P4-39 and
+        # Get-P436Header reads it.
+        try {
+            $p440Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p440Into 'P4-40' '/p4-40/left' { param($l, $p) 'W' }
+            $p440Prefix = if ($p440Into.Count -eq 1 -and $p440Into[0].EndsWith('W')) { $p440Into[0].Substring(0, $p440Into[0].Length - 1) } else { '<none>' }
+            $p440Decl = 'const string CleanupFailed = "' + $p440Prefix + '";'
+            $p440At = $p440Decl.Length + 8
+            $p440Concat = 'CleanupFailed literal followed by + (a concatenation, not one literal) '
+            $p440Cases = @(
+                @{ Label = 'LIMIT: one extra } after a $$ raw hole is content'; Text = $p440Decl + ' return $$"""{{x}}} P4-33: cleanup failed: """;'; Want = 'other cleanup-failed literal $$"""{{x}}} P4-33: cleanup failed: """' }
+                @{ Label = 'two extra } after a $$ raw hole'; Text = $p440Decl + ' return $$"""{{x}}}} y""";'; Want = "refused C# literal at offset $($p440At): raw interpolation hole closed by a run of 4 braces (at most 3 for 2 `$)" }
+                @{ Label = 'one extra } after a $ raw hole'; Text = $p440Decl + ' return $"""{x}} P4-33: cleanup failed: """;'; Want = "refused C# literal at offset $($p440At): raw interpolation hole closed by a run of 2 braces (at most 1 for 1 `$)" }
+                @{ Label = 'two extra } after a $$$ raw hole are content'; Text = $p440Decl + ' return $$$"""{{{x}}}}} y""";'; Want = '' }
+                @{ Label = 'compound += refused by name'; Text = $p440Decl + ' void M() { CleanupFailed += "x"; }'; Want = 'CleanupFailed compound assignment (+=) refused "x"' }
+                @{ Label = 'compound ??= without a declaration is one message'; Text = 'static string CleanupFailed; void M() { CleanupFailed ??= "' + $p440Prefix + '"; }'; Want = 'CleanupFailed compound assignment (??=) refused "' + $p440Prefix + '"' }
+                @{ Label = 'expression-bodied member refused by name'; Text = 'static string CleanupFailed => "' + $p440Prefix + '";'; Want = 'CleanupFailed expression-bodied member (=>) refused "' + $p440Prefix + '"' }
+                @{ Label = 'far expression-bodied member'; Text = 'string CleanupFailed' + "`n  /* x */ =>`n" + '  @"P4-33: cleanup failed: ";'; Want = 'CleanupFailed expression-bodied member (=>) refused @"P4-33: cleanup failed: "' }
+                @{ Label = 'const declaration concatenated'; Text = 'const string CleanupFailed = "' + $p440Prefix + '" + "";'; Want = $p440Concat + '"' + $p440Prefix + '"' }
+                @{ Label = 'mutable assignment concatenated'; Text = $p440Decl + ' void M() { CleanupFailed = "x" + y; }'; Want = $p440Concat + '"x"' }
+                @{ Label = 'mutable assignment without + keeps the assignment wording'; Text = $p440Decl + ' void M() { CleanupFailed = "x"; }'; Want = 'CleanupFailed assigned outside a const or static readonly declaration "x"' }
+                @{ Label = 'a use of CleanupFailed followed by + is no concatenation of its literal'; Text = $p440Decl + ' return CleanupFailed + "x";'; Want = '' }
+            )
+            foreach ($p440Case in $p440Cases) {
+                $p440Found = Get-P435PrefixMismatch $p440Case.Text $p440Prefix
+                Assert (($p440Found -join '|') -ceq $p440Case.Want) "P4-40 self-test: $($p440Case.Label): $(Format-P431List $p440Found) (want [$($p440Case.Want)])"
+            }
+            $p440Brace = Read-P437Literal '$$"""{{x}}} y"""' 0
+            Assert ($null -ne $p440Brace -and !$p440Brace.Refused -and $p440Brace.Value -ceq '{{x}}} y' -and $p440Brace.End -eq 16) "P4-40 self-test: `$`$`"`"`"{{x}}} y`"`"`" reads the hole {{x}} then the content '}' (value '{{x}}} y', end 16): value '$($p440Brace.Value)' end $($p440Brace.End) refused $($p440Brace.Refused)"
+            $p440Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
+            Assert ($p440Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39') "P4-40: this script's header lists P4-31..P4-39: $p440Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39)"
+            $p440Late = Get-P436Header ("#Requires -Version 7.2`n# P4-38: a`n# P4-39: b`nparam()`n# P4-39: after the leading block")
+            Assert ($p440Late -ceq 'P4-38,P4-39') "P4-40 self-test: Get-P436Header reads a P4-39 header line: $p440Late (want P4-38,P4-39)"
+        } catch { $failures.Add("P4-40 brace/compound/concatenation/header self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
