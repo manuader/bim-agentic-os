@@ -452,3 +452,6 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay281 (2026-11-25, cloud)
 - No new required action. `git pull` (main ba45044e, CI green). Test-only changes (P3-41, P4-37, P6-44). Optional decision: P6-44 found that justified DXF TEXT is placed on its insertion point (group 10) while ezdxf/AutoCAD place it on the alignment point (group 11); fixing it needs a new serialized member in the CAD brief — say if you want it (pinned as a documented limit until then). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
+
+## Relay282 (2026-11-25, cloud)
+- No new required action. `git pull` (main 7be2663a, CI green; includes your modelado-3d bridge commits). Test/CI-only changes (P3-42, P10-45, P7-45). Still open: decide ADR0010/ADR0011; optional typed generic-catch decision (Relay278/279) and justified DXF TEXT (Relay281); 🔒 `pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/owner-native-session.ps1 -Catalogue` (Load Once) and N21 `... -Runs 1`.
