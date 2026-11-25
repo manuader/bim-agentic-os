@@ -8,7 +8,8 @@ New-Item -ItemType Directory -Force -Path $repo, $enc | Out-Null
 $fake = Join-Path $work 'claude-falso.ps1'
 @'
 $dir = $null; $prompt = $null
-for ($i = 0; $i -lt $args.Count; $i++) { if ($args[$i] -eq '--add-dir') { $dir = $args[$i + 1] }; if ($args[$i] -eq '-p') { $prompt = $args[$i + 1] } }
+for ($i = 0; $i -lt $args.Count; $i++) { if ($args[$i] -eq '--add-dir') { $dir = $args[$i + 1] } }
+$prompt = [Console]::In.ReadToEnd()
 if ($prompt -like '*No toques Revit*') { Set-Content -LiteralPath (Join-Path $dir 'ficha.md') -Value '# Ficha de prueba' }
 else { Set-Content -LiteralPath (Join-Path $dir 'salida/vista.png') -Value 'png' }
 $resume = if ($args -contains '--resume') { 'si' } else { 'no' }
@@ -47,13 +48,14 @@ try {
     $up = Invoke-RestMethod "$base/encargos/$id/entrada/ficha.pdf" -Method Put -Headers $h -Body ([byte[]](1..10))
     Check ($up.bytes -eq 10) 'subir archivo'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/entrada/virus.exe" -Method Put -Headers $h -Body 'x' }) -eq 400) 'extensión no admitida'
+    Check ((Code { Invoke-RestMethod "$base/encargos/$id/entrada/CON.txt" -Method Put -Headers $h -Body 'x' }) -eq 400) 'nombre reservado de Windows'
     $c = Code { Invoke-RestMethod "$base/encargos/..%2F..%2Fx/entrada/a.pdf" -Method Put -Headers $h -Body 'x' }; Check ($c -in 400, 404) 'id con ..: rechazado'
     Check ((Code { Invoke-RestMethod "$base/encargos/$id/aprobar" -Method Post -Headers $h }) -eq 409) 'aprobar sin ficha: 409'
 
     Invoke-RestMethod "$base/encargos/$id/ficha" -Method Post -Headers $h | Out-Null
     $e = WaitFor $id 'ficha-lista'
     Check ($e.estado -eq 'ficha-lista' -and $e.ficha -like '*Ficha de prueba*') 'ficha armada'
-    Invoke-RestMethod "$base/encargos/$id/aprobar" -Method Post -Headers $h -ContentType 'application/json' -Body '{"comentarios":"ok"}' | Out-Null
+    Invoke-RestMethod "$base/encargos/$id/aprobar" -Method Post -Headers $h -ContentType 'application/json' -Body '{"comentarios":"ok \" & echo %PATH% \""}' | Out-Null
     $e = WaitFor $id 'listo'
     Check ($e.estado -eq 'listo' -and $e.resultado -eq 'ok resume=si') 'modelo con la misma sesión'
     Check (@($e.salida | Where-Object { $_.nombre -eq 'vista.png' }).Count -eq 1) 'salida listada'

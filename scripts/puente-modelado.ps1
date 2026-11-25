@@ -100,7 +100,8 @@ function Update-Corrida([string]$dir) {
     $estado = Read-Estado $dir
     if (!$estado.corrida -or $estado.corrida.terminada) { return $estado }
     $proc = Get-Process -Id $estado.corrida.pid -ErrorAction SilentlyContinue
-    if ($proc -and !$proc.HasExited) { return $estado }
+    $mismo = $proc -and $proc.StartTime.ToUniversalTime() -le ([DateTime]::Parse($estado.corrida.inicio).ToUniversalTime().AddMinutes(1))
+    if ($mismo -and !$proc.HasExited) { return $estado }
     $salida = $estado.corrida.salida
     $ok = $false
     if (Test-Path -LiteralPath $salida) {
@@ -125,7 +126,9 @@ function Start-Claude([string]$dir, [string]$fase, [string]$prompt) {
     $stamp = [DateTime]::UtcNow.ToString('yyyyMMddTHHmmss')
     $out = Join-Path $logs "$fase-$stamp.json"
     $err = Join-Path $logs "$fase-$stamp.err.txt"
-    $claudeArgs = @('-p', $prompt, '--output-format', 'json', '--add-dir', $dir, '--permission-mode', 'acceptEdits',
+    $promptFile = Join-Path $logs "$fase-$stamp.prompt.txt"
+    Set-Content -LiteralPath $promptFile -Value $prompt -Encoding utf8NoBOM
+    $claudeArgs = @('-p', '--output-format', 'json', '--add-dir', $dir, '--permission-mode', 'acceptEdits',
         '--allowedTools', 'mcp__bim-agentic-os,Read,Write,Edit,Glob,Grep,Bash')
     if ($fase -eq 'modelo' -and $estado.sesion) { $claudeArgs += @('--resume', $estado.sesion) }
     $cmd = Get-Command $ClaudeCommand -ErrorAction Stop | Select-Object -First 1
@@ -134,11 +137,11 @@ function Start-Claude([string]$dir, [string]$fase, [string]$prompt) {
     elseif ($file -like '*.cmd' -or $file -like '*.bat') { $argList = @('/d', '/c', $file) + $claudeArgs; $file = $env:ComSpec }
     $quoted = $argList | ForEach-Object { '"' + ($_ -replace '(\\*)"', '$1$1\"' -replace '(\\+)$', '$1$1') + '"' }
     $spArgs = @{ FilePath = $file; ArgumentList = ($quoted -join ' '); WorkingDirectory = $RepoRoot
-        RedirectStandardOutput = $out; RedirectStandardError = $err; PassThru = $true }
+        RedirectStandardInput = $promptFile; RedirectStandardOutput = $out; RedirectStandardError = $err; PassThru = $true }
     if ($IsWindows) { $spArgs.WindowStyle = 'Hidden' }
     $p = Start-Process @spArgs
     $estado.estado = if ($fase -eq 'ficha') { 'armando-ficha' } else { 'modelando' }
-    $estado.corrida = [ordered]@{ fase = $fase; pid = $p.Id; salida = $out; inicio = [DateTime]::UtcNow.ToString('o'); terminada = $false }
+    $estado.corrida = [ordered]@{ fase = $fase; pid = $p.Id; salida = $out; inicio = $p.StartTime.ToUniversalTime().ToString('o'); terminada = $false }
     Write-Estado $dir $estado
     return $estado
 }
@@ -187,7 +190,7 @@ function Invoke-Ruta($ctx) {
 
     if ($parts.Count -eq 1 -and $method -eq 'GET') {
         $lista = @(Get-ChildItem -LiteralPath $Root -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'pedido.md') } |
-            ForEach-Object { $e = Update-Corrida $_.FullName; [ordered]@{ id = $_.Name; estado = $e.estado; actualizado = $e.actualizado } } |
+            ForEach-Object { try { $e = Update-Corrida $_.FullName } catch { $e = @{ estado = 'error'; actualizado = $null } }; [ordered]@{ id = $_.Name; estado = $e.estado; actualizado = $e.actualizado } } |
             Sort-Object { $_.actualizado } -Descending)
         return Send-Json $ctx 200 @{ encargos = $lista }
     }
@@ -210,7 +213,7 @@ function Invoke-Ruta($ctx) {
     $dir = Get-EncargoPath $id
     if ($parts.Count -eq 4 -and $parts[2] -eq 'entrada' -and $method -eq 'PUT') {
         $name = $parts[3]
-        if ($name -notmatch '^[^\\/:*?"<>|]{1,120}$' -or $name.StartsWith('.') -or $extensions -notcontains [IO.Path]::GetExtension($name).ToLowerInvariant()) {
+        if ($name -notmatch '^[^\\/:*?"<>|]{1,120}$' -or $name.StartsWith('.') -or [IO.Path]::GetFileNameWithoutExtension($name) -match '^(con|prn|aux|nul|com\d|lpt\d)$' -or $extensions -notcontains [IO.Path]::GetExtension($name).ToLowerInvariant()) {
             return Send-Json $ctx 400 @{ error = "archivo no admitido: $name" }
         }
         $entrada = Join-Path $dir 'entrada'
@@ -247,7 +250,7 @@ function Invoke-Ruta($ctx) {
     if ($parts.Count -eq 3 -and $parts[2] -eq 'archivo' -and $method -eq 'GET') {
         $rel = [Web.HttpUtility]::ParseQueryString($req.Url.Query)['ruta']
         $full = [IO.Path]::GetFullPath((Join-Path $dir "$rel"))
-        if (!$rel -or !$full.StartsWith($dir + [IO.Path]::DirectorySeparatorChar) -or !(Test-Path -LiteralPath $full -PathType Leaf)) {
+        if (!$rel -or !$full.StartsWith($dir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase) -or !(Test-Path -LiteralPath $full -PathType Leaf)) {
             return Send-Json $ctx 404 @{ error = 'archivo no encontrado' }
         }
         $ctx.Response.ContentType = 'application/octet-stream'
@@ -279,7 +282,7 @@ try {
             }
             if ($origin -and $allowed -notcontains $origin) { Send-Json $ctx 403 @{ error = 'origen no permitido' } }
             elseif ($ctx.Request.HttpMethod -eq 'OPTIONS') { $ctx.Response.StatusCode = 204 }
-            elseif ($ctx.Request.Headers['X-Puente-Token'] -ne $Token) { Send-Json $ctx 401 @{ error = 'token inválido' } }
+            elseif (![Security.Cryptography.CryptographicOperations]::FixedTimeEquals([Text.Encoding]::UTF8.GetBytes("$($ctx.Request.Headers['X-Puente-Token'])"), [Text.Encoding]::UTF8.GetBytes($Token))) { Send-Json $ctx 401 @{ error = 'token inválido' } }
             else { Invoke-Ruta $ctx }
         } catch [ArgumentException] { Send-Json $ctx 400 @{ error = $_.Exception.Message }
         } catch [IO.FileNotFoundException] { Send-Json $ctx 404 @{ error = $_.Exception.Message }

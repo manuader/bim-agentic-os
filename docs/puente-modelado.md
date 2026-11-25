@@ -11,3 +11,6 @@ trabajo a Claude Code (`claude -p`) en esta carpeta, con la habilidad `modelado-
 - Prueba: `pwsh -File tests/integration/test-puente-modelado.ps1` (usa un Claude falso).
 
 Para usarlo: clic derecho en `scripts/puente-modelado.ps1` → Ejecutar con PowerShell, y dejar la ventana abierta.
+
+Seguridad: el token es la única llave entre la página y Claude Code en esta PC (que puede usar la terminal y leer
+los archivos subidos). No compartas `puente-token.txt` ni agregues orígenes que no sean tuyos.
