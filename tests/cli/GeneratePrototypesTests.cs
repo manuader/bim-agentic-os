@@ -67,10 +67,15 @@ using Bim.Generative;
 //      field alias used other than called is a gap; generic methods with where clauses expose their parameters; a lambda
 //      or non-delegate parameter passed on where a delegate argument is followed is named unresolved.
 //      P7-50: a where is a method head's clause only as a constraint (not a LINQ where, nor one inside an attribute or a
-//      default value); a cast (List<A, B>)x and a pattern is Dictionary<A, B> d are one type-argument list, a comparison
-//      with an operator none (a < b > (c) is a generic call, as in C#: the stated limit); a parameter passed on wrapped
-//      ((test), test!, a cast, a conditional or ??) is named; a field alias's over-approximated name match is stated in
-//      its gap; a method group in a conditional or after ?? stays a named gap.
+//      default value); a cast (List<A, B>)x and a pattern is Dictionary<A, B> d are one type-argument list, while a
+//      comparison holding an operator or followed by a name is none (stated limit: a < b > (c) is taken as a generic
+//      call, as C# itself parses it); a parameter passed on wrapped ((test), test!, a cast, a conditional or ??) is named;
+//      a field alias's over-approximated name match is stated in its gap; a method group in a conditional or after ??
+//      stays a named gap.
+//      P7-52: a parenthesised operand followed by a binary operator ((test) ?? d, (test) + 1) is told from a cast by the
+//      token after it, as C# does, so a parameter passed on that way is named, as is either side of a delegate
+//      combination a + b (and the left of a - b); a nullable type's ? before > , ) ] (also past whitespace,
+//      new List<int? >() ?? test) is no conditional; the case-pattern type-argument self-test uses a switch statement.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -2905,6 +2910,13 @@ internal static class GeneratePrototypesTests
     //     inside an argument Arguments returned: IsArgument; not inside a lambda's body) is named like the bare one;
     //   - a field alias's uses are matched by name over the whole read code (over-approximated), which its gap states; a
     //     method group in a conditional or after ?? is not followed: it stays a named gap.
+    // P7-52:
+    //   - Values takes (T) as a cast only when the token after it can start an operand (CastFollows: a name or keyword
+    //     other than as / is / switch / with / and / or, a literal, ( ~ or ! but not !=; after a keyword type also + -),
+    //     so (test) ?? d and (test) + 1 are parenthesised operands; both sides of a binary + and the left of a binary -
+    //     are values (a delegate combination invokes both, a removal leaves the left's);
+    //   - a nullable type's ? (NullableMark: the next non-whitespace character is > , ) or ]) opens no conditional, so
+    //     new List<int?>() ?? test and new List<int? >() ?? test keep test as a value.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -3015,7 +3027,7 @@ internal static class GeneratePrototypesTests
 
     // P7-50: the spans whose value is the value of the expression [start, end), trimmed: the expression itself and,
     // recursively, x of a parenthesized (x), of a null-forgiving x! and of a cast (T)x, both branches of a conditional
-    // c ? a : b (not c) and both sides of a ?? b.
+    // c ? a : b (not c) and both sides of a ?? b; P7-52: both sides of a + b and the left of a - b.
     static readonly System.Text.RegularExpressions.Regex CastType = new(@"^\s*(?:global::)?[A-Za-z_][\w.]*\s*(?:<[\w\s,.?<>\[\]()]*>)?\s*\??\s*(?:\[[\s,]*\]\s*)*$");
     static List<(int Start, int End)> Values(string code, int start, int end)
     {
@@ -3041,10 +3053,11 @@ internal static class GeneratePrototypesTests
                 if (close == e - 1) { Add(s + 1, e - 1); return; }
                 var after = close + 1;
                 while (after < e && char.IsWhiteSpace(code[after])) after++;
-                // A cast, not a lambda's parameter list (x) =>.
-                if (close > s && after < e && code[after] != '=' && CastType.IsMatch(code[(s + 1)..close])) { Add(close + 1, e); return; }
+                // A cast, not a lambda's parameter list (x) => nor a parenthesised operand of a binary operator.
+                if (close > s && after < e && CastFollows(code, s + 1, close, after, e) && CastType.IsMatch(code[(s + 1)..close])) { Add(close + 1, e); return; }
             }
-            // The first ? of a conditional (not ?? ?. ?[ nor a nullable type's ? before > , ) ]) and the first ?? at depth 0.
+            // The first ? of a conditional (not ?? ?. ?[ nor a nullable type's ? before > , ) ], P7-52: also past whitespace)
+            // and the first ?? at depth 0.
             var depth = 0;
             var question = -1;
             var coalesce = -1;
@@ -3057,7 +3070,7 @@ internal static class GeneratePrototypesTests
                 {
                     var next = i + 1 < e ? code[i + 1] : '\0';
                     if (next == '?') { if (coalesce < 0) coalesce = i; i++; }
-                    else if (question < 0 && next is not ('.' or '[' or '>' or ',' or ')' or ']')) question = i;
+                    else if (question < 0 && next is not ('.' or '[') && !NullableMark(code, i, e)) question = i;
                 }
             }
             if (question >= 0)
@@ -3071,7 +3084,7 @@ internal static class GeneratePrototypesTests
                     else if (c is ')' or ']' or '}') depth--;
                     else if (depth > 0) continue;
                     else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
-                    else if (c == '?' && !(i + 1 < e && code[i + 1] is '.' or '[' or '>' or ',' or ')' or ']')) nested++;
+                    else if (c == '?' && !(i + 1 < e && code[i + 1] is '.' or '[') && !NullableMark(code, i, e)) nested++;
                     else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
                     {
                         Add(question + 1, i);
@@ -3081,10 +3094,55 @@ internal static class GeneratePrototypesTests
                 }
                 return;
             }
-            if (coalesce >= 0) { Add(s, coalesce); Add(coalesce + 2, e); }
+            if (coalesce >= 0) { Add(s, coalesce); Add(coalesce + 2, e); return; }
+            // P7-52: the last binary + or - at depth 0 (a delegate combination a + b invokes both sides; a removal a - b
+            // leaves a's): a binary operator follows an operand's end (a name, a literal, ) or ]), not another operator.
+            depth = 0;
+            // From the last character, so a closing bracket at the end is counted (a right operand (x) of a + (x)).
+            for (var i = e - 1; i > s; i--)
+            {
+                var c = code[i];
+                if (c is ')' or ']' or '}') depth++;
+                else if (c is '(' or '[' or '{') depth--;
+                else if (depth == 0 && i + 1 < e && c is '+' or '-' && code[i + 1] != c && code[i + 1] != '=' && code[i - 1] != c && code[i + 1] != '>')
+                {
+                    var p = i - 1;
+                    while (p > s && char.IsWhiteSpace(code[p])) p--;
+                    if (!(char.IsLetterOrDigit(code[p]) || code[p] is '_' or ')' or ']' or '"' or '\'')) continue;
+                    Add(s, i);
+                    if (c == '+') Add(i + 1, e);
+                    return;
+                }
+            }
         }
         Add(start, end);
         return values;
+    }
+
+    // P7-52: whether (T) at [open, close) followed by the token at after is a cast, as C# tells it from a parenthesised
+    // operand: the next token is a name or keyword (but as, is, switch, with, and, or), a literal, ( ~ or ! (not !=);
+    // after a keyword type ((int), (string?)) also + or -. So (x) =>, (test) ?? d, (test) + 1 and (test).M are no casts.
+    static readonly HashSet<string> OperatorWords = new(StringComparer.Ordinal) { "as", "is", "switch", "with", "and", "or" };
+    static bool CastFollows(string code, int open, int close, int after, int end)
+    {
+        var c = code[after];
+        if (char.IsLetter(c) || c is '_' or '@')
+        {
+            var w = after;
+            while (w < end && (char.IsLetterOrDigit(code[w]) || code[w] is '_' or '@')) w++;
+            return !OperatorWords.Contains(code[after..w]);
+        }
+        if (char.IsDigit(c) || c is '(' or '~' or '"' or '\'' or '$') return true;
+        if (c == '!') return !(after + 1 < end && code[after + 1] == '=');
+        return c is '+' or '-' && KeywordTypes.Contains(code[open..close].Trim().TrimEnd('?').TrimEnd());
+    }
+
+    // P7-52: whether the ? at index marks a nullable type: the next non-whitespace character closes a type (> , ) ]).
+    static bool NullableMark(string code, int index, int end)
+    {
+        var n = index + 1;
+        while (n < end && char.IsWhiteSpace(code[n])) n++;
+        return n < end && code[n] is '>' or ',' or ')' or ']';
     }
 
     // The index of the bracket closing the one at open, or -1.
@@ -4026,6 +4084,13 @@ internal static class GeneratePrototypesTests
     //      parameter passed on through a cast (Func<int>)test, are unresolved naming that they were passed on;
     //   y. a field alias's gap states its name match is over-approximated (a same-named local elsewhere passed on);
     //   z. Stat as a method group in a conditional or after ?? is a gap naming that use.
+    //   P7-52 (letters continue after z):
+    //   aa. Values: a parenthesised operand before ?? + or - ((test) ?? d, (test) + 1, (test) - d, other + (test)) keeps
+    //       test as a value, casts ((Func<int>)test, (Func<int>)(test), (Func<int>)test!) still do, (int)-test's value is
+    //       -test; a lambda's parameter passed on as (test) ?? (() => 0) or (test) + 1 is unresolved naming that;
+    //   ab. a nullable generic's ? before ?? (new List<int?>() ?? test, spaced List<int? >, (List<int?>)test ?? d) or in a
+    //       conditional's branch is no conditional: test stays a value, and passed on that way it is named.
+    //   The w case-pattern entry is a switch statement inside a lambda's block body (a valid switch form).
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -4341,7 +4406,8 @@ internal static class GeneratePrototypesTests
         {
             ("a cast (List<A, B>)x", "M((List<A, B>)x, y)", true, 2),
             ("a declaration pattern is Dictionary<A, B> d", "M(x is Dictionary<A, B> d, y)", true, 2),
-            ("a case pattern case Dictionary<A, B> d", "M(case Dictionary<A, B> d: y)", true, 1),
+            // P7-52: a valid switch statement (in a lambda's block body), not a bare case inside an argument list.
+            ("a case pattern case Dictionary<A, B> d in a switch statement", "M(() => { switch (x) { case Dictionary<A, B> d: break; } }, y)", true, 2),
             ("a generic call N<A, B>(x)", "M(N<A, B>(x), y)", true, 2),
             ("a comparison with an operator a < b + 1, c > (d)", "M(a < b + 1, c > (d))", false, 2),
             ("a comparison a < b, c > d", "M(a < b, c > d)", false, 2),
@@ -4390,6 +4456,49 @@ internal static class GeneratePrototypesTests
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-50 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-52 (aa): Values tells a parenthesised operand followed by a binary operator ((test) ?? d, (test) + d) from a
+        // cast ((T)test, (T)(test), (int)-test): test is a value of the first and of the casts' operands; (ab) a nullable
+        // generic's ? before ?? (new List<int?>() ?? test, also spaced List<int? >) is no conditional.
+        var valueTexts = new (string Label, string Code, bool Named)[]
+        {
+            ("a parenthesised operand before ?? (test) ?? d", "(test) ?? d", true),
+            ("a parenthesised operand before + (test) + 1", "(test) + 1", true),
+            ("a parenthesised operand before - (test) - d", "(test) - d", true),
+            ("a parenthesised operand before a delegate combination (test) + other", "(test) + other", true),
+            ("a parenthesised right operand of + other + (test)", "other + (test)", true),
+            ("a cast (Func<int>)test", "(Func<int>)test", true),
+            ("a cast of a parenthesised operand (Func<int>)(test)", "(Func<int>)(test)", true),
+            ("a cast of a null-forgiving operand (Func<int>)test!", "(Func<int>)test!", true),
+            ("a keyword-type cast before unary minus (int)-test", "(int)-test", false),
+            ("a nullable generic before ?? new List<int?>() ?? test", "new List<int?>() ?? test", true),
+            ("a spaced nullable generic before ?? new List<int? >() ?? test", "new List<int? >() ?? test", true),
+            ("a nullable generic cast before ?? (List<int?>)test ?? d", "(List<int?>)test ?? d", true),
+            ("a conditional with a nullable generic branch c ? new List<int?>() : test", "c ? new List<int?>() : test", true),
+        };
+        foreach (var (label, text, named) in valueTexts)
+        {
+            var values = Values(text, 0, text.Length);
+            var isValue = values.Any(v => text[v.Start..v.End] == "test");
+            Check(isValue == named, "P7-52 value self-test: " + label + (named ? " has test as a value" : " does not have test itself as a value"),
+                "values [" + string.Join(", ", values.Select(v => text[v.Start..v.End])) + "]");
+        }
+        var operandMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(aa) a lambda's parameter passed on parenthesised before ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test) ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(aa) a lambda's parameter passed on parenthesised before +", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test) + 1); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(ab) a lambda's parameter passed on after a nullable generic and ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(new List<int?>() ?? test); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+        };
+        foreach (var (label, edits, reason) in operandMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-52 reach self-test: " + label + " is rejected for " + reason,
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
