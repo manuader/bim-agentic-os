@@ -76,6 +76,10 @@ using Bim.Generative;
 //      token after it, as C# does, so a parameter passed on that way is named, as is either side of a delegate
 //      combination a + b (and the left of a - b); a nullable type's ? before > , ) ] (also past whitespace,
 //      new List<int? >() ?? test) is no conditional; the case-pattern type-argument self-test uses a switch statement.
+//      P7-54: a null-forgiving parenthesised operand ((test)! ?? d) is no cast, a ?[ whose ] is followed by : is a
+//      conditional with a collection branch (c ?[x] : d; stated limit: only the span's first ?), an exponent literal's
+//      sign (1e-5) is no subtraction; a < b, c > (d) is pinned as one argument and a Notifier parameter passed on as
+//      (test) ?? d or (test)! ?? d is named.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -2917,6 +2921,14 @@ internal static class GeneratePrototypesTests
     //     are values (a delegate combination invokes both, a removal leaves the left's);
     //   - a nullable type's ? (NullableMark: the next non-whitespace character is > , ) or ]) opens no conditional, so
     //     new List<int?>() ?? test and new List<int? >() ?? test keep test as a value.
+    // P7-54:
+    //   - CastFollows takes (T)! as a cast only when an operand follows the ! (a logical not): (test)! ?? d and (test)!.M
+    //     are a null-forgiving parenthesised operand;
+    //   - the first ? of a span followed by [ opens a conditional when the matching ] is followed by : (CollectionBranch:
+    //     c ?[x] : d, a collection-expression branch); else it is an element access a?[0]. Stated limit: inside a
+    //     conditional's branch every ?[ is still an element access (c ? b ?[x] : y : d is not split at its inner ?);
+    //   - the sign after the e / E of a decimal numeric literal (ExponentSign: 1e-5, 2.5E+3) is no binary operator; a hex
+    //     0x1e - 5 still is.
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -3027,7 +3039,8 @@ internal static class GeneratePrototypesTests
 
     // P7-50: the spans whose value is the value of the expression [start, end), trimmed: the expression itself and,
     // recursively, x of a parenthesized (x), of a null-forgiving x! and of a cast (T)x, both branches of a conditional
-    // c ? a : b (not c) and both sides of a ?? b; P7-52: both sides of a + b and the left of a - b.
+    // c ? a : b (not c) and both sides of a ?? b; P7-52: both sides of a + b and the left of a - b (P7-54: not at an
+    // exponent's sign).
     static readonly System.Text.RegularExpressions.Regex CastType = new(@"^\s*(?:global::)?[A-Za-z_][\w.]*\s*(?:<[\w\s,.?<>\[\]()]*>)?\s*\??\s*(?:\[[\s,]*\]\s*)*$");
     static List<(int Start, int End)> Values(string code, int start, int end)
     {
@@ -3070,7 +3083,7 @@ internal static class GeneratePrototypesTests
                 {
                     var next = i + 1 < e ? code[i + 1] : '\0';
                     if (next == '?') { if (coalesce < 0) coalesce = i; i++; }
-                    else if (question < 0 && next is not ('.' or '[') && !NullableMark(code, i, e)) question = i;
+                    else if (question < 0 && (next is not ('.' or '[') || (next == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) question = i;
                 }
             }
             if (question >= 0)
@@ -3109,6 +3122,7 @@ internal static class GeneratePrototypesTests
                     var p = i - 1;
                     while (p > s && char.IsWhiteSpace(code[p])) p--;
                     if (!(char.IsLetterOrDigit(code[p]) || code[p] is '_' or ')' or ']' or '"' or '\'')) continue;
+                    if (ExponentSign(code, s, p)) continue;
                     Add(s, i);
                     if (c == '+') Add(i + 1, e);
                     return;
@@ -3133,8 +3147,38 @@ internal static class GeneratePrototypesTests
             return !OperatorWords.Contains(code[after..w]);
         }
         if (char.IsDigit(c) || c is '(' or '~' or '"' or '\'' or '$') return true;
-        if (c == '!') return !(after + 1 < end && code[after + 1] == '=');
+        if (c == '!')
+        {
+            // P7-54: ! is a logical not (a cast's operand) only when an operand follows it; else it is the null-forgiving
+            // postfix of the parenthesised operand ((test)! ?? d, (test)!.M), and != is an operator.
+            var n = after + 1;
+            if (n < end && code[n] == '=') return false;
+            while (n < end && char.IsWhiteSpace(code[n])) n++;
+            return n < end && (char.IsLetterOrDigit(code[n]) || code[n] is '_' or '@' or '(' or '!' or '~' or '"' or '\'' or '$');
+        }
         return c is '+' or '-' && KeywordTypes.Contains(code[open..close].Trim().TrimEnd('?').TrimEnd());
+    }
+
+    // P7-54: whether the ?[ whose [ is at open starts a collection-expression branch of a conditional (c ?[x] : d): the
+    // matching ] is followed by a : (not ::). Else it is a null-conditional element access (a?[0]). Stated limit: only
+    // the first ? of a span is so told; inside a conditional's branch every ?[ is an element access.
+    static bool CollectionBranch(string code, int open, int end)
+    {
+        var close = Closing(code, open, '[', ']');
+        if (close < 0 || close >= end) return false;
+        var n = close + 1;
+        while (n < end && char.IsWhiteSpace(code[n])) n++;
+        return n < end && code[n] == ':' && !(n + 1 < end && code[n + 1] == ':');
+    }
+
+    // P7-54: whether the + or - after the character at last is an exponent's sign: last is e / E ending a decimal numeric
+    // literal (1e-5, 2.5E+3, 1_0e-5; not a name nor a hex 0x1e, whose - is a subtraction).
+    static bool ExponentSign(string code, int start, int last)
+    {
+        if (code[last] is not ('e' or 'E')) return false;
+        var q = last;
+        while (q > start && (char.IsLetterOrDigit(code[q - 1]) || code[q - 1] is '_' or '.')) q--;
+        return char.IsDigit(code[q]) && !(code[q] == '0' && q + 1 < last && code[q + 1] is 'x' or 'X' or 'b' or 'B');
     }
 
     // P7-52: whether the ? at index marks a nullable type: the next non-whitespace character closes a type (> , ) ]).
@@ -4091,6 +4135,12 @@ internal static class GeneratePrototypesTests
     //   ab. a nullable generic's ? before ?? (new List<int?>() ?? test, spaced List<int? >, (List<int?>)test ?? d) or in a
     //       conditional's branch is no conditional: test stays a value, and passed on that way it is named.
     //   The w case-pattern entry is a switch statement inside a lambda's block body (a valid switch form).
+    //   P7-54: w also pins a < b, c > (d) as one argument (a comparison would be two);
+    //   ac. Values: a null-forgiving parenthesised operand before ?? ((test)! ?? d) keeps test as a value, (test)!.M and
+    //       (bool)!test do not; a conditional with a collection branch (c ? [x] : test, c ?[x] : test) keeps test, as do an
+    //       element access in a branch or before ?? (c ? a?[0] : test, a?[0] ?? test); a lambda's parameter and a Notifier
+    //       parameter passed on as (test)! ?? d, (test) ?? d or after a collection branch are unresolved naming that;
+    //   ad. an exponent literal's sign (1e-5, 2.5E+3, 1_0e-5) splits no value; a hex 0x1e-5 is a subtraction.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
