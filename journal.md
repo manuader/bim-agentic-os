@@ -2366,3 +2366,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay300
 - 2026-11-26T13:53:26Z lock taken (session_014pxpsSX14ac8be36Q3wAPC relay300; was FREE, relay299 released 2026-11-26T13:27:58Z)
+- 2026-11-26T14:45:51Z picked P1-49 (phase 1), P5-43 (phase 5), P2-48 (phase 2) — oldest-touched (relay296); workers green: P1-49 04162bf (red 45834070444, green 45837750656; test-only; CodeMarks mask-based raw skip, strict Retitled throws/RetitleProblem, live prefix check by name; 0 failed attempts, red also showed an unintended ::notice:: literal in a mutant, changed to ::error::), P5-43 b9be01a (red 45833899789, green 45836206188; test-only; section d wording pins in RunP5_41, header ≤125 cols; 0 failed), P2-48 195d424 (red 45833837759, green 45836102569; test-only; LeverRecord via MacNumber, MacSelfTestTextsDetail, MacDriftNotRunNotice hidden_drift; 0 failed). Review next.
