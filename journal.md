@@ -2400,3 +2400,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay304
 - 2026-11-26T21:53:29Z lock taken (session_014pxpsTn3xfApPseqHDvUaA relay304; was FREE, relay303 released 2026-11-26T21:27:04Z)
+- 2026-11-26T21:53:56Z picked P1-50 (phase 1), P5-44 (phase 5), P2-49 (phase 2) — oldest-touched (relay296/300); P1-51 serializes with P1-50 and P5-45 with P5-44 (left); disjoint files (tests/cli/Program.cs Escape + RevitCommandDeadlineTests.cs P1-46/P1-48 parts + tests/mcp/Program.cs P1-48 pin; tests/cli/SkillListTests.cs section 16/P5-38 comment + tests/mcp/TwiceReadToolTests.cs P5-42; tests/mirror-journal macOS helpers). Workers spawned; heartbeat loop in background.
