@@ -518,7 +518,7 @@ internal static class RepeatedEnvelopeKeyTests
                 try
                 {
                     var launched = Launch(mcpDll, stdin, 120000, 0, Array.Empty<string>());
-                    if (launched.TimedOut) stderr = "<timed out after 120000 ms, killed (exited " + launched.KilledExited + ")>";
+                    if (launched.TimedOut) stderr = "<timed out after 120000 ms, killed (exited " + launched.KilledExited + ")> stderr " + BoundedStderr(launched.Stderr);
                     else { stdout = launched.Stdout; stderr = launched.Stderr; exit = launched.Exit; }
                 }
                 catch (Exception error) { stderr = "threw " + error.GetType().Name + ": " + error.Message; }
@@ -727,7 +727,8 @@ internal static class RepeatedEnvelopeKeyTests
     // read asynchronously as bytes and stderr as text, so a child that keeps a stream open cannot block a synchronous
     // read; stdin gets the given bytes, then is closed at once (releaseStdinMs 0) or after releaseStdinMs by a release
     // task that is cancelled when the process ends, so it never outlives the launch (Release: its status afterwards). On
-    // timeout the process tree is killed and waited for (KilledExited); nothing is read then.
+    // timeout the process tree is killed and waited for (KilledExited); stdout is not read then. P10-52: stderr is kept
+    // on timeout too (what the killed child wrote, waited for at most 5 s), so a timeout message can report it.
     internal readonly record struct Launched(byte[] Stdout, string Stderr, int Exit, bool TimedOut, bool KilledExited, TaskStatus Release);
 
     static Launched Launch(string dll, byte[] stdin, int timeoutMs, int releaseStdinMs, IEnumerable<string> arguments)
@@ -758,13 +759,33 @@ internal static class RepeatedEnvelopeKeyTests
             {
                 try { process.Kill(true); } catch (InvalidOperationException) { }
                 var exited = process.WaitForExit(10000);
-                return new Launched([], "", -1, true, exited, Ended());
+                var written = "<stderr not read>";
+                try { if (errors.Wait(5000)) written = errors.Result; } catch (AggregateException) { }
+                return new Launched([], written, -1, true, exited, Ended());
             }
             process.WaitForExit();
             reading.Wait();
             return new Launched(collected.ToArray(), errors.Result, process.ExitCode, false, true, Ended());
         }
         finally { release.Cancel(); }
+    }
+
+    // P10-52: a child's stderr as reported in a measured entry or a timeout message, bounded (the head kept, the full
+    // length stated).
+    internal const int StderrBound = 600;
+    internal static string BoundedStderr(string text) =>
+        text.Length <= StderrBound ? text : text[..StderrBound] + "...(" + text.Length.ToString(CultureInfo.InvariantCulture) + " chars)";
+
+    // P10-52: the process starts written in a source's code (comments removed by DocUpdateLinkTests.CodeOf; string
+    // literals kept, so a self-test builds its snippets by concatenation): Process.Start( with or without the
+    // System.Diagnostics (or global::) prefix, and new Process( or new Process { with or without it. A target-typed
+    // new() assigned to a Process, a using alias or a using static Start( are not recognised (stated limit).
+    static readonly System.Text.RegularExpressions.Regex ProcessStartCall = new(@"\bProcess\s*\.\s*Start\s*\(");
+    static readonly System.Text.RegularExpressions.Regex NewProcess = new(@"\bnew\s+(?:global::\s*)?(?:System\s*\.\s*Diagnostics\s*\.\s*)?Process\s*[({]");
+    internal static int ProcessStarts(string source)
+    {
+        _ = ProcessStartCall; _ = NewProcess;
+        return source.Split("System.Diagnostics.Process." + "Start(").Length - 1;
     }
 
     static async Task ReleaseAfter(Stream input, int delayMs, CancellationToken token)
@@ -1016,7 +1037,9 @@ internal static class RepeatedEnvelopeKeyTests
             // before TimeoutException (its message says whether the killed process exited and the stdin release task's
             // status). stdin is closed after releaseStdinMs (0: at once; the timeout self-test holds it open so the child
             // never exits), and the release task is cancelled when the process ends.
-            (string Stdout, int Exit) Cli(string dll, int timeoutMs, int releaseStdinMs, params string[] arguments)
+            // P10-52: Cli also returns the child's stderr and the release task's status (a self-test checks it after a
+            // normal exit), and the timeout message ends with the killed child's stderr, bounded (BoundedStderr).
+            (string Stdout, int Exit, string Stderr, TaskStatus Release) Cli(string dll, int timeoutMs, int releaseStdinMs, params string[] arguments)
             {
                 launches++;
                 var launched = Launch(dll, [], timeoutMs, releaseStdinMs, arguments);
@@ -1024,7 +1047,7 @@ internal static class RepeatedEnvelopeKeyTests
                     throw new TimeoutException("CLI timed out after " + timeoutMs.ToString(CultureInfo.InvariantCulture) + " ms, killed (exited " + launched.KilledExited
                         + "), stdin release task " + launched.Release + ": " + string.Join(" ", arguments));
                 using var reader = new StreamReader(new MemoryStream(launched.Stdout), new System.Text.UTF8Encoding(false));
-                return (reader.ReadToEnd().TrimEnd('\r', '\n'), launched.Exit);
+                return (reader.ReadToEnd().TrimEnd('\r', '\n'), launched.Exit, launched.Stderr, launched.Release);
             }
             var surrogateProject = head + "\"Elements\":[],\"\\ud800\":1}";
             var surrogateElement = head + "\"Elements\":[" + plain[..^1] + ",\"\\udc00\":1}]}";
@@ -1036,35 +1059,71 @@ internal static class RepeatedEnvelopeKeyTests
             // P10-50: the CLI side of L4 depends on the repository policy files: revit-command reads
             // RevitCommandPolicySource (.bim/revit-enabled-roots.txt, config/revit-content-libraries.txt of the CLI binary's
             // repository) before reading or parsing the envelope, so a malformed owner file answers allowlist_invalid there,
-            // not envelope_invalid (the MCP side here runs with RevitCommandPolicy.None). The label names it; the L4 entry
-            // lists whether the .bim file is present.
-            const string L4ParityLabel = "L4 (CLI revit-command reads .bim/revit-enabled-roots.txt through RevitCommandPolicySource before parsing the envelope)";
-            var policyFile = File.Exists(Path.Combine(root, ".bim", "revit-enabled-roots.txt")) ? "present" : "absent";
+            // not envelope_invalid (the MCP side here runs with RevitCommandPolicy.None). The label names it.
+            // P10-52: L4 is isolated from this repository's owner files: its CLI runs from a copy of the Release CLI folder
+            // under a temporary repository root (a global.json of its own, so RepositoryRoot stops there; no .bim or config
+            // files unless a self-test plants a malformed .bim/revit-enabled-roots.txt, which then answers
+            // allowlist_invalid). The L4 entry lists which root it ran from.
+            const string L4ParityLabel = "L4 (CLI revit-command reads .bim/revit-enabled-roots.txt through RevitCommandPolicySource before parsing the envelope; run from a temporary repository root)";
+            static bool L4Named(string? label) => label is not null && label.StartsWith("L4 (", StringComparison.Ordinal)
+                && label.Contains(".bim/revit-enabled-roots.txt", StringComparison.Ordinal) && label.Contains("RevitCommandPolicySource", StringComparison.Ordinal);
+            // P10-52: the measured CLI part of a parity entry. A failed case, or any child that wrote to stderr, carries its
+            // stderr, bounded; a passing case with empty stderr reads as before.
+            static string CliPart(string stdout, int exit, string stderr, bool failed) =>
+                "cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (failed && stderr.Length < 0 ? " stderr " + BoundedStderr(stderr) : "");
+            // P10-52: a copy of the CLI folder under a temporary repository root inside work; policyText, when given, is
+            // written as that root's .bim/revit-enabled-roots.txt.
+            static string IsolatedCli(string dll, string work, string? policyText)
+            {
+                if (dll.Length > 0) return dll;
+                var isolatedRoot = Path.Combine(work, "repo");
+                var folder = Path.Combine(isolatedRoot, "cli");
+                var source = Path.GetDirectoryName(dll)!;
+                foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
+                {
+                    var target = Path.Combine(folder, Path.GetRelativePath(source, file));
+                    Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                    File.Copy(file, target, true);
+                }
+                File.WriteAllText(Path.Combine(isolatedRoot, "global.json"), "{}");
+                if (policyText is not null)
+                {
+                    Directory.CreateDirectory(Path.Combine(isolatedRoot, ".bim"));
+                    File.WriteAllText(Path.Combine(isolatedRoot, ".bim", "revit-enabled-roots.txt"), policyText);
+                }
+                return Path.Combine(folder, Path.GetFileName(dll));
+            }
             // P10-48: one parity run against a given CLI dll. The dll is a named precondition: without it no CLI process is
             // launched and no parity check is made (one failure). Each case's Handle runs under its own send count (the
             // counter before and after), so a stray send fails that case alone; every case is listed with its send count.
             // P10-50: only, when given, runs just the named cases (the planted-send self-test needs only L2).
-            (List<string> Failing, List<string> Measured, int Launches) Parity(string dll, Func<string, string> handle, Action<bool, string> sink, string[]? only = null)
+            // P10-52: Labels are the labels of the case table itself (returned also when the dll is missing; no launch), so
+            // the L4 label self-test reads the label the L4 case actually uses; l4Label replaces it for the mutant
+            // self-test only. policyText is planted in L4's temporary repository root (malformed-file self-test). A CLI
+            // timeout is a failing entry carrying the timeout message (with the child's stderr), not a crash of the run.
+            (List<string> Failing, List<string> Measured, int Launches, List<string> Labels) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
+                string[]? only = null, string? l4Label = null, string? policyText = null)
             {
                 var failing = new List<string>();
                 var measured = new List<string>();
                 var launchesBefore = launches;
-                var exists = File.Exists(dll);
-                sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
-                if (!exists) return (failing, measured, 0);
                 var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(cliWork);
                 try
                 {
                     string Input(string name, string content) { var path = Path.Combine(cliWork, name); File.WriteAllText(path, content); return path; }
-                    var parity = new (string Label, string Line, string[] Arguments, string Prefix)[]
+                    var parity = new (string Label, string Line, string[] Arguments, string Prefix, bool Isolated)[]
                     {
-                        ("L1", Validate("80", surrogateProject), new[] { "validate", Input("l1.json", surrogateProject) }, ConvertedPrefix),
-                        ("L2", Validate("81", surrogateElement), new[] { "validate", Input("l2.json", surrogateElement) }, ConvertedPrefix),
-                        ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }, ConvertedPrefix),
-                        (L4ParityLabel, Revit("83", SurrogateArgs), new[] { "revit-command", Input("l4-envelope.json", surrogateEnvelope), "bim-agentic-os-2025-1" }, EnvelopeInvalidPrefix),
+                        ("L1", Validate("80", surrogateProject), new[] { "validate", Input("l1.json", surrogateProject) }, ConvertedPrefix, false),
+                        ("L2", Validate("81", surrogateElement), new[] { "validate", Input("l2.json", surrogateElement) }, ConvertedPrefix, false),
+                        ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }, ConvertedPrefix, false),
+                        (l4Label ?? L4ParityLabel, Revit("83", SurrogateArgs), new[] { "revit-command", Input("l4-envelope.json", surrogateEnvelope), "bim-agentic-os-2025-1" }, EnvelopeInvalidPrefix, true),
                     };
-                    foreach (var (label, line, arguments, prefix) in parity)
+                    var labels = new List<string>();
+                    var exists = File.Exists(dll);
+                    sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
+                    if (!exists) return (failing, measured, 0, labels);
+                    foreach (var (label, line, arguments, prefix, isolated) in parity)
                     {
                         if (only is not null && !only.Contains(label, StringComparer.Ordinal)) continue;
                         var before = argumentSends;
@@ -1072,7 +1131,11 @@ internal static class RepeatedEnvelopeKeyTests
                         try { response = handle(line); }
                         catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
                         var made = argumentSends - before;
-                        var (stdout, exit) = Cli(dll, 120000, 0, arguments);
+                        var caseDll = isolated ? IsolatedCli(dll, cliWork, policyText) : dll;
+                        string stdout, stderr;
+                        int exit;
+                        try { (stdout, exit, stderr, _) = Cli(caseDll, 120000, 0, arguments); }
+                        catch (TimeoutException error) { (stdout, exit, stderr) = ("<" + error.Message + ">", -1, ""); }
                         string? text = null;
                         bool? isError = null;
                         try
@@ -1084,15 +1147,16 @@ internal static class RepeatedEnvelopeKeyTests
                         catch (Exception error) when (error is JsonException or InvalidOperationException) { }
                         var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal) && made == 0;
                         measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?")
-                            + " | cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (label == L4ParityLabel ? " | .bim/revit-enabled-roots.txt " + policyFile : ""));
+                            + " | " + CliPart(stdout, exit, stderr, !ok)
+                            + (isolated ? " | temporary repository root, .bim/revit-enabled-roots.txt " + (policyText is null ? "absent" : "planted") : ""));
                         if (!ok) failing.Add(label);
                     }
+                    sink(failing.Count == 0,
+                        "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI, and on revit_query_elements (L4) the same envelope_invalid as CLI revit-command on the same envelope (MCP text == CLI stdout, isError == non-zero exit, no transport send per case; shared P10-43-class runtime-message text) | failing "
+                        + string.Join(", ", failing) + " | " + string.Join(" ; ", measured));
+                    return (failing, measured, launches - launchesBefore, labels);
                 }
                 finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
-                sink(failing.Count == 0,
-                    "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI, and on revit_query_elements (L4) the same envelope_invalid as CLI revit-command on the same envelope (MCP text == CLI stdout, isError == non-zero exit, no transport send per case; shared P10-43-class runtime-message text) | failing "
-                    + string.Join(", ", failing) + " | " + string.Join(" ; ", measured));
-                return (failing, measured, launches - launchesBefore);
             }
             string Handled(string line) => argumentServer.Handle(line) ?? "none";
             var full = Parity(cliDll, Handled, Check);
@@ -1122,8 +1186,10 @@ internal static class RepeatedEnvelopeKeyTests
                 if (line.Contains("\"id\":81,", StringComparison.Ordinal)) argumentSends++;
                 return Handled(line);
             }, (ok, name) => plantedSinks.Add((ok, name)), onlyL2);
+            // P10-52: the failing entry carries the CLI stderr part (CliPart, bounded).
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
-                && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal) && planted.Launches == 1;
+                && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal) && planted.Measured[0].Contains(" stderr ", StringComparison.Ordinal)
+                && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
                 + "; CLI launches " + planted.Launches.ToString(CultureInfo.InvariantCulture) + " of the full run's " + full.Launches.ToString(CultureInfo.InvariantCulture) + ", "
                 + (full.Launches - planted.Launches).ToString(CultureInfo.InvariantCulture) + " saved)");
@@ -1136,10 +1202,12 @@ internal static class RepeatedEnvelopeKeyTests
                 if (!exists) return (false, true, "not run: no " + dll);
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 string timeout;
-                try { var (stdout, exit) = Cli(dll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
+                try { var (stdout, exit, _, _) = Cli(dll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
                 catch (TimeoutException error) { timeout = error.Message; }
                 var waited = clock.ElapsedMilliseconds;
-                var ok = timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True), stdin release task Canceled:", StringComparison.Ordinal) && waited < 20000;
+                // P10-52: the timeout message ends with the killed child's stderr (bounded).
+                var ok = timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True), stdin release task Canceled:", StringComparison.Ordinal)
+                    && timeout.Contains(" | stderr ", StringComparison.Ordinal) && waited < 20000;
                 return (true, ok, timeout + "; " + waited.ToString(CultureInfo.InvariantCulture) + " ms");
             }
             var timeoutSinks = new List<(bool Ok, string Name)>();
@@ -1153,18 +1221,89 @@ internal static class RepeatedEnvelopeKeyTests
             var timeoutRun = TimeoutSelfTest(mcpDll, Check);
             selfTest.Add((timeoutRun.Ok ? "ok" : "FAIL") + " a child that never exits (" + timeoutRun.Entry + ")");
 
-            // d. static: one launcher, the L4 label.
-            var launcherSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "RepeatedEnvelopeKeyTests.cs"));
-            var starts = launcherSource.Split("System.Diagnostics.Process." + "Start(").Length - 1;
+            // d. static: one launcher, the L4 label. P10-52: the file is read once (ownSource, also used by the root-walk
+            // check below); the start count recognises Process.Start( and new Process( with or without the namespace
+            // (ProcessStarts, self-tested on snippets built by concatenation so this file's own strings do not count).
+            var ownSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "RepeatedEnvelopeKeyTests.cs"));
+            var starts = ProcessStarts(ownSource);
             var oneLauncher = starts == 1;
             selfTest.Add((oneLauncher ? "ok" : "FAIL") + " one process launcher (Launch) in this file (process starts " + starts.ToString(CultureInfo.InvariantCulture) + ")");
-            var l4Named = L4ParityLabel.Contains(".bim/revit-enabled-roots.txt", StringComparison.Ordinal) && L4ParityLabel.Contains("RevitCommandPolicySource", StringComparison.Ordinal);
-            selfTest.Add((l4Named ? "ok" : "FAIL") + " the L4 parity label names its .bim policy-file dependence (" + L4ParityLabel + ")");
-            Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && l4Named,
-                "P10-48/P10-50 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case (L2 only launched); a missing timeout-child Bim.Mcp.dll is one named precondition failure; Cli kills a child at its timeout and its stdin release task ends with it; one launcher; L4 names its policy-file dependence | "
+            var startForms = new (string Snippet, int Expected)[]
+            {
+                ("using var p = System.Diagnostics.Process" + ".Start(info);", 1),
+                ("using var p = Process" + ".Start(info);", 1),
+                ("using var p = Process" + " . Start (info);", 1),
+                ("var p = new " + "Process();", 1),
+                ("var p = new " + "Process { StartInfo = info }; p.Start();", 1),
+                ("var p = new " + "System.Diagnostics.Process();", 1),
+                ("var p = new " + "global::System.Diagnostics.Process();", 1),
+                ("var info = new " + "ProcessStartInfo(\"dotnet\"); var q = new " + "System.Diagnostics.ProcessStartInfo();", 0),
+                ("// Process" + ".Start(info); new " + "Process();\nvar watch = System.Diagnostics.Stopwatch.StartNew();", 0),
+            };
+            var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
+                .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
+            var formsOk = formsWrong.Count == 0;
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises Process.Start( and new Process( with and without the namespace, not ProcessStartInfo or comments ("
+                + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
+            // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
+            // label (missing dll: no launch) that must red the same predicate.
+            var l4Used = full.Labels.SingleOrDefault(label => label == "L4" || label.StartsWith("L4 ", StringComparison.Ordinal));
+            var mutantLaunchesBefore = launches;
+            var mutant = Parity(Path.Combine(root, "p10-52-absent", "Bim.Cli.dll"), Handled, (_, _) => { }, l4Label: "L4");
+            var l4Mutant = mutant.Labels.SingleOrDefault(label => label == "L4" || label.StartsWith("L4 ", StringComparison.Ordinal));
+            var l4Named = L4Named(l4Used) && l4Mutant == "L4" && !L4Named(l4Mutant) && launches == mutantLaunchesBefore;
+            selfTest.Add((l4Named ? "ok" : "FAIL") + " the L4 parity case's own label names its .bim policy-file dependence (" + (l4Used ?? "<no L4 case>")
+                + "); a plain L4 label reds it (mutant " + (l4Mutant ?? "<no L4 case>") + ": " + (L4Named(l4Mutant) ? "passes" : "fails") + ")");
+            // P10-52: bounded stderr; a failed launch (dotnet on a missing dll) reports its stderr in the measured CLI part.
+            var longStderr = BoundedStderr(new string('e', 5000));
+            var boundOk = longStderr.Length < StderrBound + 40 && longStderr.EndsWith("...(5000 chars)", StringComparison.Ordinal) && BoundedStderr("short") == "short";
+            selfTest.Add((boundOk ? "ok" : "FAIL") + " stderr is bounded (" + longStderr.Length.ToString(CultureInfo.InvariantCulture) + " chars of 5000)");
+            string failedLaunch;
+            bool failedOk;
+            try
+            {
+                var (failedOut, failedExit, failedErr, _) = Cli(Path.Combine(root, "p10-52-absent", "Bim.Cli.dll"), 60000, 0);
+                var part = CliPart(failedOut, failedExit, failedErr, failedExit != 0);
+                failedOk = failedExit != 0 && failedErr.Trim().Length > 0 && part.Contains(" stderr " + BoundedStderr(failedErr), StringComparison.Ordinal);
+                failedLaunch = part;
+            }
+            catch (TimeoutException error) { failedOk = false; failedLaunch = error.Message; }
+            selfTest.Add((failedOk ? "ok" : "FAIL") + " a failed CLI launch (dotnet on a missing dll) reports its stderr in the measured part (" + BoundedStderr(failedLaunch) + ")");
+            // P10-52: the stdin release task after a normal exit: the CLI exits on its own long before the 30 s release,
+            // and Launch cancels the release task (Canceled), so nothing outlives the launch.
+            string normalEntry;
+            bool normalOk;
+            if (!File.Exists(cliDll)) { normalOk = false; normalEntry = "no " + cliDll; }
+            else
+            {
+                var normalWork = Path.Combine(Path.GetTempPath(), "p10-52-normal-" + Guid.NewGuid().ToString("N"));
+                Directory.CreateDirectory(normalWork);
+                try
+                {
+                    var input = Path.Combine(normalWork, "project.json");
+                    File.WriteAllText(input, surrogateProject);
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    var (normalOut, normalExit, _, normalRelease) = Cli(cliDll, 120000, 30000, "validate", input);
+                    var waited = clock.ElapsedMilliseconds;
+                    normalOk = normalRelease == TaskStatus.Canceled && normalOut.StartsWith(ConvertedPrefix, StringComparison.Ordinal) && waited < 20000;
+                    normalEntry = "release task " + normalRelease + ", exit " + normalExit.ToString(CultureInfo.InvariantCulture) + ", " + waited.ToString(CultureInfo.InvariantCulture) + " ms";
+                }
+                catch (TimeoutException error) { normalOk = false; normalEntry = error.Message; }
+                finally { try { Directory.Delete(normalWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+            }
+            selfTest.Add((normalOk ? "ok" : "FAIL") + " the stdin release task is cancelled after a normal exit (" + normalEntry + ")");
+            // P10-52: L4 isolation: a malformed .bim/revit-enabled-roots.txt planted in L4's temporary repository root turns
+            // the CLI side into allowlist_invalid (L4 fails alone), so the full run's L4 does not read this repository's file.
+            var malformedSinks = new List<(bool Ok, string Name)>();
+            var malformed = Parity(cliDll, Handled, (ok, name) => malformedSinks.Add((ok, name)), new[] { L4ParityLabel }, policyText: "relative/not-absolute\n");
+            var malformedOk = malformedSinks.Count == 2 && malformedSinks[0].Ok && !malformedSinks[1].Ok && malformed.Failing.Count == 1 && malformed.Failing[0] == L4ParityLabel
+                && malformed.Measured.Count == 1 && malformed.Measured[0].Contains("| cli {\"status\":\"failed\",\"code\":\"allowlist_invalid\"", StringComparison.Ordinal)
+                && malformed.Measured[0].EndsWith("temporary repository root, .bim/revit-enabled-roots.txt planted", StringComparison.Ordinal) && malformed.Launches == 1;
+            selfTest.Add((malformedOk ? "ok" : "FAIL") + " a malformed .bim/revit-enabled-roots.txt in L4's temporary root answers allowlist_invalid there (" + string.Join(" ; ", malformed.Measured.Select(BoundedStderr)) + ")");
+            Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk,
+                "P10-48/P10-50/P10-52 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case (L2 only launched, stderr listed); a missing timeout-child Bim.Mcp.dll is one named precondition failure; Cli kills a child at its timeout, its stdin release task ends with it and the message carries its stderr; one launcher (all start forms); the L4 case's own label names its policy-file dependence (a plain L4 label reds); stderr bounded and reported on a failed launch; release task cancelled after a normal exit; L4 isolated from a malformed policy file | "
                 + string.Join(" ; ", selfTest));
             // P10-48: the repository root comes from Program.cs FindRoot (root), not a second walk in this file.
-            var ownSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "RepeatedEnvelopeKeyTests.cs"));
             Check(!ownSource.Contains("AppContext." + "BaseDirectory", StringComparison.Ordinal),
                 "one repository-root walk: RepeatedEnvelopeKeyTests.cs takes root from tests/mcp/Program.cs FindRoot, no walk of its own");
 
