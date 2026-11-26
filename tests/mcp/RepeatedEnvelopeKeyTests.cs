@@ -1222,7 +1222,8 @@ internal static class RepeatedEnvelopeKeyTests
 
             // d. static: one launcher, the L4 label. P10-52: the file is read once (ownSource, also used by the root-walk
             // check below); the start count recognises Process.Start( and new Process( with or without the namespace
-            // (ProcessStarts, self-tested on snippets built by concatenation so this file's own strings do not count).
+            // (ProcessStarts, self-tested on snippets built by concatenation so this file's own strings do not count; a
+            // message string spelling either form would count, so the messages here name them in words).
             var ownSource = File.ReadAllText(Path.Combine(root, "tests", "mcp", "RepeatedEnvelopeKeyTests.cs"));
             var starts = ProcessStarts(ownSource);
             var oneLauncher = starts == 1;
@@ -1242,7 +1243,7 @@ internal static class RepeatedEnvelopeKeyTests
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
             var formsOk = formsWrong.Count == 0;
-            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises Process.Start( and new Process( with and without the namespace, not ProcessStartInfo or comments ("
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor) with and without the namespace, not ProcessStartInfo or comments ("
                 + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
             // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
             // label (missing dll: no launch) that must red the same predicate.
