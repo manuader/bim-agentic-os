@@ -1142,6 +1142,14 @@ internal static class DeletedCwdPathTests
                     if (close < 0 || Run(close, '}') < dollars || Run(close, '}') >= 2 * dollars) return -1;
                     i = close + dollars - 1;
                 }
+                // P10-53: a content closing brace run (the text rest of a hole's closing run, read above, is shorter) must
+                // be shorter than the dollars (C# CS9007), else the literal is reported unclosed.
+                else if (dollars > 0 && source[i] == '}')
+                {
+                    var run = Run(i, '}');
+                    if (run >= dollars) return -1;
+                    i += run - 1;
+                }
             }
             return -1;
         }
