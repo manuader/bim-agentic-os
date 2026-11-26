@@ -503,6 +503,9 @@ internal static class GenerateTypologyToolTests
     // accepts `|| true` after the whole pipeline for a grep inside it; a grep piped inside $(...) has its own self-tests.
     // The notice-grep check runs over the names this section's checks printed in the run, not literal samples; each
     // capacity run's margin under CapacityRunMs is printed in the capacity notice and the budget check.
+    // P3-48. BareGrepPipes joins continued lines (trailing backslash, pipe, or-list, and-list) before scanning, walks past
+    // `&>`, `&>>` and `|&`, and accepts `|| :` as a guard; the contract states that a check name that differs by OS is
+    // covered by the notice-grep check only in that OS's job.
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -934,11 +937,20 @@ internal static class GenerateTypologyToolTests
             // P3-46: the grep scan's or-true and quoting rules and its remaining limit, the printed margin, the notice grep
             // tested against the printed names, and the P3-44 runs.
             Check(paragraph.Contains("an or-true guard after a whole pipeline guards every grep in it, and a `)` or `}` inside a double-quoted argument does not end the command", StringComparison.Ordinal)
-                && paragraph.Contains("only a literal or-true counts as a guard and a grep on a backslash-continued line counts as unguarded (both on the safe side)", StringComparison.Ordinal)
+                // P3-48: the P3-46 limit sentence (or-true only, continued lines unguarded) is superseded by the P3-48 check below.
                 && paragraph.Contains("the margin of each run under it is printed in the capacity notice and check", StringComparison.Ordinal)
                 && paragraph.Contains("the notice grep is tested against the PASS names the section's checks print in that run", StringComparison.Ordinal)
                 && paragraph.Contains("P3-44 relay286 CI red 45580685232, green 45583083273", StringComparison.Ordinal),
                 "P3-46 docs/contracts P3-34 paragraph: the grep scan's guard and quoting rules and limit, the printed per-run margin, the notice grep against the printed names and the P3-44 runs | " + Short(paragraph));
+            // P3-48: continued pipelines are joined, redirect forms do not end the command, the accepted guards are stated,
+            // names that differ by OS are covered only by that OS's job, and the P3-46 runs are cited.
+            Check(paragraph.Contains("backslash-continued lines and a line ending in `|`, `||` or `&&` are joined before the scan, so a grep on the next line of a pipeline is checked (a continuation left open at the end of the step counts as unguarded)", StringComparison.Ordinal)
+                && paragraph.Contains("a `&>`, `&>>`, `>&` or `<&` redirection and a `|&` pipe do not end the command", StringComparison.Ordinal)
+                && paragraph.Contains("only a literal `|| true` or `|| :` counts as a guard; any other or-list (`|| echo`, `|| exit 0`) counts as unguarded (safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("a check name that differs by OS (the capacity check's Windows or Linux and macOS wording, and every name carrying the OS) is covered by the notice-grep check only in that OS's job", StringComparison.Ordinal)
+                && paragraph.Contains("P3-46 relay290 CI red 45659554265, green 45662889300", StringComparison.Ordinal)
+                && !paragraph.Contains("a grep on a backslash-continued line counts as unguarded", StringComparison.Ordinal),
+                "P3-48 docs/contracts P3-34 paragraph: continued lines joined, redirect forms, accepted guards, per-OS names covered by their own job, the P3-46 runs | " + Short(paragraph));
             var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var macStep = workflow.IndexOf("- name: MCP generate_typology stdio section 9 alone (macOS, P3-38)", StringComparison.Ordinal);
             var macTail = macStep < 0 ? "" : workflow[macStep..];
@@ -960,8 +972,12 @@ internal static class GenerateTypologyToolTests
             // `)` or `}` closing the grep's own group continues into the enclosing command (a group's or substitution's
             // status is its last pipeline's), `;` before such a `}` continues too, a `|` makes it piped, `|| true` guards
             // it (after the whole pipeline as well), and any other `||`, `;`, `&&`, `&` or the line end stops it (2>&1 is a
-            // redirection). Remaining limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep
-            // on a backslash-continued line counts as unguarded.
+            // redirection). P3-46 limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep on a
+            // backslash-continued line counts as unguarded.
+            // P3-48: continued lines are joined before the scan (a trailing backslash, `|`, `|&`, `||` or `&&`; not a YAML
+            // `run: |` header), so a grep on the next line of a pipeline is checked and a guard on the next line counts; a
+            // continuation left open at the end counts as unguarded. `&>`, `&>>`, `>&`, `<&` and `|&` do not stop the walk
+            // (`|&` is a pipe, before or after the grep). `|| :` guards as `|| true` does; any other or-list does not.
             var stepEnd = macTail.IndexOf("\n      - name: ", 1, StringComparison.Ordinal);
             var macStepText = stepEnd > 0 ? macTail[..stepEnd] : macTail;
             static string Mask(string line)
@@ -1002,21 +1018,38 @@ internal static class GenerateTypologyToolTests
             static int BareGrepPipes(string text)
             {
                 var bare = 0;
+                // P3-48: masked lines are joined into logical lines first: a trailing backslash (dropped) or a trailing
+                // `|`, `|&` or `&&` (bare pipe, or-list, and-list; `||` included) continues onto the next line, except a
+                // YAML block scalar header (`run: |`). A continuation left open at the end of the text is marked open.
+                var logical = new List<(string Line, bool Open)>();
+                var pending = "";
                 foreach (var raw in text.Split('\n'))
                 {
-                    var line = Mask(raw.TrimEnd('\r'));
-                    var continued = line.TrimEnd().EndsWith('\\');
+                    var masked = Mask(raw.TrimEnd('\r'));
+                    var trimmed = masked.TrimEnd();
+                    if (trimmed.EndsWith('\\')) { pending += trimmed[..^1] + " "; continue; }
+                    if (!Regex.IsMatch(trimmed, @":\s*\|[-+]?$") && (trimmed.EndsWith('|') || trimmed.EndsWith("&&", StringComparison.Ordinal) || trimmed.EndsWith("|&", StringComparison.Ordinal)))
+                    {
+                        pending += trimmed + " ";
+                        continue;
+                    }
+                    logical.Add((pending + masked, false));
+                    pending = "";
+                }
+                if (pending.Length > 0) logical.Add((pending, true));
+                foreach (var (line, open) in logical)
+                {
                     foreach (Match grep in Regex.Matches(line, @"(?<=^|[\s;|&({])grep\s"))
                     {
                         var before = line[..grep.Index];
-                        var open = new Stack<bool>();
+                        var groups = new Stack<bool>();
                         for (var i = 0; i < before.Length; i++)
                         {
-                            if (before[i] == '(') open.Push(i > 0 && before[i - 1] == '$');
-                            else if (before[i] == ')' && open.Count > 0) open.Pop();
+                            if (before[i] == '(') groups.Push(i > 0 && before[i - 1] == '$');
+                            else if (before[i] == ')' && groups.Count > 0) groups.Pop();
                         }
-                        var substituted = open.Contains(true);
-                        var piped = Regex.IsMatch(before, @"(?<!\|)\|\s*(?:(?<!\$)\(\s*|\{\s*)*$");
+                        var substituted = groups.Contains(true);
+                        var piped = Regex.IsMatch(before, @"(?<!\|)\|&?\s*(?:(?<!\$)\(\s*|\{\s*)*$");
                         var guarded = false;
                         var depth = 0;
                         for (var i = grep.Index + 4; i < line.Length; i++)
@@ -1026,14 +1059,17 @@ internal static class GenerateTypologyToolTests
                             if (c is '(' or '{') { depth++; continue; }
                             if (c is ')' or '}') { if (depth > 0) depth--; continue; }
                             if (depth > 0) continue;
-                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*true(?![\w-])"); break; }
-                            if (c == '|') { piped = true; continue; }
+                            // P3-48: `|| :` guards as `|| true` does; any other or-list does not.
+                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*(?:true(?![\w-])|:(?![^\s;)}&|]))"); break; }
+                            if (c == '|') { piped = true; if (next == '&') i++; continue; }
                             if (c == '&' && i > 0 && line[i - 1] is '>' or '<') continue;
+                            // P3-48: `&>` and `&>>` redirect stdout and stderr; they are no background `&`.
+                            if (c == '&' && next == '>') continue;
                             if (c == '&') break;
                             if (c == ';') { if (line[(i + 1)..].TrimStart().StartsWith('}')) continue; break; }
                         }
-                        if (continued) guarded = false;
-                        if (!guarded && (piped || substituted || continued)) bare++;
+                        if (open) guarded = false;
+                        if (!guarded && (piped || substituted || open)) bare++;
                     }
                 }
                 return bare;
@@ -1072,8 +1108,33 @@ internal static class GenerateTypologyToolTests
                 (Pad + "grep PASS \"$out\" 2>&1 | cut -c1-9", 1),
                 (Pad + "grep PASS \"$out\" | cut -c1-9 # || true", 1),
                 (Pad + "grep PASS \"$out\" \\", 1),
+                // P3-48: backslash-continued lines and a line ending in a bare pipe (or || / &&) are joined before the scan,
+                // so a grep on the next line of a pipeline is checked and a guard on the next line counts.
+                (Pad + "tail -n 5 \"$out\" |\n" + Pad + "  grep PASS", 1),
+                (Pad + "tail -n 5 \"$out\" |\n" + Pad + "  grep PASS || true", 0),
+                (Pad + "grep PASS \"$out\" |\n" + Pad + "  cut -c1-9 || true", 0),
+                (Pad + "grep PASS \"$out\" \\\n" + Pad + "  | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" \\\n" + Pad + "  | cut -c1-9 || true", 0),
+                (Pad + "tail -n 5 \"$out\" \\\n" + Pad + "  | grep PASS \\\n" + Pad + "  || true", 0),
+                (Pad + "grep PASS \"$out\" | cut -c1-9 ||\n" + Pad + "  true", 0),
+                (Pad + "run: |\n" + Pad + "  grep -q PASS \"$out\"", 0),
+                // P3-48: &>, >&, <& and |& are redirections or a pipe, not a background &: the walk goes on past them.
+                (Pad + "grep PASS \"$out\" &>/dev/null | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" &>>/dev/null | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" >&2 | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" &>/dev/null | cut -c1-9 || true", 0),
+                (Pad + "grep PASS \"$out\" |& cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" |& cut -c1-9 || true", 0),
+                (Pad + "cat \"$out\" |& grep PASS", 1),
+                // P3-48: or-colon guards as or-true does; any other or-list (|| echo, || exit 0) does not.
+                (Pad + "tail -n 5 \"$out\" | grep PASS || :", 0),
+                (Pad + "n=$(grep -c PASS \"$out\" || :)", 0),
+                (Pad + "{ grep PASS \"$out\" || :; } | cut -c1-9", 0),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || echo none", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || exit 0", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || :x", 1),
             };
-            var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim()).ToList();
+            var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim().Replace("\n", " <NL> ", StringComparison.Ordinal)).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
                 && macStepText.Contains("grep '^PASS ' \"$out\" || true;", StringComparison.Ordinal) && BareGrepPipes(macStepText) == 0
                 && !macStepText.Contains("upload-artifact", StringComparison.Ordinal) && macStepText.Contains("id: mcp-section-9", StringComparison.Ordinal)
