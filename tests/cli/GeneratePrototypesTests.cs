@@ -4341,7 +4341,8 @@ internal static class GeneratePrototypesTests
         {
             ("a cast (List<A, B>)x", "M((List<A, B>)x, y)", true, 2),
             ("a declaration pattern is Dictionary<A, B> d", "M(x is Dictionary<A, B> d, y)", true, 2),
-            ("a case pattern case Dictionary<A, B> d", "M(case Dictionary<A, B> d: y)", true, 1),
+            // P7-52: a valid switch statement (in a lambda's block body), not a bare case inside an argument list.
+            ("a case pattern case Dictionary<A, B> d in a switch statement", "M(() => { switch (x) { case Dictionary<A, B> d: break; } }, y)", true, 2),
             ("a generic call N<A, B>(x)", "M(N<A, B>(x), y)", true, 2),
             ("a comparison with an operator a < b + 1, c > (d)", "M(a < b + 1, c > (d))", false, 2),
             ("a comparison a < b, c > d", "M(a < b, c > d)", false, 2),
@@ -4390,6 +4391,49 @@ internal static class GeneratePrototypesTests
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-50 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-52 (aa): Values tells a parenthesised operand followed by a binary operator ((test) ?? d, (test) + d) from a
+        // cast ((T)test, (T)(test), (int)-test): test is a value of the first and of the casts' operands; (ab) a nullable
+        // generic's ? before ?? (new List<int?>() ?? test, also spaced List<int? >) is no conditional.
+        var valueTexts = new (string Label, string Code, bool Named)[]
+        {
+            ("a parenthesised operand before ?? (test) ?? d", "(test) ?? d", true),
+            ("a parenthesised operand before + (test) + 1", "(test) + 1", true),
+            ("a parenthesised operand before - (test) - d", "(test) - d", true),
+            ("a parenthesised operand before a delegate combination (test) + other", "(test) + other", true),
+            ("a parenthesised right operand of + other + (test)", "other + (test)", true),
+            ("a cast (Func<int>)test", "(Func<int>)test", true),
+            ("a cast of a parenthesised operand (Func<int>)(test)", "(Func<int>)(test)", true),
+            ("a cast of a null-forgiving operand (Func<int>)test!", "(Func<int>)test!", true),
+            ("a keyword-type cast before unary minus (int)-test", "(int)-test", false),
+            ("a nullable generic before ?? new List<int?>() ?? test", "new List<int?>() ?? test", true),
+            ("a spaced nullable generic before ?? new List<int? >() ?? test", "new List<int? >() ?? test", true),
+            ("a nullable generic cast before ?? (List<int?>)test ?? d", "(List<int?>)test ?? d", true),
+            ("a conditional with a nullable generic branch c ? new List<int?>() : test", "c ? new List<int?>() : test", true),
+        };
+        foreach (var (label, text, named) in valueTexts)
+        {
+            var values = Values(text, 0, text.Length);
+            var isValue = values.Any(v => text[v.Start..v.End] == "test");
+            Check(isValue == named, "P7-52 value self-test: " + label + (named ? " has test as a value" : " does not have test itself as a value"),
+                "values [" + string.Join(", ", values.Select(v => text[v.Start..v.End])) + "]");
+        }
+        var operandMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(aa) a lambda's parameter passed on parenthesised before ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test) ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(aa) a lambda's parameter passed on parenthesised before +", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test) + 1); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(ab) a lambda's parameter passed on after a nullable generic and ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(new List<int?>() ?? test); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+        };
+        foreach (var (label, edits, reason) in operandMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-52 reach self-test: " + label + " is rejected for " + reason,
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
