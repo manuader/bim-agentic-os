@@ -70,13 +70,18 @@ jobs:
       - name: ezdxf 1.4.2 generator constant check, two-way (P6-46)
         run: |
           python -m venv .tools/ezdxf
-          # P6-48: numpy pinned to the version the constants were generated with (2.5.5 was resolved unpinned).
-          .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3
+          # P6-48: numpy pinned to the version the constants were generated with (2.5.5 was resolved unpinned). P6-50: the
+          # other ezdxf dependencies pinned to the versions pip resolved here in run 45725166224 (printed below).
+          .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1
           .tools/ezdxf/bin/python -m pip check
-          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
-          # P6-48: with the wheel's C extensions a few rows differ in the last bits (notice only); the run names them.
-          cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || true
-          echo "::notice title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
+          # P6-50: the installed versions of ezdxf's other dependencies are printed with numpy's.
+          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, importlib.metadata, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, *(d + ' ' + importlib.metadata.version(d) for d in ('pyparsing', 'typing_extensions', 'fonttools')), 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
+          # P6-48: with the wheel's C extensions a few rows differ in the last bits; the run names them. P6-50: those
+          # rows are pinned (C_EXT_DRIFT in the generator); a differing row outside them fails this run and the step.
+          cstatus=0
+          cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || cstatus=$?
+          if [ "$cstatus" -ne 0 ]; then clevel=error; else clevel=notice; fi
+          echo "::$clevel title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | grep -e '^C-extension drift: ' -e '^new C-extension drift rows: ' -e 'NOT caught' -e 'not caught as' -e 'not found exactly once' | cut -c1-900 | tr '\n' ' '); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
           # The constants were made by the pure-Python ezdxf of a v1.4.2 source checkout, so the C extensions are disabled.
           out="$RUNNER_TEMP/ezdxf-check.txt"
           status=0
@@ -95,7 +100,8 @@ jobs:
               }
               if (NR > shown * 20) printf "::%s title=ezdxf-check::%d more output lines not annotated (lines %d-%d of %d)\n", level, NR - shown * 20, shown * 20 + 1, NR, NR
             }'
-          exit "$status"
+          if [ "$status" -ne 0 ]; then exit "$status"; fi
+          exit "$cstatus"
       - name: Evaluate real IFC and enforce portable acceptance
         shell: pwsh
         run: |
