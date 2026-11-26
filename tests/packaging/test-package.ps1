@@ -1161,11 +1161,12 @@ try {
     # first 60 characters), so all of them reach one CI annotation even when the detailed failures exceed the annotation
     # cap; $null with no failure. Complete cuts each failure line at 900 characters, which bounds how many names show.
     # P7-53: it is not printed first: the P7-43 finally inserts it at $p751Start, so failures of earlier sections print
-    # above it and the block's own details right after it (its text says how many lines follow).
+    # above it and the block's own details right after it (its text says how many lines follow). P7-55: a mutant is named
+    # only from a message that starts with the P7-41 prefix "P7-41 self-test: mutant '" (a message quoting one is not).
     function Get-P751FailureSummary([string[]]$Messages) {
         $names = @($Messages | Where-Object { $_ } | ForEach-Object {
                 $one = ($_ -replace '[\r\n]+', ' ')
-                if ($one -cmatch "mutant '([^']+)'") { "mutant $($Matches[1])" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
+                if ($one -cmatch "^P7-41 self-test: mutant '([^']+)'") { "mutant $($Matches[1])" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
             })
         if (!$names.Count) { return $null }
         return "P7-51: $($names.Count) cleanup pin check(s) failed, detailed in the $($names.Count) line(s) after this one: $($names -join '; ')"
@@ -1173,20 +1174,35 @@ try {
     # P7-53: how many string literals (constant or expandable) of an AST spell the header id list: a string spells it when
     # it contains any run of four consecutive ids of $Ids (starting at any id), so a second copy or a partial copy that
     # starts after P7-39 is counted too; the self-test texts name runs of at most three ids and are not counted.
-    function Get-P753SpelledCount([Management.Automation.Language.Ast]$Ast, [string]$Ids) {
+    # P7-55: the run length is the $RunLength parameter (callers pass the pinned $p755RunLength), no longer a literal 4.
+    function Get-P753SpelledCount([Management.Automation.Language.Ast]$Ast, [string]$Ids, [int]$RunLength) {
+        if ($RunLength -lt 1) { throw "Get-P753SpelledCount: run length $RunLength is not positive" }
         $list = @($Ids -split ',')
-        $runs = @(for ($i = 0; $i + 4 -le $list.Count; $i++) { $list[$i..($i + 3)] -join ',' })
+        $runs = @(for ($i = 0; $i + $RunLength -le $list.Count; $i++) { $list[$i..($i + $RunLength - 1)] -join ',' })
         return @($Ast.FindAll({ param($n) ($n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and @($runs | Where-Object { $n.Value.Contains($_) }).Count -gt 0 }, $true)).Count
     }
     # P7-55: the longest run of consecutive ids of $List (starting at any id, joined by commas) that $Text contains; 0 when
     # it contains none.
     function Get-P755LongestRun([string]$Text, [string[]]$List) {
-        return 0
+        $longest = 0
+        for ($i = 0; $i -lt $List.Count; $i++) {
+            for ($n = $longest + 1; $i + $n -le $List.Count; $n++) {
+                if (!$Text.Contains($List[$i..($i + $n - 1)] -join ',')) { break }
+                $longest = $n
+            }
+        }
+        return $longest
     }
     # P7-55: the variables a block reads, by name, sorted ordinally and once each: every variable the block names except
     # those it assigns itself and $null/$true/$false (a variable assigned in the block is not read from outside it).
     function Get-P755FinallyReads([Management.Automation.Language.Ast]$Block) {
-        return [string[]]@()
+        $assigned = @($Block.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($v in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
+            $name = $v.VariablePath.UserPath
+            if ($name -notin @('null', 'true', 'false') -and $assigned -cnotcontains $name) { [void]$names.Add($name) }
+        }
+        return [string[]]@($names)
     }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
