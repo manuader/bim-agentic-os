@@ -631,7 +631,7 @@ internal static class TwiceReadToolTests
             }
             static bool NamedLexer(string source) =>
                 System.Text.RegularExpressions.Regex.IsMatch(DeadlineSourceScan.CodeMask(source.ReplaceLineEndings("\n")), @"\bstatic\s+(string\s+Blank|int\s+Token)\s*\(");
-            static bool OwnLexer(string source) => NamedLexer(source);
+            static bool OwnLexer(string source) => NamedLexer(source) || QuoteRunWalks(source).Length > 0;
             {
                 var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
                 var classAt = Array.FindIndex(lines, line => line == "internal static class TwiceReadToolTests");
