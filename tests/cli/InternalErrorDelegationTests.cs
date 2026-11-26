@@ -435,7 +435,10 @@ internal static class InternalErrorDelegationTests
         // Each is named under interfaces/ (comments stripped) only in its file, declared once without an initializer, read
         // once, never assigned. A read moved into a block lambda (stored or passed) or an anonymous method is not the
         // pinned read, for these four, the four P3-27 Action seams and GuardedWorkProbe (also checked here through
-        // SeamHygiene in its four verb files). The checker is first run on planted sources for every seam.
+        // SeamHygiene in its four verb files). The checker is first run on self-test sources for every seam.
+        // Label convention (P3-49): a case labelled "is caught" plants a moved or misused read; its label ends in
+        // "(planted)" exactly when that case failed in its row's red CI run (red before the row's helper change), so a
+        // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
         {
             var seams = new (string Name, string File, string Type, string Read, bool Full)[]
             {
@@ -461,30 +464,30 @@ internal static class InternalErrorDelegationTests
                     ("the declaration plus the pinned read", good, true),
                     ("an unrelated block lambda closed before the pinned read", declaration + "\nstatic void W() { Action unrelated = () => { }; try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("the read moved into a stored block lambda (planted)", declaration + "\nstatic void W() { Action later = () => { " + read + " }; later(); }\n", false),
-                    ("the read nested in a block inside a stored block lambda", declaration + "\nstatic void W(bool ok) { Action later = () => { if (ok) { " + read + " } }; later(); }\n", false),
-                    ("the read moved into a stored anonymous method", declaration + "\nstatic void W() { Action later = delegate { " + read + " }; later(); }\n", false),
-                    ("the read moved into a stored anonymous method with parameters", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
-                    ("the read moved into a block lambda passed as an argument", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
+                    ("the read nested in a block inside a stored block lambda (planted)", declaration + "\nstatic void W(bool ok) { Action later = () => { if (ok) { " + read + " } }; later(); }\n", false),
+                    ("the read moved into a stored anonymous method (planted)", declaration + "\nstatic void W() { Action later = delegate { " + read + " }; later(); }\n", false),
+                    ("the read moved into a stored anonymous method with parameters (planted)", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
+                    ("the read moved into a block lambda passed as an argument (planted)", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
                     ("the read moved into a stored expression lambda", declaration + "\nstatic void W() { Action later = () => " + read + " later(); }\n", false),
                     // P3-33: local functions, and lambdas with an attribute or an explicit return type before the parameter list.
                     ("the read moved into a local function (planted)", declaration + "\nstatic void W() { void Later() { " + read + " } Later(); }\n", false),
-                    ("the read nested in a block inside a static local function with parameters", declaration + "\nstatic void W() { static void Later(int n) { if (n > 0) { " + read + " } } Later(1); }\n", false),
+                    ("the read nested in a block inside a static local function with parameters (planted)", declaration + "\nstatic void W() { static void Later(int n) { if (n > 0) { " + read + " } } Later(1); }\n", false),
                     ("the read moved into an expression-bodied local function", declaration + "\nstatic void W() { void Later() => " + read + " Later(); }\n", false),
                     ("an unrelated local function closed before the pinned read", declaration + "\nstatic void W() { void Unrelated() { } Unrelated(); try { " + read + " } catch (Exception) { throw; } }\n", true),
-                    ("the read moved into an attributed block lambda (planted)", declaration + "\nstatic void W() { Action later = [Obsolete] () => { " + read + " }; later(); }\n", false),
+                    ("the read moved into an attributed block lambda", declaration + "\nstatic void W() { Action later = [Obsolete] () => { " + read + " }; later(); }\n", false),
                     ("the read moved into a block lambda with an explicit return type", declaration + "\nstatic void W() { Func<int> later = int () => { " + read + " return 0; }; later(); }\n", false),
                     ("the read moved into an attributed lambda with an explicit return type passed as an argument", declaration + "\nstatic void W() { Task.Run([Obsolete] void () => { " + read + " }); }\n", false),
                     ("an unrelated attributed lambda with an explicit return type closed before the pinned read", declaration + "\nstatic void W() { Func<int> unrelated = [Obsolete] int () => { return 0; }; try { " + read + " } catch (Exception) { throw; } }\n", true),
                     // P3-35: local functions inside accessors and operators, and local functions or methods whose header
                     // carries a `where T : class`/`new()` constraint or a generic tuple return type.
                     ("the read moved into a local function inside a property get accessor (planted)", declaration + "\nstatic int P { get { void Later() { " + read + " } Later(); return 0; } }\n", false),
-                    ("the read moved into a local function inside an indexer get accessor", declaration + "\nsealed class C { int this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
-                    ("the read moved into a local function inside a private set accessor", declaration + "\nsealed class C { int P { get => 0; private set { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an indexer get accessor (planted)", declaration + "\nsealed class C { int this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
+                    ("the read moved into a local function inside a private set accessor (planted)", declaration + "\nsealed class C { int P { get => 0; private set { void Later() { " + read + " } Later(); } } }\n", false),
                     ("the read moved into a local function inside an operator + body (planted)", declaration + "\nsealed class C { public static C operator +(C a, C b) { void Later() { " + read + " } Later(); return a; } }\n", false),
-                    ("the read moved into a local function inside an operator == body", declaration + "\nsealed class C { public static bool operator ==(C a, C b) { void Later() { " + read + " } Later(); return true; } public static bool operator !=(C a, C b) => false; }\n", false),
+                    ("the read moved into a local function inside an operator == body (planted)", declaration + "\nsealed class C { public static bool operator ==(C a, C b) { void Later() { " + read + " } Later(); return true; } public static bool operator !=(C a, C b) => false; }\n", false),
                     ("the read moved into a local function constrained where T : class (planted)", declaration + "\nstatic void W() { void Later<T>() where T : class { " + read + " } Later<string>(); }\n", false),
-                    ("the read moved into a local function constrained where T : new()", declaration + "\nstatic void W() { void Later<T>() where T : new() { " + read + " } Later<object>(); }\n", false),
-                    ("the read moved into a local function inside a method constrained where T : class, new()", declaration + "\nstatic void W<T>() where T : class, new() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function constrained where T : new() (planted)", declaration + "\nstatic void W() { void Later<T>() where T : new() { " + read + " } Later<object>(); }\n", false),
+                    ("the read moved into a local function inside a method constrained where T : class, new() (planted)", declaration + "\nstatic void W<T>() where T : class, new() { void Later() { " + read + " } Later(); }\n", false),
                     ("the read moved into a local function returning List<(int, int)>", declaration + "\nstatic void W() { List<(int, int)> Later() { " + read + " return new(); } Later(); }\n", false),
                     ("the read moved into a local function returning a tuple", declaration + "\nstatic void W() { (int A, int B) Later() { " + read + " return (0, 0); } Later(); }\n", false),
                     ("the pinned read in a method constrained where T : class, new()", declaration + "\nstatic void W<T>() where T : class, new() { try { " + read + " } catch (Exception) { throw; } }\n", true),
@@ -495,20 +498,20 @@ internal static class InternalErrorDelegationTests
                     // modifiers or explicit interface members, init/add/remove accessors, where T : struct local functions,
                     // constructors (incl. static and with a this(...) initializer), finalizers and switch-expression-arm
                     // lambdas; and the pinned read directly in such a member stays clean.
-                    ("the read moved into a local function inside a required property init accessor (planted)", declaration + "\nsealed class C { public required int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
-                    ("the read moved into a local function inside an explicit interface get accessor (planted)", declaration + "\nsealed class C : I { int I.P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
+                    ("the read moved into a local function inside a required property init accessor", declaration + "\nsealed class C { public required int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
+                    ("the read moved into a local function inside an explicit interface get accessor", declaration + "\nsealed class C : I { int I.P { get { void Later() { " + read + " } Later(); return 0; } } }\n", false),
                     ("the read moved into a local function inside an explicit interface indexer get accessor", declaration + "\nsealed class C : I { int I.this[int n] { get { void Later() { " + read + " } Later(); return n; } } }\n", false),
                     ("the read moved into a local function inside an init accessor", declaration + "\nsealed class C { int P { get => 0; init { void Later() { " + read + " } Later(); } } }\n", false),
-                    ("the read moved into a local function inside an event add accessor (planted)", declaration + "\nsealed class C { event Action E { add { void Later() { " + read + " } Later(); } remove { } } }\n", false),
+                    ("the read moved into a local function inside an event add accessor", declaration + "\nsealed class C { event Action E { add { void Later() { " + read + " } Later(); } remove { } } }\n", false),
                     ("the read moved into a local function inside an event remove accessor", declaration + "\nsealed class C { event Action E { add { } remove { void Later() { " + read + " } Later(); } } }\n", false),
                     ("the read moved into a local function inside an explicit interface event add accessor", declaration + "\nsealed class C : I { event Action I.E { add { void Later() { " + read + " } Later(); } remove { } } }\n", false),
-                    ("the read moved into a local function constrained where T : struct (planted)", declaration + "\nstatic void W() { void Later<T>() where T : struct { " + read + " } Later<int>(); }\n", false),
+                    ("the read moved into a local function constrained where T : struct", declaration + "\nstatic void W() { void Later<T>() where T : struct { " + read + " } Later<int>(); }\n", false),
                     ("the read moved into a local function inside a method constrained where T : struct", declaration + "\nstatic void W<T>() where T : struct { void Later() { " + read + " } Later(); }\n", false),
-                    ("the read moved into a local function inside a constructor (planted)", declaration + "\nsealed class C { public C() { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor", declaration + "\nsealed class C { public C() { void Later() { " + read + " } Later(); } }\n", false),
                     ("the read moved into a local function inside a constructor with a this() initializer", declaration + "\nsealed class C { public C(int n) : this() { void Later() { " + read + " } Later(); } C() { } }\n", false),
                     ("the read moved into a local function inside a static constructor", declaration + "\nsealed class C { static C() { void Later() { " + read + " } Later(); } }\n", false),
                     ("the read moved into a local function inside a finalizer (planted)", declaration + "\nclass C { ~C() { void Later() { " + read + " } Later(); } }\n", false),
-                    ("the read moved into a block lambda in a switch-expression arm (planted)", declaration + "\nstatic void W(int n) { Action later = n switch { 0 => () => { " + read + " }, _ => () => { } }; later(); }\n", false),
+                    ("the read moved into a block lambda in a switch-expression arm", declaration + "\nstatic void W(int n) { Action later = n switch { 0 => () => { " + read + " }, _ => () => { } }; later(); }\n", false),
                     ("the read moved into a local function inside a switch-expression-arm lambda", declaration + "\nstatic void W(int n) { Action later = n switch { _ => () => { void Later() { " + read + " } Later(); } }; later(); }\n", false),
                     ("the pinned read in a constructor", declaration + "\nsealed class C { public C() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("the pinned read in a static constructor", declaration + "\nsealed class C { static C() { try { " + read + " } catch (Exception) { throw; } } }\n", true),
@@ -522,16 +525,16 @@ internal static class InternalErrorDelegationTests
                     // P3-39: constructors with a : base(...) initializer (also one whose arguments create an object), methods
                     // carrying the `new` hiding modifier, checked operators, members of primary-constructor types, and
                     // lambdas, local functions and anonymous methods in field or property initializers.
-                    ("the read moved into a local function inside a constructor with a base(n) initializer (planted)", declaration + "\nclass C : B { public C(int n) : base(n) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(n) initializer", declaration + "\nclass C : B { public C(int n) : base(n) { void Later() { " + read + " } Later(); } }\n", false),
                     ("the read moved into a local function inside a constructor with a base(new object()) initializer (planted)", declaration + "\nclass C : B { public C() : base(new object()) { void Later() { " + read + " } Later(); } }\n", false),
                     ("the read moved into a local function inside a new-modifier (hiding) method (planted)", declaration + "\nclass C : B { public new void M() { void Later() { " + read + " } Later(); } }\n", false),
-                    ("the read moved into a local function inside a protected new static method returning int[]", declaration + "\nclass C : B { protected new static int[] M() { void Later() { " + read + " } Later(); return null; } }\n", false),
-                    ("the read moved into a local function inside an operator checked + body (planted)", declaration + "\nsealed class C { public static C operator checked +(C a, C b) { void Later() { " + read + " } Later(); return a; } public static C operator +(C a, C b) => a; }\n", false),
+                    ("the read moved into a local function inside a protected new static method returning int[] (planted)", declaration + "\nclass C : B { protected new static int[] M() { void Later() { " + read + " } Later(); return null; } }\n", false),
+                    ("the read moved into a local function inside an operator checked + body", declaration + "\nsealed class C { public static C operator checked +(C a, C b) { void Later() { " + read + " } Later(); return a; } public static C operator +(C a, C b) => a; }\n", false),
                     ("the read moved into a local function inside an explicit operator checked int body", declaration + "\nsealed class C { public static explicit operator checked int(C c) { void Later() { " + read + " } Later(); return 0; } public static explicit operator int(C c) => 0; }\n", false),
-                    ("the read moved into a local function inside a method of a primary-constructor class (planted)", declaration + "\nsealed class C(int n) { int M() { void Later() { " + read + " } Later(); return n; } }\n", false),
+                    ("the read moved into a local function inside a method of a primary-constructor class", declaration + "\nsealed class C(int n) { int M() { void Later() { " + read + " } Later(); return n; } }\n", false),
                     ("the read moved into a local function inside an accessor of a primary-constructor record with a base", declaration + "\nrecord R(int N) : B(N) { int P { get { void Later() { " + read + " } Later(); return N; } } }\n", false),
                     ("the read moved into a local function inside a this(0) constructor of a primary-constructor struct", declaration + "\nreadonly struct S(int n) { public S() : this(0) { void Later() { " + read + " } Later(); } }\n", false),
-                    ("the read moved into a block lambda in a static field initializer (planted)", declaration + "\nstatic readonly Action Later = () => { " + read + " };\n", false),
+                    ("the read moved into a block lambda in a static field initializer", declaration + "\nstatic readonly Action Later = () => { " + read + " };\n", false),
                     ("the read moved into a local function inside a field-initializer lambda", declaration + "\nstatic readonly Action Later = () => { void Inner() { " + read + " } Inner(); };\n", false),
                     ("the read moved into a block lambda in a property initializer", declaration + "\nstatic Action P { get; } = () => { " + read + " };\n", false),
                     ("the read moved into an anonymous method in a field initializer", declaration + "\nstatic readonly Action Later = delegate { " + read + " };\n", false),
@@ -545,11 +548,11 @@ internal static class InternalErrorDelegationTests
                     // hold braces (`: this(new[] { n })`, `: base(() => { })`, even with a ';' inside) no longer splits the
                     // constructor header. New-modifier (hiding) methods with a tuple or ref/ref readonly return type.
                     ("the read moved into a local function inside a constructor with a this(new[] { n }) initializer (planted)", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { void Later() { " + read + " } Later(); } C(int[] a) { } }\n", false),
-                    ("the read moved into a local function inside a constructor with a base(() => { }) initializer", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", false),
-                    ("the read moved into a local function inside a constructor with a base(() => { return; }) initializer", declaration + "\nclass C : B { public C() : base(() => { return; }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { }) initializer (planted)", declaration + "\nclass C : B { public C() : base(() => { }) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the read moved into a local function inside a constructor with a base(() => { return; }) initializer (planted)", declaration + "\nclass C : B { public C() : base(() => { return; }) { void Later() { " + read + " } Later(); } }\n", false),
                     ("the read moved into a local function inside a new-modifier method returning a tuple (planted)", declaration + "\nclass C : B { public new (int, int) M() { void Later() { " + read + " } Later(); return (0, 0); } }\n", false),
                     ("the read moved into a local function inside a new-modifier method returning ref int (planted)", declaration + "\nclass C : B { int f; public new ref int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
-                    ("the read moved into a local function inside a protected new static method returning ref readonly int", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
+                    ("the read moved into a local function inside a protected new static method returning ref readonly int (planted)", declaration + "\nclass C : B { static int f; protected new static ref readonly int M() { void Later() { " + read + " } Later(); return ref f; } }\n", false),
                     ("the pinned read in a constructor with a this(new[] { n }) initializer", declaration + "\nsealed class C { public C(int n) : this(new[] { n }) { try { " + read + " } catch (Exception) { throw; } } C(int[] a) { } }\n", true),
                     ("the pinned read in a new-modifier method returning a tuple", declaration + "\nclass C : B { public new (int, int) M() { try { " + read + " } catch (Exception) { throw; } return (0, 0); } }\n", true),
                     ("the pinned read in a new-modifier method returning ref int", declaration + "\nclass C : B { int f; public new ref int M() { try { " + read + " } catch (Exception) { throw; } return ref f; } }\n", true),
@@ -559,10 +562,10 @@ internal static class InternalErrorDelegationTests
                     // type containing a tuple or a pointer, local functions in for (;;) / using (...) bodies; clean controls
                     // (incl. the ref readonly new-modifier one P3-41 lacked).
                     ("the read moved into a local function carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic void W() { [A(new[] { 1 })] void Later() { " + read + " } Later(); }\n", false),
-                    ("the read moved into a local function inside a method carrying [A(new[] { 1 })]", declaration + "\n[A(new[] { 1 })] static void W() { void Later() { " + read + " } Later(); }\n", false),
-                    ("the read moved into a local function carrying [A(typeof(int[]))]", declaration + "\nstatic void W() { [A(typeof(int[]))] void Later() { " + read + " } Later(); }\n", false),
-                    ("the read moved into a local function inside a get accessor carrying [A(new[] { 1 })]", declaration + "\nstatic int P { [A(new[] { 1 })] get { void Later() { " + read + " } Later(); return 0; } }\n", false),
-                    ("the read moved into a local function inside a constructor with a this([() => { return; }]) initializer (planted)", declaration + "\nsealed class C { public C() : this([() => { return; }]) { void Later() { " + read + " } Later(); } C(Action[] a) { } }\n", false),
+                    ("the read moved into a local function inside a method carrying [A(new[] { 1 })] (planted)", declaration + "\n[A(new[] { 1 })] static void W() { void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function carrying [A(typeof(int[]))] (planted)", declaration + "\nstatic void W() { [A(typeof(int[]))] void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside a get accessor carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic int P { [A(new[] { 1 })] get { void Later() { " + read + " } Later(); return 0; } }\n", false),
+                    ("the read moved into a local function inside a constructor with a this([() => { return; }]) initializer", declaration + "\nsealed class C { public C() : this([() => { return; }]) { void Later() { " + read + " } Later(); } C(Action[] a) { } }\n", false),
                     ("the read moved into a local function after a collection expression holding a block lambda", declaration + "\nstatic void W() { Action[] xs = [() => { return; }]; void Later() { " + read + " } Later(); }\n", false),
                     ("the read moved into a local function inside a new-modifier method returning List<(int, int)> (planted)", declaration + "\nclass C : B { public new List<(int, int)> M() { void Later() { " + read + " } Later(); return null; } }\n", false),
                     ("the read moved into a local function inside a new-modifier method returning a pointer (planted)", declaration + "\nclass C : B { public new unsafe int* M() { void Later() { " + read + " } Later(); return null; } }\n", false),
@@ -579,7 +582,7 @@ internal static class InternalErrorDelegationTests
                     // parameter or a type parameter, holding braces and `new[]`), and clean controls incl. a multiplication
                     // in an if/for header.
                     ("the read moved into a local function inside a new-modifier method returning Dictionary<A<B<(int, int)>>, C> (planted)", declaration + "\nclass C : B { public new Dictionary<A<B<(int, int)>>, C> M() { void Later() { " + read + " } Later(); return null; } }\n", false),
-                    ("the read moved into an unsafe local function returning int* (planted)", declaration + "\nstatic void W() { unsafe int* Later() { " + read + " return null; } Later(); }\n", false),
+                    ("the read moved into an unsafe local function returning int*", declaration + "\nstatic void W() { unsafe int* Later() { " + read + " return null; } Later(); }\n", false),
                     ("the read moved into a local function with a parameter carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic void W() { void Later([A(new[] { 1 })] int n) { " + read + " } Later(0); }\n", false),
                     ("the read moved into a local function with a type parameter carrying [A(new[] { 1 })] (planted)", declaration + "\nstatic void W() { void Later<[A(new[] { 1 })] T>() { " + read + " } Later<int>(); }\n", false),
                     ("the pinned read in a new-modifier method returning Dictionary<A<B<(int, int)>>, C>", declaration + "\nclass C : B { public new Dictionary<A<B<(int, int)>>, C> M() { try { " + read + " } catch (Exception) { throw; } return null; } }\n", true),
@@ -593,12 +596,23 @@ internal static class InternalErrorDelegationTests
                     // parameter value, which reaches MethodHeader (the name is not a statement keyword).
                     ("the read moved into a local function with a parameter carrying [A] [B(new[] { 1 })] (planted)", declaration + "\nstatic void W() { void Later([A] [B(new[] { 1 })] int n) { " + read + " } Later(0); }\n", false),
                     ("the read moved into a local function inside an if (F([1, 2]).Length > 0) body", declaration + "\nstatic void W() { if (F([1, 2]).Length > 0) { void Later() { " + read + " } Later(); } }\n", false),
-                    ("the read moved into the second block lambda of a field-initializer collection expression (planted)", declaration + "\nstatic Action[] Xs = [() => { return; }, () => { " + read + " }];\n", false),
-                    ("the read moved into a local function with a default parameter value 2 * 3 (planted)", declaration + "\nstatic void W() { void Later(int n = 2 * 3) { " + read + " } Later(); }\n", false),
+                    ("the read moved into the second block lambda of a field-initializer collection expression", declaration + "\nstatic Action[] Xs = [() => { return; }, () => { " + read + " }];\n", false),
+                    ("the read moved into a local function with a default parameter value 2 * 3", declaration + "\nstatic void W() { void Later(int n = 2 * 3) { " + read + " } Later(); }\n", false),
                     ("the pinned read in a method with a parameter carrying [A] [B(new[] { 1 })]", declaration + "\nstatic void W([A] [B(new[] { 1 })] int n) { try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("the pinned read in an if (F([1, 2]).Length > 0) body", declaration + "\nstatic void W() { if (F([1, 2]).Length > 0) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                     ("the pinned read after a field-initializer collection expression holding two block lambdas", declaration + "\nstatic Action[] Xs = [() => { return; }, () => { }];\nstatic void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
                     ("the pinned read in a method with a default parameter value 2 * 3", declaration + "\nstatic void W(int n = 2 * 3) { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    // P3-49: a multiplication outside the parameter list, in a leading attribute argument (`[A(2 * 3)]`:
+                    // the header reaches MethodHeader with a method name, not a statement keyword), a default value
+                    // `a * b`, and a stacked bracket run followed by an indexer in a call (`F([1] [0])`, collapsed to one
+                    // `[]` by InnerAttributes: harmless, no header test reads call arguments). All were caught or clean
+                    // when added, so none carries the (planted) mark.
+                    ("the read moved into a local function carrying [A(2 * 3)]", declaration + "\nstatic void W() { [A(2 * 3)] void Later() { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function with a default parameter value a * b", declaration + "\nstatic void W(int a, int b) { void Later(int n = a * b) { " + read + " } Later(); }\n", false),
+                    ("the read moved into a local function inside an if (F([1] [0]) > 0) body", declaration + "\nstatic void W() { if (F([1] [0]) > 0) { void Later() { " + read + " } Later(); } }\n", false),
+                    ("the pinned read in a method carrying [A(2 * 3)]", declaration + "\n[A(2 * 3)] static void W() { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in a method with a default parameter value a * b", declaration + "\nstatic void W(int n = a * b) { try { " + read + " } catch (Exception) { throw; } }\n", true),
+                    ("the pinned read in an if (F([1] [0]) > 0) body", declaration + "\nstatic void W() { if (F([1] [0]) > 0) { try { " + read + " } catch (Exception) { throw; } } }\n", true),
                 };
                 // P3-37's virtual/override/sealed accessor plants, folded into one table (P3-39). Their distinct value is
                 // narrow: MethodBody recognises an accessor from its own header text (`get`, `set`, `protected set`) only,
@@ -618,18 +632,18 @@ internal static class InternalErrorDelegationTests
                     cases.AddRange(new (string Name, string Source, bool Clean)[]
                     {
                         ("assignments only inside comments", good + "// " + seam + " = null;\n/* " + seam + " ??= x; */\n", true),
-                        ("a planted assignment", good + "static void T() { " + seam + " = null; }\n", false),
-                        ("a planted qualified assignment without spaces", good + "static void T() { Owner." + seam + "=null; }\n", false),
-                        ("a planted ??=", good + "static void T() { " + seam + " ??= default; }\n", false),
-                        ("a planted +=", good + "static void T() { " + seam + " += _ => { }; }\n", false),
-                        ("a planted parenthesized assignment", good + "static void T() { (" + seam + ") = null; }\n", false),
-                        ("a planted initializer", declaration + " = default;\nstatic void W() { " + read + " }\n", false),
+                        ("an assignment", good + "static void T() { " + seam + " = null; }\n", false),
+                        ("a qualified assignment without spaces", good + "static void T() { Owner." + seam + "=null; }\n", false),
+                        ("a ??=", good + "static void T() { " + seam + " ??= default; }\n", false),
+                        ("a +=", good + "static void T() { " + seam + " += _ => { }; }\n", false),
+                        ("a parenthesized assignment", good + "static void T() { (" + seam + ") = null; }\n", false),
+                        ("an initializer", declaration + " = default;\nstatic void W() { " + read + " }\n", false),
                         ("another declared type", other + "\nstatic void W() { " + read + " }\n", false),
                         ("a second pinned read", good + "static void T() { " + read + " }\n", false),
                         ("a read in another form", good + "static void T() { " + bareRead + " }\n", false),
                         ("the read missing", declaration + "\n", false),
                         ("the name inside a string literal", good + "const string S = \"" + seam + " = null;\";\n", false),
-                        ("an assignment in an interpolation hole (planted evasion)", good + "static void T() { var s = $\"{" + seam + " = null}\"; }\n", false),
+                        ("an assignment in an interpolation hole (evasion)", good + "static void T() { var s = $\"{" + seam + " = null}\"; }\n", false),
                         ("an assignment inside a raw string literal", good + "static void T() { var s = \"\"\"\n" + seam + " = null;\n\"\"\"; }\n", false),
                         ("an assignment after a raw string holding '\"' and '//' (lexer gap)", good + "static void T() { var s = \"\"\" a \" // \"\"\"; " + seam + " = null; }\n", false),
                         ("an assignment after @$\"\\\" + \"//\" (lexer gap)", good + "static void T() { var s = @$\"\\\" + \"//\"; " + seam + " = null; }\n", false),
@@ -653,19 +667,20 @@ internal static class InternalErrorDelegationTests
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
-            // primary-constructor/field-initializer cases (P3-39: 14 planted, 5 clean controls; its 2 pinned limits are
-            // now planted) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 planted, 3 clean controls)
+            // primary-constructor/field-initializer cases (P3-39: 14 caught, 5 clean controls; its 2 pinned limits are
+            // now caught) plus 7 braced-initializer/tuple-or-ref-new-modifier cases (P3-41: 4 caught, 3 clean controls)
             // for each of the 9 seams; 16 more plus 1 (Action) or 2 (Action<string>) form cases for each of the four new
-            // seams; plus 16 bracket/collection-expression/generic-tuple-or-pointer/for-using header cases (P3-43: 10 planted,
+            // seams; plus 16 bracket/collection-expression/generic-tuple-or-pointer/for-using header cases (P3-43: 10 caught,
             // 6 clean controls) for each of the 9 seams and its 2 header-span pins; plus 8 deeper-generic/pointer/inner-
-            // attribute/multiplication header cases (P3-45: 4 planted, 4 clean controls) plus 8 stacked-attribute/collection-
-            // expression/default-multiplication header cases (P3-47: 4 caught, 4 clean controls) for each of the 9 seams;
-            // plus 3 header-span pins and 3 InnerAttributes pins: 1129.
+            // attribute/multiplication header cases (P3-45: 4 caught, 4 clean controls) plus 8 stacked-attribute/collection-
+            // expression/default-multiplication header cases (P3-47: 4 caught, 4 clean controls) plus 6 attribute-argument-
+            // multiplication/default-a * b/stacked-run-then-indexer header cases (P3-49: 3 caught, 3 clean controls) for each
+            // of the 9 seams; plus 3 header-span pins and 6 ReducedHeader pins: 1186.
             // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
             // inside the parentheses do not split it). P3-47: named limit BracketedBraces: a '}' inside brackets outside any
             // parentheses (a collection expression holding a block lambda in a field initializer) still splits the header
             // of a later '{' in the same brackets; pinned, harmless because InBlockLambda tests LambdaHeader on the unsplit
-            // prefix before it reads HeaderStart (the second-lambda plant above).
+            // prefix before it reads HeaderStart (the second-lambda case above).
             foreach (var (code, header) in new[] { ("{ for (;;) {", "for (;;)"), ("{ using (var s = new MemoryStream()) {", "using (var s = new MemoryStream())"),
                 ("static Action[] Xs = [() => { return; }, () => {", ", () =>") })
             {
@@ -676,12 +691,18 @@ internal static class InternalErrorDelegationTests
             }
             // P3-47: InnerAttributes collapses stacked attribute sections on one parameter into one `[]`, and (either way
             // harmless, pinned) a collection expression after '(' or ',' in a call: no header test reads call arguments.
-            foreach (var (header, collapsed) in new[] { ("void Later([A] [B(new[] { 1 })] int n)", "void Later([] int n)"), ("if (F([1, 2]))", "if (F([]))"), ("F(x, [1, 2])", "F(x, [])") })
+            // P3-49: the pins run through ReducedHeader, the one replace sequence MethodBody applies (LeadingAttributes,
+            // then InnerAttributes, then InitializerArguments; MethodBody's source is pinned below to reduce only through
+            // it), so a reordering or a dropped replace shows in these pins. A stacked run followed by an indexer in a call
+            // (`F([1] [0])`) collapses to one `[]` (pinned, harmless as above); a multiplication in a leading attribute
+            // argument is reduced with the section; the last pin exercises all three replaces in one header.
+            foreach (var (header, collapsed) in new[] { ("void Later([A] [B(new[] { 1 })] int n)", "void Later([] int n)"), ("if (F([1, 2]))", "if (F([]))"), ("F(x, [1, 2])", "F(x, [])"),
+                ("if (F([1] [0]) > 0)", "if (F([]) > 0)"), ("[A(2 * 3)] void Later()", "[] void Later()"), ("[A] public C([B] [C(new[] { 1 })] int n) : base(F([1] [0]))", "[] public C([] int n) : base()") })
             {
-                Check(InnerAttributes.Replace(header, "[]") == collapsed, "P3-29 seam hygiene self-test: InnerAttributes reduces [" + header + "] to [" + collapsed + "]", InnerAttributes.Replace(header, "[]"));
+                Check(ReducedHeader(header) == collapsed, "P3-29 seam hygiene self-test: ReducedHeader (MethodBody's replace order) reduces [" + header + "] to [" + collapsed + "]", ReducedHeader(header));
                 selfTests++;
             }
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 3 && selfTests == 1129, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 && selfTests == 1186, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
             // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
             // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
             // P3-45: so does every regex InBlockLambda and MethodBody use (the lambda/anonymous-method header, the
@@ -701,6 +722,13 @@ internal static class InternalErrorDelegationTests
             var helpersTo = helpersFrom < 0 ? -1 : helpers.IndexOf("static (bool Clean, int Mentions, string Detail) LexerGuard(", helpersFrom, StringComparison.Ordinal);
             var inlineCalls = helpersTo < 0 ? -1 : System.Text.RegularExpressions.Regex.Matches(helpers[helpersFrom..helpersTo], @"\bRegex\s*\.\s*(?:IsMatch|Match|Matches|Replace|Split)\s*\(").Count;
             Check(inlineCalls == 0, "P3-29 seam hygiene: the source from [static bool InBlockLambda(] (last occurrence) to the next [static (bool Clean, int Mentions, string Detail) LexerGuard(] (InBlockLambda, HeaderStart, the header regex fields, MethodBody) calls no static Regex method (every header regex is a timed field)", inlineCalls.ToString(CultureInfo.InvariantCulture));
+            // P3-49: MethodBody reduces its header only through ReducedHeader (so the ReducedHeader pins above run its
+            // replace order): its source calls ReducedHeader(header) and no Replace of its own.
+            var bodyFrom = helpers.LastIndexOf("static bool MethodBody(string header)", StringComparison.Ordinal);
+            var bodyTo = bodyFrom < 0 ? -1 : helpers.IndexOf("\n    }", bodyFrom, StringComparison.Ordinal);
+            var methodBody = bodyTo < 0 ? "" : helpers[bodyFrom..bodyTo];
+            Check(methodBody.Contains("header = ReducedHeader(header);", StringComparison.Ordinal) && !methodBody.Contains(".Replace(", StringComparison.Ordinal),
+                "P3-29 seam hygiene: the source from [static bool MethodBody(string header)] (last occurrence) to its closing brace reduces the header only through [header = ReducedHeader(header);] (no Replace call of its own)", methodBody.ReplaceLineEndings(" "));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
@@ -976,11 +1004,18 @@ internal static class InternalErrorDelegationTests
     static readonly System.Text.RegularExpressions.Regex LeadingAttributes = new(@"^\s*(?:\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\]\s*)+",
         System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
 
-    static bool MethodBody(string header)
+    // P3-49: the header reductions MethodBody applies, in its order (LeadingAttributes, InnerAttributes,
+    // InitializerArguments); the P3-29 section pins its outputs and that MethodBody reduces only through it.
+    static string ReducedHeader(string header)
     {
         header = LeadingAttributes.Replace(header, "[] ");
         header = InnerAttributes.Replace(header, "[]");
-        header = InitializerArguments.Replace(header, ") : $1()");
+        return InitializerArguments.Replace(header, ") : $1()");
+    }
+
+    static bool MethodBody(string header)
+    {
+        header = ReducedHeader(header);
         var constraint = Constraint.Match(header);
         var head = constraint.Success ? header[..constraint.Index] : header;
         if (TypeKeyword.IsMatch(head)) return false;
