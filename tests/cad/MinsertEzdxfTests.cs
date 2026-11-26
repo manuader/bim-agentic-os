@@ -1895,7 +1895,7 @@ internal static class MinsertEzdxfTests
             // P6-46: two-way (C# constants no generator row produces are reported), rows matched whole, planted self-tests.
             string[] twoWay =
             {
-                "def _committed_rows(source):", "def _compare(generated, committed):", "def _self_tests(generated, source):",
+                "def _committed_rows(source):", "def _compare(generated, committed):", "def _self_tests(generated, source, cs_path):",
                 "\"not produced by the generator: \"", "\"not committed: \"",
             };
             var twoWayMissing = twoWay.Where(t => !generator.Contains(t, StringComparison.Ordinal)).ToList();
