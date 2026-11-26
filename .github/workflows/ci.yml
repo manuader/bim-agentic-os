@@ -74,14 +74,19 @@ jobs:
           # other ezdxf dependencies pinned to the versions pip resolved here in run 45725166224 (printed below).
           .tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1
           .tools/ezdxf/bin/python -m pip check
-          # P6-50: the installed versions of ezdxf's other dependencies are printed with numpy's.
-          echo "::notice title=ezdxf-check::$(.tools/ezdxf/bin/python -I -c "import sys, importlib.metadata, numpy, ezdxf; print('python', sys.version.split()[0], 'numpy', numpy.__version__, *(d + ' ' + importlib.metadata.version(d) for d in ('pyparsing', 'typing_extensions', 'fonttools')), 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
+          # P6-50: the installed versions of ezdxf's other dependencies are printed with numpy's. P6-52: with the CPU model
+          # (from /proc/cpuinfo) and the exact Python version (all of sys.version, on one line).
+          cpu=$(grep -m1 '^model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ *//')
+          echo "::notice title=ezdxf-check::cpu ${cpu:-unknown}; $(.tools/ezdxf/bin/python -I -c "import sys, importlib.metadata, numpy, ezdxf; print('python', ' '.join(sys.version.split()), 'numpy', numpy.__version__, *(d + ' ' + importlib.metadata.version(d) for d in ('pyparsing', 'typing_extensions', 'fonttools')), 'ezdxf', ezdxf.__version__, 'C extensions used', ezdxf.options.use_c_ext)")"
           # P6-48: with the wheel's C extensions a few rows differ in the last bits; the run names them. P6-50: those
           # rows are pinned (C_EXT_DRIFT in the generator); a differing row outside them fails this run and the step.
+          # P6-52: structural failures (missing table, extra, duplicated or unused rows) are kept beside them and fail too.
           cstatus=0
           cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || cstatus=$?
           if [ "$cstatus" -ne 0 ]; then clevel=error; else clevel=notice; fi
-          echo "::$clevel title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | grep -e '^C-extension drift: ' -e '^new C-extension drift rows: ' -e 'NOT caught' -e 'not caught as' -e 'not found exactly once' | cut -c1-900 | tr '\n' ' '); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
+          echo "::$clevel title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cext" | grep '^differing rows: ' | cut -c1-900); $(printf '%s\n' "$cext" | grep -e '^C-extension drift: ' -e '^new C-extension drift rows: ' -e 'NOT caught' -e 'not caught as' -e 'not found exactly once' -e '^kept under the C extensions: ' | cut -c1-900 | tr '\n' ' '); $(printf '%s\n' "$cext" | tail -n 1 | cut -c1-900)"
+          # P6-52: a pinned C-extension drift row that stops drifting is named in a warning annotation.
+          printf '%s\n' "$cext" | grep '^pinned C-extension drift rows no longer drifting: ' | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'
           # The constants were made by the pure-Python ezdxf of a v1.4.2 source checkout, so the C extensions are disabled.
           out="$RUNNER_TEMP/ezdxf-check.txt"
           status=0

@@ -16,15 +16,24 @@ EZDXF_DISABLE_C_EXT=1), as recorded in the header of tests/cad/MinsertEzdxfTests
 P6-50 (generation environment, stated the same way in the header of tests/cad/MinsertEzdxfTests.cs, which pins it):
 the constants are the pure-Python ezdxf 1.4.2 values with numpy 2.5.3. Evidence for that generation version: the
 offline environment the generator is run in (re-measured in relay293: Python 3.13.18, numpy 2.5.3, pyparsing 3.3.3,
-typing_extensions 4.16.0, fonttools 4.67.0) reproduces every row, and CI run 45718082997 (main 36398c0, Python 3.12.16,
-pip's numpy==2.5.3, EZDXF_DISABLE_C_EXT=1) reproduced all 164 rows exactly (0 failures). The CI step installs
+typing_extensions 4.16.0, fonttools 4.67.0) reproduces every row, and CI run 45718082997 (main 36398c0, Python
+3.12.16, pip's numpy==2.5.3, EZDXF_DISABLE_C_EXT=1) reproduced all 164 rows exactly (0 failures). The CI step installs
 ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1 (the other dependencies at the
-versions pip resolved in CI run 45725166224, printed by the step with numpy's; fonttools 4.67.0 offline and 4.69.1
-in CI give the same rows). Of the pure-Python run's output, every output line but the caught self-tests is annotated,
-20 lines an annotation, at most 9 annotations, then one line with the count of the lines left over (errors when the
-run fails, notices otherwise). With the wheel's C extensions four rows differ in the last bits: C1>NB, X1>XF, Z1>ZA,
-W1>CL. They are pinned (C_EXT_DRIFT below): under the C extensions a differing row outside them fails that run and the
-step, named after "new C-extension drift rows: "; a pinned row that stops differing is named as no longer drifting.
+versions pip resolved in CI run 45725166224, printed by the step with numpy's). P6-52: offline fonttools 4.69.1
+matches CI (relay297: with the fonttools tag 4.69.1 source checkout on PYTHONPATH, PyPI being blocked offline, the
+check reproduced all 164 rows, as with 4.67.0). Of the pure-Python run's output, every output line but the caught
+self-tests is annotated, 20 lines an annotation, at most 9 annotations, then one line with the count of the lines left
+over (errors when the run fails, notices otherwise). With the wheel's C extensions four rows differ in the last bits:
+C1>NB, X1>XF, Z1>ZA, W1>CL. They are pinned (C_EXT_DRIFT in the generator): under the C extensions a differing row
+outside them fails that run and the step, named after "new C-extension drift rows: ". P6-52: under the C extensions a
+row drifts only when its name has exactly one generated row not committed and one committed row not produced; every
+other failure (a missing table, an extra, duplicated or unused row, a label) is kept beside the drift failures, after
+"kept under the C extensions: ", and fails; a pinned row that stops drifting is named after "pinned C-extension drift
+rows no longer drifting: ", which the step turns into a warning annotation; check_main's C-extension path is
+self-tested on planted files (a new drift row, a missing table, an extra row, an unused row committed, a pinned row
+that stops drifting). The step's notice prints the CPU model (from /proc/cpuinfo) and the exact Python version (all of
+sys.version). This paragraph and its copy in the other file are compared whole by RunJustified (comment markers, line
+breaks and the lead-in parenthetical aside).
 
 It builds, with ezdxf's own API, the block RECT and the INSERT/MINSERT entities that MinsertEzdxfTests.Drawing()
 writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
@@ -1040,8 +1049,26 @@ def _drift_failures(differing):
     return ["new C-extension drift rows: " + ", ".join(new) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")"] if new else []
 
 
+def _c_ext_failures(failures, names):
+    # P6-52: (failures, drifting row names) under the C extensions; names[i] is the row failures[i] is about. A row
+    # drifts when its name has exactly one generated row not committed and one committed row not produced; drifting rows
+    # outside C_EXT_DRIFT fail, named. Every other failure (a missing table, an extra, duplicated or unused row, a label)
+    # is kept beside them, prefixed "kept under the C extensions: ".
+    counts = {}
+    for failure, name in zip(failures, names):
+        if failure.startswith(_DRIFT_KINDS):
+            counts.setdefault(name, [0, 0])[0 if failure.startswith(_DRIFT_KINDS[0]) else 1] += 1
+    drifting = [name for name, k in counts.items() if k == [1, 1]]
+    kept = ["kept under the C extensions: " + f for f, n in zip(failures, names) if not (f.startswith(_DRIFT_KINDS) and n in drifting)]
+    return kept + _drift_failures(drifting), drifting
+
+
+_DRIFT_KINDS = ("not committed: ", "not produced by the generator: ")
+
+
 def _compare(generated, committed):
-    # (failures, rows matched, unused rows, the names of the rows the failures are about, in order)
+    # (failures, rows matched, unused rows, the names of the rows the failures are about, in order; P6-52: and the name
+    # of each failure's row, one per failure)
     rows, missing = committed
     failures = ["table not found: " + t for t in missing]
     differing = ["table " + t for t in missing]
@@ -1086,10 +1113,10 @@ def _compare(generated, committed):
         if not ok:
             failures.append("not produced by the generator: " + where + " " + repr(names) + " " + repr(numbers))
             differing.append(names[0] if kind == "label" else _name(names, numbers))
-    return failures, matched, unused, list(dict.fromkeys(differing))
+    return failures, matched, unused, list(dict.fromkeys(differing)), differing
 
 
-def _self_tests(generated, source):
+def _self_tests(generated, source, cs_path):
     # Planted copies of the C# file that the check must fail, each with the failure it must report.
     plants = [
         ("an extra JustifiedPoints row", '        ("K2", "TG", ', '        ("K9", "TZ", 1.0, 2.0, 3.0, 4.0),\n        ("K2", "TG", ', "not produced by the generator: JustifiedPoints"),
@@ -1115,42 +1142,82 @@ def _self_tests(generated, source):
         if source.count(old) != 1:
             failures.append("self-test " + label + ": the planted text is not found exactly once: " + old)
             continue
-        planted, _, _, differing = _compare(generated, _committed_rows(source.replace(old, new)))
+        planted, _, _, differing, _ = _compare(generated, _committed_rows(source.replace(old, new)))
         if drift:
             planted = _drift_failures(differing + list(C_EXT_DRIFT))
         caught = any(f.startswith(expected) for f in planted) and (name is None or name in differing)
         print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (" + str(len(planted)) + " failures)")
         if not caught:
             failures.append("self-test " + label + ": not caught as " + expected + "; got " + " | ".join(planted))
+    # P6-52: check_main's C-extension path (c_ext forced, whatever this run's ezdxf uses) on planted files: the exit
+    # status it must return, a line it must print and, optionally, a row a "new C-extension drift rows: " line must not
+    # name. The stopping row is committed as this run generates it, so it does not drift with or without the C extensions.
+    unused_line = next((line for line, names, _ in generated if any(n in UNUSED for n in names) and names[0] not in DECOYS), None)
+    pinned_line = next((line for line, names, _ in generated if names == ("C1>NB",)), None)
+    pinned_old = re.findall(r'^        \("C1>NB", .*$', source, re.MULTILINE)
+    c_plants = [
+        ("a new drift row under the C extensions", '("K2", "TG", 39676.59614009593, ', '("K2", "TG", 39676.59614009594, ', 1, "new C-extension drift rows: K2 TG ", None),
+        ("a missing table under the C extensions", "double[] Corners)[] Cells =\n", "double[] Corners)[] CellsGone =\n", 1, "kept under the C extensions: table not found: Cells", None),
+        ("an extra row under the C extensions", '        ("K2", "TG", ', '        ("K9", "TZ", 1.0, 2.0, 3.0, 4.0),\n        ("K2", "TG", ', 1, "kept under the C extensions: not produced by the generator: JustifiedPoints", "K9 TZ"),
+        ("an unused row committed under the C extensions", '        ("K2", "TG", ', '        ' + str(unused_line) + '\n        ("K2", "TG", ', 1, "kept under the C extensions: listed as unused but committed: ", None),
+        ("a pinned row that stops drifting under the C extensions", pinned_old[0] if len(pinned_old) == 1 else "<C1>NB row>", '        ' + str(pinned_line), 0, "pinned C-extension drift rows no longer drifting: ", None),
+    ]
+    for label, old, new, status, line, unnamed in c_plants:
+        if source.count(old) != 1 or unused_line is None or pinned_line is None:
+            failures.append("self-test " + label + ": the planted text is not found exactly once: " + old)
+            continue
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            got = check_main(cs_path, c_ext=True, source=source.replace(old, new), generated=generated, self_tests=False)
+        lines = out.getvalue().splitlines()
+        printed = [l for l in lines if l.startswith(line)]
+        if label.startswith("a pinned row"):
+            printed = [l for l in printed if "C1>NB" in l.split(": ", 1)[1].split(" (")[0].split(", ")]
+        named = unnamed is not None and any(l.startswith("new C-extension drift rows: ") and unnamed in l for l in lines)
+        caught = got == status and printed and not named
+        print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(got) + ")")
+        if not caught:
+            failures.append("self-test " + label + ": not caught as exit " + str(status) + " with " + line + "; got exit " + str(got) + ": " + " | ".join(lines[-6:]))
     return failures
 
 
-def check_main(cs_path):
+def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True):
+    # P6-52: c_ext, source and generated are given by the self-tests that drive the C-extension path on planted files.
     import numpy  # an ezdxf dependency; its version is printed with the result (P6-48)
 
-    generated = _generated_rows()
-    source = open(cs_path, encoding="utf-8").read()
+    if generated is None:
+        generated = _generated_rows()
+    if source is None:
+        source = open(cs_path, encoding="utf-8").read()
     committed = _committed_rows(source)
-    failures, matched, unused, differing = _compare(generated, committed)
-    c_ext = bool(ezdxf.options.use_c_ext)
+    failures, matched, unused, differing, names = _compare(generated, committed)
+    if c_ext is None:
+        c_ext = bool(ezdxf.options.use_c_ext)
     expected = 0
+    drifting = []
     if c_ext:
         # P6-50: under the C extensions the C_EXT_DRIFT rows may differ: the row differences are printed but not
-        # counted, and any differing row outside C_EXT_DRIFT fails, named ("new C-extension drift rows: ").
+        # counted, and any drifting row outside C_EXT_DRIFT fails, named ("new C-extension drift rows: "). P6-52: the
+        # structural failures (missing table, extra, duplicated or unused rows, labels) are kept beside them.
         for failure in failures:
             print("with the C extensions: " + failure)
         expected = len(failures)
-        failures = _drift_failures(differing)
-    failures += _self_tests(generated, source)
+        failures, drifting = _c_ext_failures(failures, names)
+    if self_tests:
+        failures += _self_tests(generated, source, cs_path)
     for failure in failures:
         print(failure)
     print("differing rows: " + (", ".join(differing) if differing else "none"))
     if c_ext:
-        print("C-extension drift: pinned " + ", ".join(C_EXT_DRIFT) + "; new: " + (", ".join(d for d in differing if d not in C_EXT_DRIFT) or "none")
-              + "; no longer drifting: " + (", ".join(d for d in C_EXT_DRIFT if d not in differing) or "none"))
+        stale = [d for d in C_EXT_DRIFT if d not in drifting]
+        print("C-extension drift: pinned " + ", ".join(C_EXT_DRIFT) + "; new: " + (", ".join(d for d in drifting if d not in C_EXT_DRIFT) or "none")
+              + "; no longer drifting: " + (", ".join(stale) or "none"))
+        if stale:
+            # P6-52: named on a line of its own, which the CI step turns into a warning annotation.
+            print("pinned C-extension drift rows no longer drifting: " + ", ".join(stale) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")")
     print("ezdxf " + ezdxf.__version__ + " (C extensions used: " + str(c_ext) + "), numpy " + numpy.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, "
           + str(len(committed[0])) + " committed rows all produced unless listed, " + str(len(failures)) + " failures"
-          + (" (" + str(expected) + " row-difference lines under the C extensions judged by C_EXT_DRIFT, not counted)" if c_ext else ""))
+          + (" (" + str(expected) + " failure lines under the C extensions: drifting rows judged by C_EXT_DRIFT, the others kept)" if c_ext else ""))
     return 1 if failures else 0
 
 

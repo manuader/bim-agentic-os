@@ -113,15 +113,24 @@ using Point2 = Bim.Cad.Point2;
 // P6-50 (generation environment, pinned by RunJustified and stated the same way in the generator's docstring): the
 // constants are the pure-Python ezdxf 1.4.2 values with numpy 2.5.3. Evidence for that generation version: the offline
 // environment the generator is run in (re-measured in relay293: Python 3.13.18, numpy 2.5.3, pyparsing 3.3.3,
-// typing_extensions 4.16.0, fonttools 4.67.0) reproduces every row, and CI run 45718082997 (main 36398c0, Python 3.12.16,
-// pip's numpy==2.5.3, EZDXF_DISABLE_C_EXT=1) reproduced all 164 rows exactly (0 failures). The CI step installs
-// ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1 (the other dependencies at the
-// versions pip resolved in CI run 45725166224, printed by the step with numpy's; fonttools 4.67.0 offline and 4.69.1
-// in CI give the same rows). Of the pure-Python run's output, every output line but the caught self-tests is annotated,
-// 20 lines an annotation, at most 9 annotations, then one line with the count of the lines left over (errors when the run
-// fails, notices otherwise). With the wheel's C extensions four rows differ in the last bits: C1>NB, X1>XF, Z1>ZA, W1>CL.
-// They are pinned (C_EXT_DRIFT in the generator): under the C extensions a differing row outside them fails that run and
-// the step, named after "new C-extension drift rows: "; a pinned row that stops differing is named as no longer drifting.
+// typing_extensions 4.16.0, fonttools 4.67.0) reproduces every row, and CI run 45718082997 (main 36398c0, Python
+// 3.12.16, pip's numpy==2.5.3, EZDXF_DISABLE_C_EXT=1) reproduced all 164 rows exactly (0 failures). The CI step
+// installs ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1 (the other
+// dependencies at the versions pip resolved in CI run 45725166224, printed by the step with numpy's). P6-52: offline
+// fonttools 4.69.1 matches CI (relay297: with the fonttools tag 4.69.1 source checkout on PYTHONPATH, PyPI being
+// blocked offline, the check reproduced all 164 rows, as with 4.67.0). Of the pure-Python run's output, every output
+// line but the caught self-tests is annotated, 20 lines an annotation, at most 9 annotations, then one line with the
+// count of the lines left over (errors when the run fails, notices otherwise). With the wheel's C extensions four rows
+// differ in the last bits: C1>NB, X1>XF, Z1>ZA, W1>CL. They are pinned (C_EXT_DRIFT in the generator): under the C
+// extensions a differing row outside them fails that run and the step, named after "new C-extension drift rows: ".
+// P6-52: under the C extensions a row drifts only when its name has exactly one generated row not committed and one
+// committed row not produced; every other failure (a missing table, an extra, duplicated or unused row, a label) is
+// kept beside the drift failures, after "kept under the C extensions: ", and fails; a pinned row that stops drifting is
+// named after "pinned C-extension drift rows no longer drifting: ", which the step turns into a warning annotation;
+// check_main's C-extension path is self-tested on planted files (a new drift row, a missing table, an extra row, an
+// unused row committed, a pinned row that stops drifting). The step's notice prints the CPU model (from /proc/cpuinfo)
+// and the exact Python version (all of sys.version). This paragraph and its copy in the other file are compared whole
+// by RunJustified (comment markers, line breaks and the lead-in parenthetical aside).
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -1877,7 +1886,7 @@ internal static class MinsertEzdxfTests
                 "justified: generator: .github/workflows/ci.yml runs the --check once, in the Linux ifc job, against a pinned ezdxf==1.4.2 in its own venv with C extensions disabled",
                 "ifc " + ifcJob.ToString(CultureInfo.InvariantCulture) + " step " + step.ToString(CultureInfo.InvariantCulture) + " rhino " + rhinoJob.ToString(CultureInfo.InvariantCulture) + " missing " + string.Join(" | ", absent));
             var generator = File.ReadAllText(Path.Combine(root, "tests", "cad", "tools", "minsert_ezdxf_centres.py")).Replace("\r\n", "\n", StringComparison.Ordinal);
-            var sections = new[] { "def main():", "def bulge_main():", "def chain_main():", "def z_main():", "def leaf_main():", "def follow_main():", "def align_main():", "def justify_main():", "def check_main(cs_path):" };
+            var sections = new[] { "def main():", "def bulge_main():", "def chain_main():", "def z_main():", "def leaf_main():", "def follow_main():", "def align_main():", "def justify_main():", "def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True):" };
             var missing = sections.Where(s => !generator.Contains("\n" + s + "\n", StringComparison.Ordinal)).ToList();
             var checkedSections = generator.Contains("for section in (main, bulge_main, chain_main, z_main, leaf_main, follow_main, align_main, justify_main):", StringComparison.Ordinal);
             c(missing.Count == 0 && checkedSections && generator.Contains("if sys.argv[1:2] == [\"--check\"]:", StringComparison.Ordinal) && generator.Contains("commit 8240df5793daf2fd7db95d118a78e17ec92043ec", StringComparison.Ordinal),
