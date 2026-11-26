@@ -2330,3 +2330,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay296
 - 2026-11-26T05:53:50Z lock taken (session_014pxpsREykb relay296; was FREE, relay295 released 2026-11-26T05:46:06Z)
+- 2026-11-26T05:54:16Z picked P1-48 (phase 1), P5-42 (phase 5), P2-47 (phase 2) — oldest-touched (relay292); P1-49/P5-43 serialize with them (left); disjoint files (tests/cli DeadlineSourceScan MemberLines + tests/mcp/Program.cs p122/p123 + RevitCommandDeadlineTests P1-46; tests/mcp/TwiceReadToolTests.cs + SkillListTests P5-36/38/40 + contract P5-38; tests/mirror-journal macOS helpers). Workers spawned in background.
