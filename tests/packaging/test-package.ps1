@@ -69,6 +69,12 @@
 # after a word); a static readonly CleanupFailed is read, a mutable one refused by name; the tokenizer's run time is bounded.
 # P4-39: a raw hole closed by fewer } than its $ count, a comment in an interpolation hole and a raw string closed by a longer
 # quote run are refused by name; a String/System.String CleanupFailed is read; the P4-36 plants are pinned on the PowerShell AST.
+# P4-40: closing-brace runs after a raw hole are counted; CleanupFailed +=, ??= and => forms are refused by name and a literal
+# followed by + is named a concatenation; the tokenizer cost bound is size-relative (25 ms per 1000 chars, floor 500 ms).
+# P4-41: a comment before + keeps the concatenation wording; a member access or other next token is named; an auto-property
+# initialiser, raw content runs of n or more } and opening runs of 2n or more { are refused by name; one own-header assert.
+# P4-42: literals in a CleanupFailed property's braces (nested accessor bodies) or initialiser are refused by name; the
+# next-token wording names a whole token; the header pin reads P4-40..P4-42; the cost notice prints the measured headroom.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -2432,6 +2438,10 @@ try {
         # P4-41: comments before the + are blank code (still a concatenation); a literal followed by a member access
         # ("x".Trim(), "x"?.Trim()) names it; a declaration-shaped literal followed by anything but ; names that token; an
         # auto-property initialiser (CleanupFailed { get; } = "...") is refused by name with one message.
+        # P4-42: every literal inside a CleanupFailed property's braces (nested accessor bodies, get => "...") is refused by
+        # name as an accessor literal and every literal of its initialiser expression (new(() => "..."), { "a", "b" }) as an
+        # auto-property initialiser, so attributes and generic types before the name do not matter; the next-token wording
+        # names a whole token ([, is, as, ??) or '<end of text>'.
         function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
             $problems = [Collections.Generic.List[string]]::new()
             $scan = Get-P437CsLiterals $CsText
@@ -2445,11 +2455,34 @@ try {
             foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*=\s*(?=")')) { [void]$assignStarts.Add($m.Index + $m.Length) }
             $formStarts = [Collections.Generic.Dictionary[int, string]]::new()
             foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*(\+=|\?\?=|=>)\s*(?=")')) { $formStarts[$m.Index + $m.Length] = $m.Groups[1].Value }
-            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*\{[^{}]*\}\s*=\s*(?=")')) { $formStarts[$m.Index + $m.Length] = 'property' }
+            # P4-42: a CleanupFailed property: every literal inside its braces (accessor bodies, nested braces counted on the
+            # blanked code) is 'accessor'; every literal of an initialiser after the closing } (= up to the ; or closing
+            # bracket at bracket depth 0, so new(...) and { ... } collection initialisers are inside) is 'property'.
+            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*\{')) {
+                $open = $m.Index + $m.Length - 1; $close = -1; $depth = 0
+                for ($k = $open; $k -lt $scan.Code.Length; $k++) {
+                    if ($scan.Code[$k] -ceq '{') { $depth++ }
+                    elseif ($scan.Code[$k] -ceq '}') { $depth--; if ($depth -eq 0) { $close = $k; break } }
+                }
+                if ($close -lt 0) { continue }
+                foreach ($literal in $scan.Literals) { if ($literal.Start -gt $open -and $literal.Start -lt $close) { $formStarts[$literal.Start] = 'accessor' } }
+                $init = [regex]::new('\G\s*=(?![=>])').Match($scan.Code, $close + 1)
+                if (!$init.Success) { continue }
+                $from = $init.Index + $init.Length; $k = $from; $depth = 0
+                while ($k -lt $scan.Code.Length) {
+                    $ch = $scan.Code[$k]
+                    if ($ch -ceq '(' -or $ch -ceq '[' -or $ch -ceq '{') { $depth++ }
+                    elseif ($ch -ceq ')' -or $ch -ceq ']' -or $ch -ceq '}') { if ($depth -eq 0) { break }; $depth-- }
+                    elseif ($ch -ceq ';' -and $depth -eq 0) { break }
+                    $k++
+                }
+                foreach ($literal in $scan.Literals) { if ($literal.Start -ge $from -and $literal.Start -lt $k) { $formStarts[$literal.Start] = 'property' } }
+            }
             $plus = [regex]::new('\G\s*\+(?![+=])')
             $semicolon = [regex]::new('\G\s*;')
             $member = [regex]::new('\G\s*(\??\.)\s*(@?\w+)')
-            $nextToken = [regex]::new('\G\s*(\S)')
+            # P4-42: the next token is a whole token: a word (is, as), a two-character operator (??, =>, ==, &&, ...) or one character.
+            $nextToken = [regex]::new('\G\s*(@?\w+|\?\?=?|=>|[=!<>]=|&&|\|\||<<|>>|::|->|\S)')
             $declared = @($scan.Literals | Where-Object { $declStarts.Contains($_.Start) -and $semicolon.IsMatch($scan.Code, $_.End) })
             $declaration = if ($declared.Count -eq 1) { $declared[0].Start } else { -1 }
             $mutable = @($scan.Literals | Where-Object { $_.Start -ne $declaration -and ($assignStarts.Contains($_.Start) -or $formStarts.ContainsKey($_.Start)) }).Count
@@ -2459,7 +2492,7 @@ try {
                 if ($literal.Start -eq $declaration) { continue }
                 if ($formStarts.ContainsKey($literal.Start)) {
                     $form = $formStarts[$literal.Start]
-                    $problems.Add($(if ($form -ceq 'property') { "CleanupFailed auto-property initialiser refused $($literal.Raw)" } elseif ($form -ceq '=>') { "CleanupFailed expression-bodied member (=>) refused $($literal.Raw)" } else { "CleanupFailed compound assignment ($form) refused $($literal.Raw)" })); continue
+                    $problems.Add($(if ($form -ceq 'property') { "CleanupFailed auto-property initialiser refused $($literal.Raw)" } elseif ($form -ceq 'accessor') { "CleanupFailed property accessor literal refused $($literal.Raw)" } elseif ($form -ceq '=>') { "CleanupFailed expression-bodied member (=>) refused $($literal.Raw)" } else { "CleanupFailed compound assignment ($form) refused $($literal.Raw)" })); continue
                 }
                 if ($assignStarts.Contains($literal.Start)) {
                     $access = $member.Match($scan.Code, $literal.End)
@@ -2686,7 +2719,8 @@ try {
             return "finally $finallyCalls bare $bare"
         }
         # P4-36: which of P4-31..P4-36 (P4-37, P4-38 and P4-39 too) open a line ("# P4-3n: ") of the leading comment block of script text (tokens, so a
-        # later comment or a string does not count), joined by commas ('-' for none).
+        # later comment or a string does not count), joined by commas ('-' for none). P4-42: every '# P4-<n>: ' line with
+        # n >= 31 (P4-40..P4-42 and later ids too, in order, once each).
         function Get-P436Header([string]$Text) {
             $tokens = $null; $parseErrors = $null
             $null = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -2695,9 +2729,15 @@ try {
             foreach ($token in $tokens) {
                 if ($token.Kind -eq [Management.Automation.Language.TokenKind]::NewLine) { continue }
                 if ($token.Kind -ne [Management.Automation.Language.TokenKind]::Comment) { break }
-                foreach ($id in @('P4-31', 'P4-32', 'P4-33', 'P4-34', 'P4-35', 'P4-36', 'P4-37', 'P4-38', 'P4-39')) { if ($token.Text.StartsWith("# $($id): ") -and !$header.Contains($id)) { $header.Add($id) } }
+                if ($token.Text -cmatch '^# (P4-(\d+)): ' -and [int]$Matches[2] -ge 31 -and !$header.Contains($Matches[1])) { $header.Add($Matches[1]) }
             }
             return $(if ($header.Count) { $header -join ',' } else { '-' })
+        }
+        # P4-42: the tokenizer cost notice's measured headroom: the bound divided by the elapsed time, one decimal ('21.7x');
+        # 'more than <bound>x' when the scan took under 1 ms.
+        function Get-P442Headroom([double]$Bound, [double]$Elapsed) {
+            if ($Elapsed -lt 1) { return "more than $($Bound)x" }
+            return [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}x', $Bound / $Elapsed)
         }
         # P4-39: the P4-36 plant source pin on the PowerShell AST of script text: "source <a> prefix <b> neutral <c> other <d>
         # plants <e> hardcoded <f>"; a = Add-P433CleanupFailure calls into $p436Into, b = assignments of $p436Prefix that read
@@ -2901,8 +2941,9 @@ try {
         # hard-coded copies of the prefix, never a check name that merely contains 'cleanup failed: '.
         try {
             $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
-            # P4-41: the one own-header assert (P4-40 asserted the same list again; that copy is gone).
-            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39') "P4-36..P4-41: this script's header lists P4-31..P4-39: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39)"
+            # P4-41: the one own-header assert (P4-40 asserted the same list again; that copy is gone). P4-42: the header
+            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31).
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42') "P4-36..P4-42: this script's header lists P4-31..P4-42: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42)"
             $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
             Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
             $p436Misplaced = [ordered]@{
@@ -3000,8 +3041,9 @@ try {
             # P4-40: the bound is size-relative: 25 ms per 1000 chars (floor 500 ms for JIT warm-up), so the file may grow but a
             # per-character regression fails. P4-41: measured headroom about 20x (15-21x): the whole scan, including JIT, took
             # 115 ms (relay293) and 159 ms (relay297) on Linux, 144 ms on Windows, of a 2471-2500 ms bound for about 99000 chars.
+            # P4-42: the notice prints the measured headroom (bound / elapsed, Get-P442Headroom) of this run.
             $p438Bound = [math]::Max(500, [math]::Ceiling($p438Cs.Length * 25 / 1000))
-            $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound $p438Bound ms = 25 ms per 1000 chars, floor 500)"
+            $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound $p438Bound ms = 25 ms per 1000 chars, floor 500; headroom $(Get-P442Headroom $p438Bound $p438Watch.ElapsedMilliseconds))"
             if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::notice title=packaging::' + ($p438Cost -replace '%', '%25')) } else { Write-Host $p438Cost }
             Assert ($null -eq $p438Scan.Error -and $p438Scan.Literals.Count -gt 0 -and $p438Watch.ElapsedMilliseconds -lt $p438Bound) "P4-38: the tokenizer reads tests/cli/PackageLayoutPackTests.cs without error within its bound: $p438Cost error $($p438Scan.Error)"
         } catch { $failures.Add("P4-38 tokenizer self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
@@ -3118,6 +3160,8 @@ try {
                 @{ Label = 'line comment before + on the next line'; Text = $p441Decl + ' void M() { CleanupFailed = "x" // why' + "`n" + '        + y; }'; Want = $p441Concat + '"x"' }
                 @{ Label = 'member access on a declaration literal'; Text = 'static readonly string CleanupFailed = "' + $p441Prefix + '".Trim();'; Want = 'CleanupFailed literal followed by a member access (.Trim), not one literal "' + $p441Prefix + '"' }
                 @{ Label = 'null-conditional member access after a comment'; Text = $p441Decl + ' void M() { CleanupFailed = "x" /* c */ ?.Trim(); }'; Want = 'CleanupFailed literal followed by a member access (?.Trim), not one literal "x"' }
+                @{ Label = 'P4-42 control: a clean declaration literal followed by ;'; Text = 'static readonly string CleanupFailed = "' + $p441Prefix + '";'; Want = '' }
+                @{ Label = 'P4-42 control: a clean mutable "x"; keeps the assignment wording'; Text = $p441Decl + ' void M() { CleanupFailed = "x"; }'; Want = 'CleanupFailed assigned outside a const or static readonly declaration "x"' }
                 @{ Label = 'second declarator after the declaration literal'; Text = 'const string CleanupFailed = "' + $p441Prefix + '", Other = "y";'; Want = 'CleanupFailed declaration literal followed by '','' (not one declaration) "' + $p441Prefix + '"' }
                 @{ Label = 'auto-property initialiser refused by name'; Text = 'public static string CleanupFailed { get; } = "' + $p441Prefix + '";'; Want = 'CleanupFailed auto-property initialiser refused "' + $p441Prefix + '"' }
                 @{ Label = 'auto-property with a comment and init accessor'; Text = 'string CleanupFailed /* c */ { get; init; }' + "`n" + '    = @"P4-33: cleanup failed: ";'; Want = 'CleanupFailed auto-property initialiser refused @"P4-33: cleanup failed: "' }
@@ -3133,6 +3177,48 @@ try {
                 Assert (($p441Found -join '|') -ceq $p441Case.Want) "P4-41 self-test: $($p441Case.Label): $(Format-P431List $p441Found) (want [$($p441Case.Want)])"
             }
         } catch { $failures.Add("P4-41 concatenation/member access/auto-property/raw brace self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-42 self-test: every literal inside a CleanupFailed property's braces (accessor bodies with nested braces,
+        # get => "...") or in its initialiser (an attributed generic auto-property: [A("a")] Lazy<string> CleanupFailed
+        # { get; } = new(() => "...")) is refused by name, one message each; the next-token wording names a whole token ([,
+        # is, as, ??) or '<end of text>'; a preprocessor line between a CleanupFailed literal and + is still a concatenation;
+        # Get-P436Header reads P4-40..P4-42 lines (not P4-30); Get-P442Headroom formats the cost notice's measured ratio.
+        try {
+            $p442Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p442Into 'P4-42' '/p4-42/left' { param($l, $p) 'W' }
+            $p442Prefix = if ($p442Into.Count -eq 1 -and $p442Into[0].EndsWith('W')) { $p442Into[0].Substring(0, $p442Into[0].Length - 1) } else { '<none>' }
+            $p442Decl = 'const string CleanupFailed = "' + $p442Prefix + '";'
+            $p442Quoted = '"' + $p442Prefix + '"'
+            $p442Accessor = 'CleanupFailed property accessor literal refused '
+            $p442Init = 'CleanupFailed auto-property initialiser refused '
+            $p442Concat = 'CleanupFailed literal followed by + (a concatenation, not one literal) '
+            $p442NextA = "CleanupFailed declaration literal followed by '"
+            $p442NextB = "' (not one declaration) $p442Quoted"
+            $p442Cases = @(
+                @{ Label = 'property with nested accessor braces'; Text = 'static string CleanupFailed { get { return ' + $p442Quoted + '; } }'; Want = $p442Accessor + $p442Quoted }
+                @{ Label = 'getter and setter bodies, one message per literal'; Text = $p442Decl + ' string CleanupFailed { get { if (x) { return "a"; } return "b"; } set { _ = "c"; } }'; Want = $p442Accessor + '"a"|' + $p442Accessor + '"b"|' + $p442Accessor + '"c"' }
+                @{ Label = 'expression-bodied getter in property braces'; Text = 'string CleanupFailed { get => @"P4-33: cleanup failed: "; }'; Want = $p442Accessor + '@"P4-33: cleanup failed: "' }
+                @{ Label = 'attributed generic auto-property'; Text = '[Obsolete("old")] static Lazy<string> CleanupFailed { get; } = new(() => ' + $p442Quoted + ');'; Want = $p442Init + $p442Quoted }
+                @{ Label = 'attributed generic auto-property with a collection initialiser'; Text = '[field: NonSerialized] static List<string> CleanupFailed { get; } = new List<string> { "a", "b" }; const string Other = "c";'; Want = $p442Init + '"a"|' + $p442Init + '"b"' }
+                @{ Label = 'nested accessor braces and an initialiser'; Text = 'string CleanupFailed { get { return "a"; } } = "b";'; Want = $p442Accessor + '"a"|' + $p442Init + '"b"' }
+                @{ Label = 'another property with nested braces is no CleanupFailed'; Text = $p442Decl + ' string Other { get { return "x"; } } = "y";'; Want = '' }
+                @{ Label = 'indexer [ after the declaration literal'; Text = 'const string CleanupFailed = ' + $p442Quoted + '[0];'; Want = $p442NextA + '[' + $p442NextB }
+                @{ Label = 'is after the declaration literal'; Text = 'const string CleanupFailed = ' + $p442Quoted + ' is string;'; Want = $p442NextA + 'is' + $p442NextB }
+                @{ Label = 'as after the declaration literal'; Text = 'static readonly string CleanupFailed = ' + $p442Quoted + ' as string;'; Want = $p442NextA + 'as' + $p442NextB }
+                @{ Label = '?? after the declaration literal'; Text = 'const string CleanupFailed = ' + $p442Quoted + ' ?? x;'; Want = $p442NextA + '??' + $p442NextB }
+                @{ Label = 'end of text after the declaration literal'; Text = 'const string CleanupFailed = ' + $p442Quoted; Want = $p442NextA + '<end of text>' + $p442NextB }
+                @{ Label = 'end of text after a line comment'; Text = 'const string CleanupFailed = ' + $p442Quoted + ' // no semicolon'; Want = $p442NextA + '<end of text>' + $p442NextB }
+                @{ Label = 'preprocessor line between a mutable literal and +'; Text = $p442Decl + ' void M() { CleanupFailed = "x"' + "`n#if DEBUG`n" + '        + y' + "`n#endif`n" + '    ; }'; Want = $p442Concat + '"x"' }
+                @{ Label = 'preprocessor line between a declaration literal and +'; Text = 'const string CleanupFailed = ' + $p442Quoted + "`n    #pragma warning disable CS0219`n" + '    + "";'; Want = $p442Concat + $p442Quoted }
+            )
+            foreach ($p442Case in $p442Cases) {
+                $p442Found = Get-P435PrefixMismatch $p442Case.Text $p442Prefix
+                Assert (($p442Found -join '|') -ceq $p442Case.Want) "P4-42 self-test: $($p442Case.Label): $(Format-P431List $p442Found) (want [$($p442Case.Want)])"
+            }
+            $p442Header = Get-P436Header ("#Requires -Version 7.2`n# P4-30: older`n# P4-40: a`n# P4-41: b`n# P4-42: c`nparam()`n# P4-42: after the leading block")
+            Assert ($p442Header -ceq 'P4-40,P4-41,P4-42') "P4-42 self-test: Get-P436Header reads P4-40..P4-42 header lines (not P4-30, not after the leading block): $p442Header (want P4-40,P4-41,P4-42)"
+            $p442Ratio = @((Get-P442Headroom 2500 115), (Get-P442Headroom 500 0)) -join '|'
+            Assert ($p442Ratio -ceq '21.7x|more than 500x') "P4-42 self-test: Get-P442Headroom formats the measured ratio (2500 ms bound / 115 ms, 500 / 0): $p442Ratio (want 21.7x|more than 500x)"
+        } catch { $failures.Add("P4-42 property/next-token/preprocessor/header/headroom self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
