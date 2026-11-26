@@ -864,6 +864,7 @@ internal static class DeletedCwdPathTests
         WriteFailed43SelfTest(Check);
         RestoreProblemsSelfTest45(Check);
         RestoreWiring47(root, Check);
+        LockVerbsSelfTest51(root, Check);
         WiringComments55(root, Check);
         Contract47(root, Check);
         GenericCatch43(scratch, cliDll, Check);
@@ -1142,11 +1143,19 @@ internal static class DeletedCwdPathTests
     // open with as many braces as dollars) and everything inside interpolation holes, which are scanned as code to their
     // closing brace (so strings, chars, comments and nested interpolated strings there are skipped too). P10-49: a hole's
     // format clause ({x:...}) is text to the hole's closing brace, and a $$ raw hole must close with as many braces as dollars.
+    // Brace runs in literals (LiteralEnd47): P10-51: of a raw hole's opening or closing run, as many braces as dollars open
+    // or close the hole and the rest are text, fewer than the dollars, so a run reaching twice the dollars is unclosed.
+    // P10-53: a raw content closing brace run (not the text rest of a hole's closing run) must be shorter than the dollars
+    // (C# CS9007), else unclosed. P10-55: in non-raw interpolated content a lone closing brace (not }}) is unclosed (CS8086).
     static int BlockEnd45(string source, int open) => open >= 0 && open < source.Length && source[open] == '{' ? CodeEnd47(source, open + 1) : -1;
 
     // P10-47: index of the first '}' at depth 0 from start (comments and literals skipped), or -1. P10-49: in an
     // interpolation hole a ':' outside parentheses, brackets and braces opens the format clause, which is text to the first
     // '}' (C# reads a top-level ':' in a hole as the format clause; a conditional there must be parenthesised).
+    // Literals met here are read by LiteralEnd47, which calls back for each hole (hole: true): P10-51: a raw hole closes with
+    // as many braces as dollars, the rest of the run text, so a run reaching twice the dollars is unclosed (-1); P10-53: a raw
+    // content closing brace run must be shorter than the dollars (CS9007); P10-55: a lone closing brace (not }}) in non-raw
+    // interpolated content is unclosed (CS8086).
     static int CodeEnd47(string source, int start, bool hole = false)
     {
         var depth = 0;
@@ -1244,6 +1253,13 @@ internal static class DeletedCwdPathTests
                 if (close < 0) return -1;
                 i = close;
             }
+            // P10-55: in non-raw interpolated content a closing brace must be doubled (}} is an escaped brace); a lone
+            // closing brace is refused by C# (CS8086), so the literal is reported unclosed.
+            else if (dollars > 0 && c == '}')
+            {
+                if (i + 1 < source.Length && source[i + 1] == '}') { i++; continue; }
+                return -1;
+            }
         }
         return -1;
     }
@@ -1333,13 +1349,16 @@ internal static class DeletedCwdPathTests
         }
         var unused = source.Replace("restoreProblem.Length == 0", "true", StringComparison.Ordinal);
         Check(unused != source && RestoreWiringProblem47(unused) is not null, Label("a mutant whose restore check ignores the aggregate is refused"), unused == source ? "not planted" : RestoreWiringProblem47(unused) ?? "accepted");
-        LockVerbsSelfTest51(source, Check);
     }
 
-    // P10-51 self-tests (moved out of RestoreWiring47 by P10-53): the LockVerbs47 declaration reader skips parentheses
+    // P10-51 self-tests (moved out of RestoreWiring47 by P10-53; since P10-55 called from P10_41 beside RestoreWiring47
+    // and the other P10_41 self-tests, reading this file itself): the LockVerbs47 declaration reader skips parentheses
     // inside string and char parameter defaults (the name is split so this file's text holds no second declaration).
-    static void LockVerbsSelfTest51(string source, Action<bool, string, string> Check)
+    static void LockVerbsSelfTest51(string root, Action<bool, string, string> Check)
     {
+        string source;
+        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, "P10-51 lock verbs restore wiring (LockVerbsSelfTest51): tests/cli/DeletedCwdPathTests.cs is readable", error.Message); return; }
         var declared = "LockVerbs" + "Unsearchable41(";
         var literals = "static void " + declared + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
         Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + declared + "string a = \"(\" {"),
