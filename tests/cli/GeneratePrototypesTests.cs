@@ -80,6 +80,10 @@ using Bim.Generative;
 //      conditional with a collection branch (c ?[x] : d; stated limit: only the span's first ?), an exponent literal's
 //      sign (1e-5) is no subtraction; a < b, c > (d) is pinned as one argument and a Notifier parameter passed on as
 //      (test) ?? d or (test)! ?? d is named.
+//      P7-56: a ?[ collection branch inside a conditional's branch (c ? b ?[x] : y : d) is a nested conditional, an element
+//      access there still is not (stated limit: a branch mixing both); (test)!(x) is a cast of !(x), as C# reads it; an
+//      exponent's walk back crosses . and must give a whole decimal real prefix, so 1e5f - x, 0x_1e-5 and 1.E - x are
+//      subtractions while 1e-5f and .5e-3 are one value.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -3088,21 +3092,27 @@ internal static class GeneratePrototypesTests
             }
             if (question >= 0)
             {
-                var nested = 0;
-                depth = 0;
-                for (var i = question + 1; i < e; i++)
+                // P7-56: a ?[ inside the branch whose ] is followed by : (CollectionBranch) first counts as a nested
+                // conditional (c ? b ?[x] : y : d); when no : is then left for this conditional, every ?[ there is an
+                // element access (c ? a?[0] : d). Stated limit: a branch mixing both kinds is read with neither nested.
+                foreach (var collections in new[] { true, false })
                 {
-                    var c = code[i];
-                    if (c is '(' or '[' or '{') depth++;
-                    else if (c is ')' or ']' or '}') depth--;
-                    else if (depth > 0) continue;
-                    else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
-                    else if (c == '?' && !(i + 1 < e && code[i + 1] is '.' or '[') && !NullableMark(code, i, e)) nested++;
-                    else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
+                    var nested = 0;
+                    depth = 0;
+                    for (var i = question + 1; i < e; i++)
                     {
-                        Add(question + 1, i);
-                        Add(i + 1, e);
-                        return;
+                        var c = code[i];
+                        if (c is '(' or '[' or '{') depth++;
+                        else if (c is ')' or ']' or '}') depth--;
+                        else if (depth > 0) continue;
+                        else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
+                        else if (c == '?' && (!(i + 1 < e && code[i + 1] is '.' or '[') || (collections && i + 1 < e && code[i + 1] == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) nested++;
+                        else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
+                        {
+                            Add(question + 1, i);
+                            Add(i + 1, e);
+                            return;
+                        }
                     }
                 }
                 return;
@@ -3136,6 +3146,7 @@ internal static class GeneratePrototypesTests
     // P7-52: whether (T) at [open, close) followed by the token at after is a cast, as C# tells it from a parenthesised
     // operand: the next token is a name or keyword (but as, is, switch, with, and, or), a literal, ( ~ or ! (not !=);
     // after a keyword type ((int), (string?)) also + or -. So (x) =>, (test) ?? d, (test) + 1 and (test).M are no casts.
+    // P7-56: (test)!(x) is a cast of !(x) (! followed by an operand), as C# reads it, not an invocation of test!.
     static readonly HashSet<string> OperatorWords = new(StringComparer.Ordinal) { "as", "is", "switch", "with", "and", "or" };
     static bool CastFollows(string code, int open, int close, int after, int end)
     {
@@ -3160,8 +3171,8 @@ internal static class GeneratePrototypesTests
     }
 
     // P7-54: whether the ?[ whose [ is at open starts a collection-expression branch of a conditional (c ?[x] : d): the
-    // matching ] is followed by a : (not ::). Else it is a null-conditional element access (a?[0]). Stated limit: only
-    // the first ? of a span is so told; inside a conditional's branch every ?[ is an element access.
+    // matching ] is followed by a : (not ::). Else it is a null-conditional element access (a?[0]). P7-56: also told inside
+    // a conditional's branch (c ? b ?[x] : y : d), falling back to element accesses when the conditional's : is not left.
     static bool CollectionBranch(string code, int open, int end)
     {
         var close = Closing(code, open, '[', ']');
@@ -3173,12 +3184,17 @@ internal static class GeneratePrototypesTests
 
     // P7-54: whether the + or - after the character at last is an exponent's sign: last is e / E ending a decimal numeric
     // literal (1e-5, 2.5E+3, 1_0e-5; not a name nor a hex 0x1e, whose - is a subtraction).
+    // P7-56: the walk back crosses letters, digits, _ and . (so 2.5e and .5e are whole), and the walked token must then be a
+    // whole decimal real prefix (digits, an optional . and digits, or . and digits, then e): a suffix ends no exponent
+    // (1e5f - x), a hex stays one (0x_1e-5), and 1.E (a member access on 1) or 2.5.X1e (a member) is no exponent. Stated
+    // limit: the token is read from the text before last only; a literal cut by whitespace or a comment is not seen.
+    static readonly System.Text.RegularExpressions.Regex ExponentPrefix = new(@"^(?:[0-9][0-9_]*(?:\.[0-9][0-9_]*)?|\.[0-9][0-9_]*)[eE]$");
     static bool ExponentSign(string code, int start, int last)
     {
         if (code[last] is not ('e' or 'E')) return false;
         var q = last;
         while (q > start && (char.IsLetterOrDigit(code[q - 1]) || code[q - 1] is '_' or '.')) q--;
-        return char.IsDigit(code[q]) && !(code[q] == '0' && q + 1 < last && code[q + 1] is 'x' or 'X' or 'b' or 'B');
+        return ExponentPrefix.IsMatch(code[q..(last + 1)]);
     }
 
     // P7-52: whether the ? at index marks a nullable type: the next non-whitespace character closes a type (> , ) ]).
