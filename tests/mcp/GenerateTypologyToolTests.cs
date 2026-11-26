@@ -503,6 +503,9 @@ internal static class GenerateTypologyToolTests
     // accepts `|| true` after the whole pipeline for a grep inside it; a grep piped inside $(...) has its own self-tests.
     // The notice-grep check runs over the names this section's checks printed in the run, not literal samples; each
     // capacity run's margin under CapacityRunMs is printed in the capacity notice and the budget check.
+    // P3-48. BareGrepPipes joins continued lines (trailing backslash, pipe, or-list, and-list) before scanning, walks past
+    // `&>`, `&>>` and `|&`, and accepts `|| :` as a guard; the contract states that a check name that differs by OS is
+    // covered by the notice-grep check only in that OS's job.
     // Duplication recorded (not removed): AttemptWriter overlaps tests/cli's RejectingWriter (linked here) and the
     // CountingWriter nested in tests/cli/GenerateTypologyTests.cs. It stays separate because it must run inside the server
     // process (this assembly is the startup hook) and report its attempts across the process boundary through a log file,
@@ -934,7 +937,7 @@ internal static class GenerateTypologyToolTests
             // P3-46: the grep scan's or-true and quoting rules and its remaining limit, the printed margin, the notice grep
             // tested against the printed names, and the P3-44 runs.
             Check(paragraph.Contains("an or-true guard after a whole pipeline guards every grep in it, and a `)` or `}` inside a double-quoted argument does not end the command", StringComparison.Ordinal)
-                && paragraph.Contains("only a literal or-true counts as a guard and a grep on a backslash-continued line counts as unguarded (both on the safe side)", StringComparison.Ordinal)
+                // P3-48: the P3-46 limit sentence (or-true only, continued lines unguarded) is superseded by the P3-48 check below.
                 && paragraph.Contains("the margin of each run under it is printed in the capacity notice and check", StringComparison.Ordinal)
                 && paragraph.Contains("the notice grep is tested against the PASS names the section's checks print in that run", StringComparison.Ordinal)
                 && paragraph.Contains("P3-44 relay286 CI red 45580685232, green 45583083273", StringComparison.Ordinal),
@@ -969,8 +972,12 @@ internal static class GenerateTypologyToolTests
             // `)` or `}` closing the grep's own group continues into the enclosing command (a group's or substitution's
             // status is its last pipeline's), `;` before such a `}` continues too, a `|` makes it piped, `|| true` guards
             // it (after the whole pipeline as well), and any other `||`, `;`, `&&`, `&` or the line end stops it (2>&1 is a
-            // redirection). Remaining limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep
-            // on a backslash-continued line counts as unguarded.
+            // redirection). P3-46 limits, both on the safe side: only a literal `|| true` counts as a guard, and a grep on a
+            // backslash-continued line counts as unguarded.
+            // P3-48: continued lines are joined before the scan (a trailing backslash, `|`, `|&`, `||` or `&&`; not a YAML
+            // `run: |` header), so a grep on the next line of a pipeline is checked and a guard on the next line counts; a
+            // continuation left open at the end counts as unguarded. `&>`, `&>>`, `>&`, `<&` and `|&` do not stop the walk
+            // (`|&` is a pipe, before or after the grep). `|| :` guards as `|| true` does; any other or-list does not.
             var stepEnd = macTail.IndexOf("\n      - name: ", 1, StringComparison.Ordinal);
             var macStepText = stepEnd > 0 ? macTail[..stepEnd] : macTail;
             static string Mask(string line)
