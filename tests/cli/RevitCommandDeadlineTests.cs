@@ -1633,7 +1633,9 @@ internal static class RevitCommandDeadlineTests
     {
         if (created) return (resolved, null, "symbolic link created; resolution " + (resolved ? "exercised" : "FAILED"));
         var record = "symbolic link not created (" + reason.ReplaceLineEndings(" ") + ")";
-        return windows ? (true, "::warning::cli-inputs P1-46 " + record + "; the symlink resolution of ControlLocationProblem is not exercised on this Windows runner", record) : (false, null, record);
+        // P1-48: the warning line escapes the reason as written (% CR LF, CliInputsSummary.Line's helper); the record
+        // (check names and details) keeps it on one line.
+        return windows ? (true, "::warning::cli-inputs P1-46 " + SummaryEscape("symbolic link not created (" + reason + ")") + "; the symlink resolution of ControlLocationProblem is not exercised on this Windows runner", record) : (false, null, record);
     }
 
     // P1-48: the % CR LF escape of CliInputsSummary.Line (tests/cli/Program.cs, its private Escape), read by reflection so
@@ -1901,8 +1903,8 @@ internal static class RevitCommandDeadlineTests
         }
         var link = LinkOutcome(linkCreated, resolvedThroughLink, OperatingSystem.IsWindows(), skipReason);
         if (link.Warning is { } skipWarning) Console.WriteLine(skipWarning);
+        // P1-48: asserted once, under the P1-44 name; the P1-46 record (link created or not, and why) is in its detail.
         check(link.Pass, "P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)", link.Record + "; " + detail);
-        check(link.Pass, "P1-46 control location self-test: " + link.Record, detail);
         check(!Directory.Exists(scratch), "P1-44 control location self-test: the scratch link folder is removed", scratch);
         LinkWarningPinned(root, check);
     }

@@ -346,13 +346,10 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
     // linked), so a signature in a comment or a brace in a literal is not the member's ("" when there is no block body).
     const string P123Signature="(string Text, bool IsError) RevitCallAll(";
     string P123Body(string p123Text)=>DeadlineSourceScan.MemberBody(DeadlineSourceScan.StripCode(p123Text.ReplaceLineEndings("\n")),P123Signature) ?? "";
-    var p123Raw=p123Source.ReplaceLineEndings("\n");
-    var p123Stripped=DeadlineSourceScan.StripCode(p123Raw);
-    var p123Body=P123Body(p123Raw);
+    var p123Body=P123Body(p123Source);
     // Code only: comments blanked (literal text kept), so prose cannot satisfy or trip the checks; the body's lines
-    // (StripCode keeps the source's newlines, so the stripped body's lines are the source's lines).
-    var p123First=p123Body.Length==0 ? 0 : p123Stripped[..p123Stripped.IndexOf(P123Signature,StringComparison.Ordinal)].Count(p123Char=>p123Char=='\n');
-    var p123Code=p123Body.Length==0 ? "" : string.Join("\n",DeadlineSourceScan.CommentsBlanked(p123Raw).Split('\n').Skip(p123First).Take(p123Body.Count(p123Char=>p123Char=='\n')+1));
+    // (P1-48: through the shared DeadlineSourceScan.MemberLines, the one line mapping of the p122 and p123 pins).
+    var p123Code=DeadlineSourceScan.MemberLines(p123Source,P123Signature);
     // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
     // P1-44: through the shared parser (tests/cli/DeadlineSourceScan.cs, linked; the one copy): comments and literals
     // stripped first (a '//' inside a string is no comment), each `new RevitDeadlineTransport(` argument list split at
@@ -573,14 +570,8 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
     // there is no block body). The pin then reads the body's own source lines with comments blanked and literal text
     // kept (its refusal-text tokens are literals): StripCode keeps the source's newlines, so the lines line up.
     const string P122Signature="static string? ParseOptions(";
-    string P122Body(string p122Text) {
-        var p122Raw=p122Text.ReplaceLineEndings("\n");
-        var p122Stripped=DeadlineSourceScan.StripCode(p122Raw);
-        var p122Member=DeadlineSourceScan.MemberBody(p122Stripped,P122Signature);
-        if(p122Member is null) return "";
-        var p122First=p122Stripped[..p122Stripped.IndexOf(P122Signature,StringComparison.Ordinal)].Count(p122Char=>p122Char=='\n');
-        return string.Join("\n",DeadlineSourceScan.CommentsBlanked(p122Raw).Split('\n').Skip(p122First).Take(p122Member.Count(p122Char=>p122Char=='\n')+1));
-    }
+    // P1-48: through the shared DeadlineSourceScan.MemberLines (the one line mapping of the p122 and p123 pins).
+    string P122Body(string p122Text)=>DeadlineSourceScan.MemberLines(p122Text,P122Signature);
     // P1-46: what the pin reads in a ParseOptions body: the shared option loop is called, and no value grammar, range
     // or refusal text of its own is there ("" when none is missing or found).
     var p122Tokens=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("};
