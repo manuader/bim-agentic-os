@@ -439,7 +439,52 @@ internal static class InternalErrorDelegationTests
         // Label convention (P3-49): a case labelled "is caught" plants a moved or misused read; its label ends in
         // "(planted)" exactly when that case failed in its row's red CI run (red before the row's helper change), so a
         // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
+        // P3-51: the marks are pinned per row (plantedByRow below, asserted): each pinned label is a visible failure
+        // annotation of its row's red run (GitHub shows at most 10 failure annotations per job; every pinned label is among
+        // them). Evidence runs, one line per row:
+        //   P3-29 red 44882607530: stored block lambda; nested in a block inside a stored block lambda; stored anonymous
+        //         method; stored anonymous method with parameters (WorkProbe). "passed as an argument" is not among its
+        //         visible failures, so its mark is dropped (P3-51).
+        //   P3-33 red 44927169963: local function; nested block inside a static local function with parameters.
+        //   P3-35 red 45264424705: get/indexer/private set accessors, operator +/==, where T : class/new()/class, new().
+        //   P3-37 red 45329713789: finalizer.
+        //   P3-39 red 45398499020: base(new object()) constructor, new-modifier method, protected new static int[] method.
+        //   P3-41 red 45505358519: this(new[] { n }), base(() => { }), base(() => { return; }), new-modifier tuple, ref int,
+        //         ref readonly int returns.
+        //   P3-43 red 45564470037: [A(new[] { 1 })] / [A(typeof(int[]))] local functions, method and get accessor carrying
+        //         [A(new[] { 1 })], new-modifier List<(int, int)> and pointer returns.
+        //   P3-45 red 45639522818: Dictionary<A<B<(int, int)>>, C> return, parameter and type-parameter attribute.
+        //   P3-47 red 45725167231: stacked parameter attributes [A] [B(new[] { 1 })].
+        //   P3-49 red 45779621457: no case (its only failure was the MethodBody source pin).
         {
+            const string Planted = " (planted)";
+            var plantedByRow = new (string Row, long RedRun, string[] Labels)[]
+            {
+                ("P3-29", 44882607530, new[] { "the read moved into a stored block lambda", "the read nested in a block inside a stored block lambda",
+                    "the read moved into a stored anonymous method", "the read moved into a stored anonymous method with parameters" }),
+                ("P3-33", 44927169963, new[] { "the read moved into a local function", "the read nested in a block inside a static local function with parameters" }),
+                ("P3-35", 45264424705, new[] { "the read moved into a local function inside a property get accessor", "the read moved into a local function inside an indexer get accessor",
+                    "the read moved into a local function inside a private set accessor", "the read moved into a local function inside an operator + body",
+                    "the read moved into a local function inside an operator == body", "the read moved into a local function constrained where T : class",
+                    "the read moved into a local function constrained where T : new()", "the read moved into a local function inside a method constrained where T : class, new()" }),
+                ("P3-37", 45329713789, new[] { "the read moved into a local function inside a finalizer" }),
+                ("P3-39", 45398499020, new[] { "the read moved into a local function inside a constructor with a base(new object()) initializer",
+                    "the read moved into a local function inside a new-modifier (hiding) method", "the read moved into a local function inside a protected new static method returning int[]" }),
+                ("P3-41", 45505358519, new[] { "the read moved into a local function inside a constructor with a this(new[] { n }) initializer",
+                    "the read moved into a local function inside a constructor with a base(() => { }) initializer",
+                    "the read moved into a local function inside a constructor with a base(() => { return; }) initializer",
+                    "the read moved into a local function inside a new-modifier method returning a tuple", "the read moved into a local function inside a new-modifier method returning ref int",
+                    "the read moved into a local function inside a protected new static method returning ref readonly int" }),
+                ("P3-43", 45564470037, new[] { "the read moved into a local function carrying [A(new[] { 1 })]", "the read moved into a local function inside a method carrying [A(new[] { 1 })]",
+                    "the read moved into a local function carrying [A(typeof(int[]))]", "the read moved into a local function inside a get accessor carrying [A(new[] { 1 })]",
+                    "the read moved into a local function inside a new-modifier method returning List<(int, int)>", "the read moved into a local function inside a new-modifier method returning a pointer" }),
+                ("P3-45", 45639522818, new[] { "the read moved into a local function inside a new-modifier method returning Dictionary<A<B<(int, int)>>, C>",
+                    "the read moved into a local function with a parameter carrying [A(new[] { 1 })]", "the read moved into a local function with a type parameter carrying [A(new[] { 1 })]" }),
+                ("P3-47", 45725167231, new[] { "the read moved into a local function with a parameter carrying [A] [B(new[] { 1 })]" }),
+                ("P3-49", 45779621457, Array.Empty<string>()),
+            };
+            var plantedNames = new HashSet<string>(StringComparer.Ordinal);
+            var misplacedMarks = new List<string>();
             var seams = new (string Name, string File, string Type, string Read, bool Full)[]
             {
                 ("PostWriteDeleteProbe", "interfaces/cli/GenerateWrite.cs", "Action<string>", "PostWriteDeleteProbe?.Invoke(output);", true),
@@ -659,11 +704,25 @@ internal static class InternalErrorDelegationTests
                 }
                 foreach (var (name, source, clean) in cases)
                 {
+                    if (name.Contains("(planted)", StringComparison.Ordinal))
+                    {
+                        if (clean || !name.EndsWith(Planted, StringComparison.Ordinal)) misplacedMarks.Add(seam + ": " + name);
+                        else plantedNames.Add(name[..^Planted.Length]);
+                    }
                     var uses = SeamHygiene(source, seam, type);
-                    Check(uses.Clean == clean, "P3-29 seam hygiene self-test: " + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
+                    Check(uses.Clean == clean, "P3-29 seam hygiene self-test:" + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
                     selfTests++;
                 }
             }
+            // P3-51: the (planted) marks seen on the cases are exactly the pinned per-row lists (a mark only at the end of
+            // a caught case's label), and the lists hold 34 distinct labels.
+            var pinnedPlanted = plantedByRow.SelectMany(r => r.Labels).ToArray();
+            Check(misplacedMarks.Count == 0 && pinnedPlanted.Length == 34 && pinnedPlanted.Distinct(StringComparer.Ordinal).Count() == pinnedPlanted.Length && plantedNames.SetEquals(pinnedPlanted),
+                "P3-29 seam hygiene: the (planted) marks are exactly the 34 pinned labels, each a visible failure in its row's red run ("
+                    + string.Join(", ", plantedByRow.Select(r => r.Row + " red " + r.RedRun.ToString(CultureInfo.InvariantCulture) + ": " + r.Labels.Length.ToString(CultureInfo.InvariantCulture))) + ")",
+                "marked but not pinned [" + string.Join(" | ", plantedNames.Except(pinnedPlanted, StringComparer.Ordinal)) + "] pinned but not marked ["
+                    + string.Join(" | ", pinnedPlanted.Except(plantedNames, StringComparer.Ordinal)) + "] misplaced [" + string.Join(" | ", misplacedMarks) + "] pinned "
+                    + pinnedPlanted.Length.ToString(CultureInfo.InvariantCulture));
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
@@ -675,7 +734,8 @@ internal static class InternalErrorDelegationTests
             // attribute/multiplication header cases (P3-45: 4 caught, 4 clean controls) plus 8 stacked-attribute/collection-
             // expression/default-multiplication header cases (P3-47: 4 caught, 4 clean controls) plus 6 attribute-argument-
             // multiplication/default-a * b/stacked-run-then-indexer header cases (P3-49: 3 caught, 3 clean controls) for each
-            // of the 9 seams; plus 3 header-span pins and 6 ReducedHeader pins: 1186.
+            // of the 9 seams; plus 3 header-span pins and 6 ReducedHeader pins: 1186. P3-51: plus 2 order-sensitive
+            // ReducedHeader pins, 1 LeadingInnerCommute named-limit self-test and 2 StarOperand named-limit pins: 1191.
             // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
             // inside the parentheses do not split it). P3-47: named limit BracketedBraces: a '}' inside brackets outside any
             // parentheses (a collection expression holding a block lambda in a field initializer) still splits the header
@@ -696,13 +756,50 @@ internal static class InternalErrorDelegationTests
             // it), so a reordering or a dropped replace shows in these pins. A stacked run followed by an indexer in a call
             // (`F([1] [0])`) collapses to one `[]` (pinned, harmless as above); a multiplication in a leading attribute
             // argument is reduced with the section; the last pin exercises all three replaces in one header.
-            foreach (var (header, collapsed) in new[] { ("void Later([A] [B(new[] { 1 })] int n)", "void Later([] int n)"), ("if (F([1, 2]))", "if (F([]))"), ("F(x, [1, 2])", "F(x, [])"),
-                ("if (F([1] [0]) > 0)", "if (F([]) > 0)"), ("[A(2 * 3)] void Later()", "[] void Later()"), ("[A] public C([B] [C(new[] { 1 })] int n) : base(F([1] [0]))", "[] public C([] int n) : base()") })
+            var reducedPins = new[] { ("void Later([A] [B(new[] { 1 })] int n)", "void Later([] int n)"), ("if (F([1, 2]))", "if (F([]))"), ("F(x, [1, 2])", "F(x, [])"),
+                ("if (F([1] [0]) > 0)", "if (F([]) > 0)"), ("[A(2 * 3)] void Later()", "[] void Later()"), ("[A] public C([B] [C(new[] { 1 })] int n) : base(F([1] [0]))", "[] public C([] int n) : base()") };
+            foreach (var (header, collapsed) in reducedPins)
             {
                 Check(ReducedHeader(header) == collapsed, "P3-29 seam hygiene self-test: ReducedHeader (MethodBody's replace order) reduces [" + header + "] to [" + collapsed + "]", ReducedHeader(header));
                 selfTests++;
             }
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 && selfTests == 1186, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            // P3-51: order-sensitive pins. Each header reduces differently when InitializerArguments runs before the other
+            // replace (the swapped composition is computed and must differ): a bracket run holding ')' inside the
+            // initializer arguments balances them only after InnerAttributes, and an initializer-like run inside an unclosed
+            // leading section is cut by LeadingAttributes first. Synthetic (not valid C#): they pin the order, nothing more.
+            var orderPins = new[]
+            {
+                ("C(int n) : base(F(, [1)]))", "C(int n) : base()", "InitializerArguments before InnerAttributes", "C(int n) : base(F(, []))"),
+                ("[A(x) : base(] y)", "[] y)", "InitializerArguments before LeadingAttributes", "[A(x) : base()"),
+            };
+            foreach (var (header, reduced, swap, swapped) in orderPins)
+            {
+                var other = swap == "InitializerArguments before InnerAttributes"
+                    ? InnerAttributes.Replace(InitializerArguments.Replace(LeadingAttributes.Replace(header, "[] "), ") : $1()"), "[]")
+                    : LeadingAttributes.Replace(InnerAttributes.Replace(InitializerArguments.Replace(header, ") : $1()"), "[]"), "[] ");
+                Check(ReducedHeader(header) == reduced && other == swapped && swapped != reduced,
+                    "P3-29 seam hygiene self-test: ReducedHeader reduces [" + header + "] to [" + reduced + "], and to [" + swapped + "] with " + swap, ReducedHeader(header) + " / swapped " + other);
+                selfTests++;
+            }
+            // P3-51: named limit LeadingInnerCommute: LeadingAttributes and InnerAttributes commute (LeadingAttributes is
+            // anchored at the start, InnerAttributes never matches there and only rewrites a bracket-balanced run inside or
+            // after the leading sections), so no output pin can catch their swap; on every pin header above the swapped
+            // order gives the same output. The source pin below (ReducedHeader's Replace calls in order) guards the swap.
+            var commuted = reducedPins.Select(p => p.Item1).Concat(orderPins.Select(p => p.Item1))
+                .Where(h => InitializerArguments.Replace(LeadingAttributes.Replace(InnerAttributes.Replace(h, "[]"), "[] "), ") : $1()") != ReducedHeader(h)).ToArray();
+            Check(commuted.Length == 0, "P3-29 seam hygiene self-test: named limit LeadingInnerCommute: InnerAttributes before LeadingAttributes reduces every ReducedHeader pin header the same way", string.Join(" | ", commuted));
+            selfTests++;
+            // P3-51: named limit StarOperand: MethodHeader reads a lone '*' as a pointer token, so a multiplication followed
+            // by a call (`x * F(y)`) reads as a method header returning a pointer. Harmless: no C# statement or member puts a
+            // multiplication directly before '{' (an object creation is refused by ObjectCreation, a keyword header by the
+            // statement-keyword list), while a spaced pointer return (`unsafe int * Later(int n)`, pinned beside it) is a
+            // real local function header that refusing a lone '*' would miss.
+            foreach (var header in new[] { "x * F(y)", "unsafe int * Later(int n)" })
+            {
+                Check(MethodBody(header), "P3-29 seam hygiene self-test: named limit StarOperand: MethodBody reads [" + header + "] as a method header", header);
+                selfTests++;
+            }
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 + 2 + 1 + 2 && selfTests == 1191, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
             // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
             // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
             // P3-45: so does every regex InBlockLambda and MethodBody use (the lambda/anonymous-method header, the
@@ -729,6 +826,14 @@ internal static class InternalErrorDelegationTests
             var methodBody = bodyTo < 0 ? "" : helpers[bodyFrom..bodyTo];
             Check(methodBody.Contains("header = ReducedHeader(header);", StringComparison.Ordinal) && !methodBody.Contains(".Replace(", StringComparison.Ordinal),
                 "P3-29 seam hygiene: the source from [static bool MethodBody(string header)] (last occurrence) to its closing brace reduces the header only through [header = ReducedHeader(header);] (no Replace call of its own)", methodBody.ReplaceLineEndings(" "));
+            // P3-51: ReducedHeader's own source calls Replace exactly on LeadingAttributes, InnerAttributes and
+            // InitializerArguments, in that order (the guard for the LeadingInnerCommute swap the output pins cannot see).
+            var reducerFrom = helpers.LastIndexOf("static string ReducedHeader(string header)", StringComparison.Ordinal);
+            var reducerTo = reducerFrom < 0 ? -1 : helpers.IndexOf("\n    }", reducerFrom, StringComparison.Ordinal);
+            var reducer = reducerTo < 0 ? "" : helpers[reducerFrom..reducerTo];
+            var replaced = System.Text.RegularExpressions.Regex.Matches(reducer, @"(\w+)\s*\.\s*Replace\s*\(").Select(m => m.Groups[1].Value).ToArray();
+            Check(replaced.SequenceEqual(new[] { "LeadingAttributes", "InnerAttributes", "InitializerArguments" }, StringComparer.Ordinal),
+                "P3-29 seam hygiene: the source from [static string ReducedHeader(string header)] (last occurrence) to its closing brace calls Replace on LeadingAttributes, InnerAttributes, InitializerArguments in that order and nothing else", string.Join(", ", replaced));
 
             var sep = Path.DirectorySeparatorChar;
             var sources = Directory.GetFiles(Path.Combine(root, "interfaces"), "*.cs", SearchOption.AllDirectories)
