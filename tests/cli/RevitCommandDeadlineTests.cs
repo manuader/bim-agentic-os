@@ -38,9 +38,16 @@ using Bim.Core;
 //   P1-47: the step summary print sits inside the last finally block; the cap's '; +N more' count is pinned; FailSummary
 //      is CliInputsSummary.Line under its own title (shared escape and cap); MemberBody(raw: true) skips a signature with
 //      any character in a comment or literal, and agrees with the stripped path on interpolated literals.
+//   P1-48: the tests/mcp p122/p123 pins share DeadlineSourceScan.MemberLines; the Windows link-skip ::warning:: escapes
+//      % CR LF with CliInputsSummary's Escape; the link pass is asserted once (P1-44 name, P1-46 record in its detail);
+//      the step's warning budget: only tests/cli and tests/mirror-journal print ::warning:: (.cs/.ps1/.psm1 files
+//      scanned), mirror-journal runs after cli-inputs, three console writes here, within GitHub's 10 per step.
 //   P1-49: MemberBody(raw: true) reads a signature's masked characters from the mask marks (a comment's or literal's
 //      spaces and newlines are not code); Retitled throws a named problem for a line without the 'cli-inputs step'
 //      prefix, VisibilitySelfTest reds a changed CliInputsSummary prefix by name first, and FailSummary never throws.
+//   P1-50: CliInputsSummary.Escape is internal and called directly (no reflection); a failing run's step summary is at
+//      most warning 21 of the step (3 here, the P10-30 verbs and P10-32 modes counted from DeletedCwdPathTests.cs, then
+//      the summary); each tests/mirror-journal ::warning:: site prints at most once per run (call chains read).
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -1742,9 +1749,10 @@ internal static class RevitCommandDeadlineTests
     // before DeletedCwdPathTests (P10-30/P10-32 probes, one per failing verb or mode) and before Program.cs's step-wide
     // CliInputsSummary line (its last line, P1-45/P1-47). So: a green run prints at most 2 warnings from here plus
     // mirror-journal's (its sites), within the budget; in a failing run the deadline summary is at most the 3rd warning
-    // of the step, and the step summary comes after the failing probes (stated, not counted: one per failing verb or
-    // mode), every FAIL line staying in the log. warningCounts maps a repository path ('/') to its count of ::warning::
-    // in code and literals (comments blanked); "" when the budget holds.
+    // of the step, and the step summary comes after the failing probes (one per failing verb or mode; P1-50: counted by
+    // SummaryPositionProblems, and the mirror-journal sites bounded at once per run by MirrorWarningBound), every FAIL
+    // line staying in the log. warningCounts maps a repository path ('/') to its count of ::warning:: in code and
+    // literals (comments blanked); "" when the budget holds.
     static string WarningBudgetProblems(IReadOnlyDictionary<string, int> warningCounts, string verify, string cliProgram, string self)
     {
         var problems = new List<string>();
@@ -1773,6 +1781,8 @@ internal static class RevitCommandDeadlineTests
 
     // P1-48: the counts WarningBudgetProblems reads: every .cs/.ps1/.psm1 file of the repository (no dot, bin or obj
     // folder) with ::warning:: outside its comments (C# comments blanked; a PowerShell line starting with '#' skipped).
+    // P1-50: only those three extensions are scanned; a ::warning:: written by any other file (a workflow .yml, a .sh,
+    // a .py) is not counted.
     static Dictionary<string, int> WarningCounts(string root)
     {
         var counts = new Dictionary<string, int>(StringComparer.Ordinal);
@@ -1791,6 +1801,239 @@ internal static class RevitCommandDeadlineTests
         }
         return counts;
     }
+
+    // P1-50: CliInputsSummary.Escape is internal and SummaryEscape calls it directly (the P1-48 reflection is dropped),
+    // so a renamed or removed Escape is a compile error naming it (CS0117), never a run-time exception. "" when it holds.
+    static string EscapeDirectProblems(string cliProgram, string self)
+    {
+        static string Flat(string source) => string.Concat(StripCode(source.ReplaceLineEndings("\n")).Where(c => !char.IsWhiteSpace(c)));
+        var program = Flat(cliProgram);
+        var code = Flat(self);
+        return (program.Contains("internalstaticstringEscape(stringtext)=>", StringComparison.Ordinal) ? "" : "CliInputsSummary.Escape is not internal static string Escape(string text); ")
+            + (code.Contains("staticstringSummaryEscape(stringtext)=>CliInputsSummary.Escape(text);", StringComparison.Ordinal) ? "" : "SummaryEscape does not call CliInputsSummary.Escape directly; ")
+            + (code.Contains("GetMethod(", StringComparison.Ordinal) || code.Contains("System.Reflection", StringComparison.Ordinal) ? "reflection is left in RevitCommandDeadlineTests.cs" : "");
+    }
+
+    // P1-50: the cli-inputs step's worst-case warning position in a failing run. This file writes its three lines first
+    // (DeadlineWarningLines; WarningBudgetProblems pins them); tests/cli/DeletedCwdPathTests.cs then prints one P10-30
+    // probe warning per verb with a failing case in each RunCases call (the distinct verbs of Cases and of Remainder's
+    // probe cases) and one P10-32 warning per unsearchable mode with a failing case (Remainder's mode loop), and
+    // Program.cs's step summary comes last. Counted from the source, the sum is a bound for every runner: Windows skips
+    // both probes (3 + 1 = 4 today) and Linux/macOS write neither Windows-only line (1 + 15 + 2 + 1 = 19 today). Past
+    // GitHub's WarningsPerStep the step summary is in the log only; the deadline summary stays at most the 3rd.
+    const int DeadlineWarningLines = 3;
+    const int StepSummaryWorstWarning = 21;
+
+    static (int Verbs, int Modes, string Problems) ProbeWarnings(string deleted) => (0, 0, "P1-50 red: the probe warnings are not counted yet (" + N(deleted.Length) + " characters read)");
+
+    // P1-50: "" when the counted worst-case position of the step summary is the pinned StepSummaryWorstWarning.
+    static string SummaryPositionProblems(string deleted)
+    {
+        var (verbs, modes, problems) = ProbeWarnings(deleted);
+        if (problems.Length > 0) return problems;
+        var position = DeadlineWarningLines + verbs + modes + 1;
+        return position == StepSummaryWorstWarning ? "" : "the step summary can be warning " + N(position) + " (" + N(DeadlineWarningLines) + " from the deadline tests, "
+            + N(verbs) + " P10-30 verbs, " + N(modes) + " P10-32 modes), not the pinned " + N(StepSummaryWorstWarning);
+    }
+
+    // P1-50: how often the tests/mirror-journal ::warning:: sites can print in one run, read from the call chains on
+    // CodeMask output (comments and literals blanked in place). A brace block's header is the code since the previous
+    // '{', '}' or ';' outside parentheses ("if (x)", "static void M(int a)", "static class C").
+    readonly record struct SourceBlock(int Open, int Close, string Header);
+    readonly record struct SourceContext(string? Type, string? Member, SourceBlock? MemberBlock, List<SourceBlock> Inner, string Problem);
+    static readonly System.Text.RegularExpressions.Regex TypeHeader = new(@"^(?:\[[^\]]*\]\s*)*(?:(?:public|internal|private|protected|static|sealed|abstract|partial|readonly|file|unsafe|new|ref)\s+)*(?:class|struct|interface|record(?:\s+class|\s+struct)?)\s+(\w+)");
+    static readonly System.Text.RegularExpressions.Regex ControlHeader = new(@"^(?:else\s+)?(?:if|for|foreach|while|switch|catch|using|lock|fixed|do|try|finally|else|checked|unchecked|unsafe|get|set|init)\b");
+    static readonly System.Text.RegularExpressions.Regex LoopOrLambda = new(@"\b(?:for|foreach|while|do)\b|=>");
+    static readonly System.Text.RegularExpressions.Regex IfHeader = new(@"^(?:else\s+)?if\b|^else\b");
+
+    static string Collapsed(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+
+    static List<SourceBlock> SourceBlocks(string mask)
+    {
+        var blocks = new List<SourceBlock>();
+        var open = new Stack<(int At, string Header, int Parens)>();
+        var last = -1;
+        var parens = 0;
+        for (var k = 0; k < mask.Length; k++)
+        {
+            var c = mask[k];
+            if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';') { if (parens == 0) last = k; }
+            else if (c == '{') { open.Push((k, Collapsed(mask[(last + 1)..k]), parens)); parens = 0; last = k; }
+            else if (c == '}')
+            {
+                if (open.Count > 0) { var (at, header, outer) = open.Pop(); blocks.Add(new SourceBlock(at, k, header)); parens = outer; }
+                if (parens == 0) last = k;
+            }
+        }
+        blocks.Sort((a, b) => a.Open.CompareTo(b.Open));
+        return blocks;
+    }
+
+    // The name of a method or local function whose header this is (ends with its parameter list, no control keyword,
+    // no '=' before the list, no '=>'); null otherwise.
+    static string? FunctionName(string header)
+    {
+        if (header.Length == 0 || header[^1] != ')' || ControlHeader.IsMatch(header) || header.Contains("=>", StringComparison.Ordinal)) return null;
+        var depth = 0;
+        var k = header.Length - 1;
+        for (; k >= 0; k--)
+        {
+            if (header[k] == ')') depth++;
+            else if (header[k] == '(' && --depth == 0) break;
+        }
+        if (k <= 0) return null;
+        var head = header[..k].TrimEnd();
+        if (head.Contains('=')) return null;
+        var name = System.Text.RegularExpressions.Regex.Match(head, @"(\w+)\s*(?:<[^<>]*>)?$");
+        return name.Success ? name.Groups[1].Value : null;
+    }
+
+    // The statement text from the last '{', '}' or ';' (outside parentheses) after position from up to position at.
+    static string StatementBefore(string mask, int from, int at)
+    {
+        var last = from;
+        var depth = 0;
+        var parens = 0;
+        for (var k = from + 1; k < at; k++)
+        {
+            var c = mask[k];
+            if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0 && parens == 0) last = k; }
+            else if (depth > 0) continue;
+            else if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';' && parens == 0) last = k;
+        }
+        return Collapsed(mask[(last + 1)..at]);
+    }
+
+    // The last statement of the block open..close ("{block}" when a nested block ends it).
+    static string LastStatement(string mask, int open, int close)
+    {
+        var last = open;
+        var depth = 0;
+        var parens = 0;
+        var statement = "";
+        for (var k = open + 1; k < close; k++)
+        {
+            var c = mask[k];
+            if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0 && parens == 0) { statement = "{block}"; last = k; } }
+            else if (depth > 0) continue;
+            else if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';' && parens == 0) { statement = Collapsed(mask[(last + 1)..k]); last = k; }
+        }
+        var rest = Collapsed(mask[(last + 1)..close]);
+        return rest.Length > 0 ? rest : statement;
+    }
+
+    // The type and method a position sits in (no type: top-level statements) and the blocks inside that method.
+    static SourceContext ContextAt(List<SourceBlock> blocks, int at)
+    {
+        var enclosing = blocks.Where(b => b.Open < at && at < b.Close).ToList();
+        var typeIndex = enclosing.FindLastIndex(b => TypeHeader.IsMatch(b.Header));
+        if (typeIndex < 0) return new SourceContext(null, null, null, enclosing, "");
+        var type = TypeHeader.Match(enclosing[typeIndex].Header).Groups[1].Value;
+        if (typeIndex + 1 >= enclosing.Count) return new SourceContext(type, null, null, new List<SourceBlock>(), "outside a method body");
+        var member = enclosing[typeIndex + 1];
+        var name = FunctionName(member.Header);
+        if (name is null) return new SourceContext(type, null, null, new List<SourceBlock>(), "in a member that is not a method (" + member.Header + ")");
+        return new SourceContext(type, name, member, enclosing.Skip(typeIndex + 2).ToList(), "");
+    }
+
+    // "" when the position runs at most once per run of its method: no loop, lambda or local function around it there.
+    static string ChainProblem(string path, string mask, SourceContext context, int at, string what)
+    {
+        var where = what + " at " + path + ":" + N(mask[..at].Count(c => c == '\n') + 1);
+        if (context.Problem.Length > 0) return where + " is " + context.Problem;
+        foreach (var block in context.Inner)
+        {
+            if (FunctionName(block.Header) is not null) return where + " is inside a local function";
+            if (LoopOrLambda.IsMatch(block.Header)) return where + " is in a loop or lambda (" + block.Header + ")";
+        }
+        var from = context.Inner.Count > 0 ? context.Inner[^1].Open : context.MemberBlock?.Open ?? -1;
+        var statement = StatementBefore(mask, from, at);
+        return LoopOrLambda.IsMatch(statement) ? where + " is in a loop or lambda (" + statement + ")" : "";
+    }
+
+    // How many times type.member can run in one run: the sum over its callers (qualified type.member( anywhere, or an
+    // unqualified member( inside type that is no local function's) of the calls per run of the caller times the caller's
+    // own runs (top-level statements run once). Per caller run the calls are the most of: those outside a branch that
+    // ends with return, or for such a branch, those before its end that are not in an earlier such branch. A call in a
+    // loop, lambda or local function, a method group use and a recursive chain are problems.
+    static long CallRuns(Dictionary<string, (string Mask, List<SourceBlock> Blocks)> files, string type, string member, HashSet<string> visiting, List<string> problems)
+    {
+        var key = type + "." + member;
+        if (!visiting.Add(key)) { problems.Add("a recursive call chain through " + key); return 0; }
+        var callers = new Dictionary<(string Path, int Open), (string? Type, string? Member, List<(int At, List<SourceBlock> Returning)> Sites)>();
+        foreach (var file in files.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            var path = file.Key;
+            var (mask, blocks) = file.Value;
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(mask, @"\b" + member + @"\b"))
+            {
+                var at = match.Index;
+                var k = at - 1;
+                while (k >= 0 && char.IsWhiteSpace(mask[k])) k--;
+                var qualified = k >= 0 && mask[k] == '.';
+                if (qualified)
+                {
+                    var q = k - 1;
+                    while (q >= 0 && char.IsWhiteSpace(mask[q])) q--;
+                    var qualifier = System.Text.RegularExpressions.Regex.Match(mask[..(q + 1)], @"(\w+)$");
+                    if (!qualifier.Success || qualifier.Groups[1].Value != type) continue;
+                }
+                var context = ContextAt(blocks, at);
+                if (!qualified && context.Type != type) continue;
+                var line = N(mask[..at].Count(c => c == '\n') + 1);
+                var p = at + match.Length;
+                while (p < mask.Length && char.IsWhiteSpace(mask[p])) p++;
+                if (p >= mask.Length || mask[p] != '(')
+                {
+                    var before = k >= 0 ? mask[k] : '\0';
+                    if (p < mask.Length && (mask[p] is ';' or ',' or ')') && (qualified || before is '=' or '(' or ',' or '+' or '?' or ':' || System.Text.RegularExpressions.Regex.IsMatch(mask[..(k + 1)], @"\breturn$")))
+                        problems.Add(key + " is used without a call at " + path + ":" + line + " (a method group is not counted)");
+                    continue;
+                }
+                var depth = 0;
+                var close = p;
+                for (; close < mask.Length; close++)
+                {
+                    if (mask[close] == '(') depth++;
+                    else if (mask[close] == ')' && --depth == 0) break;
+                }
+                var r = close + 1;
+                while (r < mask.Length && char.IsWhiteSpace(mask[r])) r++;
+                if (r >= mask.Length || mask[r] == '{' || mask.AsSpan(r).StartsWith("=>", StringComparison.Ordinal) || mask.AsSpan(r).StartsWith("where", StringComparison.Ordinal)) continue; // a declaration
+                if (!qualified && context.MemberBlock is { } own && blocks.Any(b => own.Open < b.Open && b.Open < own.Close && FunctionName(b.Header) == member)) continue;
+                var problem = ChainProblem(path, mask, context, at, "a call of " + key);
+                if (problem.Length > 0) { problems.Add(problem); continue; }
+                var returning = context.Inner.Where(b => IfHeader.IsMatch(b.Header) && System.Text.RegularExpressions.Regex.IsMatch(LastStatement(mask, b.Open, b.Close), @"^return\b")).ToList();
+                var slot = (path, context.MemberBlock?.Open ?? -1);
+                if (!callers.TryGetValue(slot, out var caller)) callers[slot] = caller = (context.Type, context.Member, new List<(int At, List<SourceBlock> Returning)>());
+                caller.Sites.Add((at, returning));
+            }
+        }
+        long total = 0;
+        foreach (var caller in callers.Values)
+        {
+            var sites = caller.Sites;
+            var count = sites.Count(site => site.Returning.Count == 0);
+            foreach (var branch in sites.SelectMany(site => site.Returning).Distinct())
+                count = Math.Max(count, sites.Count(site => site.At < branch.Close && !site.Returning.Any(earlier => earlier.Close < branch.Open)));
+            var runs = caller.Type is null || caller.Member is null ? 1 : CallRuns(files, caller.Type, caller.Member, visiting, problems);
+            total += count * runs;
+        }
+        visiting.Remove(key);
+        return total;
+    }
+
+    // P1-50: the ::warning:: sites (in code or literals, comments blanked) of sources (repository path to text) and the
+    // most times they can print in one run, the sum of their methods' CallRuns; problems as CallRuns names them.
+    static (int Sites, long Bound, string Problems) MirrorWarningBound(IReadOnlyDictionary<string, string> sources) => (0, 0, "P1-50 red: the call chains are not read yet (" + N(sources.Count) + " files)");
 
     // P1-48: the link warning escape, the single link-pass assertion and the step's warning budget (static, self-tests).
     static void LinkWarningPinned(string root, Action<bool, string, string> check)
@@ -1846,6 +2089,76 @@ internal static class RevitCommandDeadlineTests
             ("nine mirror-journal warning sites", new Dictionary<string, int>(counts) { ["tests/mirror-journal/Extra.cs"] = 9 }, verify, cliProgram, self),
         })
             check(WarningBudgetProblems(mutantCounts, mutantVerify, mutantProgram, mutantSelf).Length > 0, "P1-48 warning budget mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        // P1-50: Escape is internal and called directly (no reflection).
+        var direct = EscapeDirectProblems(cliProgram, self);
+        check(direct.Length == 0, "P1-50 static: CliInputsSummary.Escape is internal and SummaryEscape calls it directly (no reflection; a missing Escape is a compile error)", direct);
+        foreach (var (label, mutantProgram, mutantSelf) in new[]
+        {
+            ("a private Escape", cliProgram.Replace("internal static string Escape(", "static string Escape(", StringComparison.Ordinal), self),
+            ("Escape read by reflection", cliProgram, self + "\nstatic class G { static object? M() => typeof(CliInputsSummary).GetMethod(\"Escape\"); }\n"),
+            ("an own escape in SummaryEscape", cliProgram, self.Replace("=> CliInputsSummary.Escape(text);", "=> text.Replace(\"%\", \"%25\");", StringComparison.Ordinal)),
+        })
+            check(EscapeDirectProblems(mutantProgram, mutantSelf).Length > 0, "P1-50 escape mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        // P1-50: the failing-run position of the step summary, counted from the P10-30 verbs and P10-32 modes.
+        var deletedPath = Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs");
+        var deleted = File.Exists(deletedPath) ? File.ReadAllText(deletedPath) : "";
+        var probes = ProbeWarnings(deleted);
+        var position = SummaryPositionProblems(deleted);
+        check(position.Length == 0, "P1-50 static: in a failing run the step summary is at most warning " + N(StepSummaryWorstWarning) + " of the cli-inputs step ("
+            + N(DeadlineWarningLines) + " lines from here, one per P10-30 verb and P10-32 mode, counted; past GitHub's " + N(WarningsPerStep) + " it is in the log only) and the deadline summary at most the 3rd",
+            position + " | " + N(probes.Verbs) + " P10-30 verbs, " + N(probes.Modes) + " P10-32 modes");
+        foreach (var (label, source) in new[]
+        {
+            ("a P10-30 verb added as a literal case", deleted.Replace("        cases.Add((\"cad-draft\", \"output\"", "        cases.Add((\"cad-extra\", \"output\", () => new[] { \"cad-extra\" }, Failed(\"output_path_invalid\")));\n        cases.Add((\"cad-draft\", \"output\"", StringComparison.Ordinal)),
+            ("a P10-30 verb added to the foreach verb list", deleted.Replace("new[] { \"generate-prototypes\", \"generate-typology\", \"plan-layouts\" }", "new[] { \"generate-prototypes\", \"generate-typology\", \"plan-layouts\", \"plan-extra\" }", StringComparison.Ordinal)),
+            ("a third P10-32 mode", deleted.Replace("foreach (var mode in new[] { \"cwd\", \"parent\" })", "foreach (var mode in new[] { \"cwd\", \"parent\", \"both\" })", StringComparison.Ordinal)),
+            ("a case verb that is neither a literal nor a foreach verb", deleted.Replace("        cases.Add((\"cad-draft\", \"output\"", "        cases.Add((other, \"output\", () => new[] { \"x\" }, Failed(\"x\")));\n        cases.Add((\"cad-draft\", \"output\"", StringComparison.Ordinal)),
+            ("a second RunUnsearchable call", deleted.Replace("    // Input is the expected refusal", "    static void More(string s, string c, List<Unsearchable> u, Action<bool, string, string> k, Action<string, string> p) => RunUnsearchable(s, c, \"cwd\", u, k, p);\n\n    // Input is the expected refusal", StringComparison.Ordinal)),
+            ("a third probe warning site", deleted + "\nstatic class Extra { static void W() => Console.WriteLine(\"::warning::P10-99 probe\"); }\n"),
+        })
+            check(source != deleted && SummaryPositionProblems(source).Length > 0, "P1-50 step summary position mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        // P1-50: each tests/mirror-journal ::warning:: site prints at most once per run (its call chains read).
+        var mirrorSources = new Dictionary<string, string>(StringComparer.Ordinal);
+        var fullRoot = Path.GetFullPath(root);
+        var mirrorRoot = Path.Combine(fullRoot, "tests", "mirror-journal");
+        if (Directory.Exists(mirrorRoot))
+            foreach (var file in Directory.EnumerateFiles(mirrorRoot, "*.cs", SearchOption.AllDirectories))
+            {
+                var relative = Path.GetRelativePath(fullRoot, file).Replace('\\', '/');
+                if (relative.Split('/').SkipLast(1).Any(part => part.StartsWith('.') || part is "bin" or "obj")) continue;
+                mirrorSources[relative] = File.ReadAllText(file);
+            }
+        var mirror = MirrorWarningBound(mirrorSources);
+        var mirrorCounted = counts.Where(entry => entry.Key.StartsWith("tests/mirror-journal/", StringComparison.Ordinal)).Sum(entry => entry.Value);
+        check(mirror.Problems.Length == 0 && mirror.Sites == 2 && mirror.Sites == mirrorCounted && mirror.Bound == mirror.Sites && DeadlineWarningLines - 1 + mirror.Bound <= WarningsPerStep,
+            "P1-50 static: the two tests/mirror-journal ::warning:: sites print at most once per run each (no loop, lambda or local function on their call chains; a branch that returns counted once), so a green run stays within " + N(WarningsPerStep) + " warnings",
+            mirror.Problems + " | " + N(mirror.Sites) + " sites (" + N(mirrorCounted) + " counted by WarningCounts), at most " + N(mirror.Bound) + " lines per run");
+        const string BoundProgram = "if (args is [\"x\"])\n{\n    L.Run(1);\n    return 0;\n}\nL.Run(2);\nreturn 0;\n";
+        const string BoundClass = "static class L\n{\n    public static void Run(int a)\n    {\n        try { Checks(a); }\n        finally { }\n    }\n\n    static void Checks(int a)\n    {\n"
+            + "        if (a == 1) { Site(a); return; }\n        Site(a);\n    }\n\n    static void Site(int a)\n    {\n        if (a > 0)\n            Console.WriteLine(\"::warning::once\");\n    }\n}\n";
+        static (int Sites, long Bound, string Problems) Bound(string program, string type) =>
+            MirrorWarningBound(new Dictionary<string, string>(StringComparer.Ordinal) { ["tests/mirror-journal/Program.cs"] = program, ["tests/mirror-journal/L.cs"] = type });
+        var clean = Bound(BoundProgram, BoundClass);
+        check(clean.Problems.Length == 0 && clean.Sites == 1 && clean.Bound == 1, "P1-50 mirror warning bound self-test: a site reached through a returning branch and a later call, and a try block, prints at most once",
+            clean.Problems + " | " + N(clean.Sites) + " site, at most " + N(clean.Bound));
+        foreach (var (label, program, type) in new[]
+        {
+            ("the site in a foreach loop", BoundProgram, BoundClass.Replace("        if (a > 0)\n", "        foreach (var x in xs)\n", StringComparison.Ordinal)),
+            ("a second unconditional call", BoundProgram, BoundClass.Replace("        Site(a);\n    }", "        Site(a);\n        Site(a);\n    }", StringComparison.Ordinal)),
+            ("a call in a lambda", BoundProgram, BoundClass.Replace("        Site(a);\n    }", "        Action<int> act = b => Site(b);\n    }", StringComparison.Ordinal)),
+            ("a method group", BoundProgram, BoundClass.Replace("        Site(a);\n    }", "        Action<int> act = Site;\n    }", StringComparison.Ordinal)),
+            ("a recursive call", BoundProgram, BoundClass.Replace("            Console.WriteLine", "            Checks(a);\n            Console.WriteLine", StringComparison.Ordinal)),
+            ("a top-level call in a for loop", BoundProgram.Replace("L.Run(2);", "for (var i = 0; i < 2; i++) L.Run(2);", StringComparison.Ordinal), BoundClass),
+            ("the returning branch without its return", BoundProgram, BoundClass.Replace("Site(a); return; }", "Site(a); }", StringComparison.Ordinal)),
+        })
+        {
+            var mutant = Bound(program, type);
+            check((program != BoundProgram || type != BoundClass) && (mutant.Problems.Length > 0 || mutant.Bound > mutant.Sites), "P1-50 mirror warning bound mutation self-test: " + label + " is flagged",
+                mutant.Problems + " | at most " + N(mutant.Bound));
+        }
     }
 
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
