@@ -776,6 +776,8 @@ internal static class RepeatedEnvelopeKeyTests
     // P10-52: a child's stderr as reported in a measured entry or a timeout message, bounded (the head kept, the full
     // length stated).
     internal const int StderrBound = 600;
+    // P10-56: at most this many chars of a child's stderr are kept in memory (the rest is counted, not kept).
+    internal const int StderrKeep = 4096;
     internal static string BoundedStderr(string text) =>
         text.Length <= StderrBound ? text : text[..StderrBound] + "...(" + text.Length.ToString(CultureInfo.InvariantCulture) + " chars)";
 
@@ -1210,7 +1212,8 @@ internal static class RepeatedEnvelopeKeyTests
             var plantedErr = planted.Stderrs.Count == 1 ? planted.Stderrs[0] : "";
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
                 && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal)
-                && plantedErr.Contains("Tracing enabled", StringComparison.Ordinal) && planted.Measured[0].EndsWith(" stderr " + BoundedStderr(plantedErr), StringComparison.Ordinal)
+                && plantedErr.Contains("Tracing enabled", StringComparison.Ordinal) && plantedErr.Length <= StderrKeep
+                && planted.Measured[0].EndsWith(" stderr " + BoundedStderr(plantedErr), StringComparison.Ordinal)
                 && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
                 + "; CLI launches " + planted.Launches.ToString(CultureInfo.InvariantCulture) + " of the full run's " + full.Launches.ToString(CultureInfo.InvariantCulture) + ", "
@@ -1273,11 +1276,20 @@ internal static class RepeatedEnvelopeKeyTests
                 ("ProcessStartInfo info = new" + "(\"dotnet\");", 0),
                 ("var info = new " + "ProcessStartInfo(\"dotnet\"); var q = new " + "System.Diagnostics.ProcessStartInfo();", 0),
                 ("// Process" + ".Start(info); new " + "Process();\nvar watch = System.Diagnostics.Stopwatch.StartNew();", 0),
+                // P10-56: a using alias of Process and a using static Process Start call.
+                ("using P = System.Diagnostics." + "Process;\nusing var p = P" + ".Start(info);", 1),
+                ("using P = global::System.Diagnostics." + "Process;\nvar p = new " + "P();", 1),
+                ("using Launcher = System.Diagnostics." + "Process;\nLauncher? p = new" + "(); var q = new " + "Launcher { StartInfo = info };", 2),
+                ("using static System.Diagnostics." + "Process;\nusing var p = " + "Start(info);", 1),
+                ("using static System.Diagnostics." + "Process;\nreturn " + "Start(info) ?? Process" + " . Start (info); var w = Stopwatch.StartNew(); p.Start();", 2),
+                ("using P = System.Diagnostics." + "ProcessStartInfo;\nvar i = new " + "P(); P j = new" + "();", 0),
+                ("using static System.Diagnostics." + "ProcessStartInfo;\nvar p = " + "Start(info);", 0),
+                ("var p = " + "Start(info); // no using static of Process", 0),
             };
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
             var formsOk = formsWrong.Count == 0;
-            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, not ProcessStartInfo or comments; not recognised: a using alias, a using static Start call, a target-typed constructor assigned to an untyped or earlier-declared variable ("
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, also through a using alias of Process and a using static Process Start call, not ProcessStartInfo or comments; not recognised: a namespace alias before Process in a constructor, a target-typed constructor assigned to an untyped or earlier-declared variable; over-counted: a bare Start call of another type's static method in a file with using static Process ("
                 + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
             // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
             // label (missing dll: no launch) that must red the same predicate.
@@ -1333,9 +1345,13 @@ internal static class RepeatedEnvelopeKeyTests
             var malformedOk = malformedSinks.Count == 2 && malformedSinks[0].Ok && !malformedSinks[1].Ok && malformed.Failing.Count == 1 && malformed.Failing[0] == L4ParityLabel
                 && malformed.Measured.Count == 1 && malformed.Measured[0].Contains("| cli {\"status\":\"failed\",\"code\":\"allowlist_invalid\"", StringComparison.Ordinal)
                 && full.Measured.Count(entry => System.Text.RegularExpressions.Regex.IsMatch(entry, @" \| temporary repository root \(copied in [0-9]+ ms\), \.bim/revit-enabled-roots\.txt absent\z")) == 1
-                && System.Text.RegularExpressions.Regex.IsMatch(malformed.Measured[0], @" \| temporary repository root \(copied in [0-9]+ ms\), \.bim/revit-enabled-roots\.txt planted\z") && malformed.Launches == 1;
+                && System.Text.RegularExpressions.Regex.IsMatch(malformed.Measured[0], @" \| temporary repository root \(copied in [0-9]+ ms, reused\), \.bim/revit-enabled-roots\.txt planted\z") && malformed.Launches == 1;
             selfTest.Add((malformedOk ? "ok" : "FAIL") + " a malformed .bim/revit-enabled-roots.txt in L4's temporary root answers allowlist_invalid there, the copy time listed in the entry (" + string.Join(" ; ", malformed.Measured.Select(entry => BoundedStderr(entry) + " ..." + entry[Math.Max(0, entry.Length - 120)..])) + ")");
-            Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk,
+            // P10-56: the CLI environment is an argument of Cli, not state Parity and the timeout self-test set around it.
+            var ownCode = DocUpdateLinkTests.CodeOf(ownSource);
+            var noCapturedEnvironment = !ownCode.Contains("cli" + "Environment", StringComparison.Ordinal);
+            selfTest.Add((noCapturedEnvironment ? "ok" : "FAIL") + " the CLI child environment is passed to Cli as an argument, no captured environment variable");
+            Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk && noCapturedEnvironment,
                 "P10-48/P10-50/P10-52 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case (L2 only launched, stderr listed); a missing timeout-child Bim.Mcp.dll is one named precondition failure; Cli kills a child at its timeout, its stdin release task ends with it and the message carries its stderr; one launcher (all start forms); the L4 case's own label names its policy-file dependence (a plain L4 label reds); stderr bounded and reported on a failed launch; release task cancelled after a normal exit; L4 isolated from a malformed policy file | "
                 + string.Join(" ; ", selfTest));
             // P10-48: the repository root comes from Program.cs FindRoot (root), not a second walk in this file.
