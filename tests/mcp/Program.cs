@@ -640,7 +640,16 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
     // check after it (var p123Shared=), the p122 pin from its P122Signature declaration to the P1-48 MemberLines
     // self-test (string P148Blank(); a CommentsBlanked( call inside either is an own line mapping, one elsewhere in
     // this file is not flagged. "" when neither pin calls it; a pin whose bounds are not found is named.
-    string P150Ban(string p150Code)=>p150Code.Contains("CommentsBlanked(",StringComparison.Ordinal) ? "P1-50 red: a CommentsBlanked( call anywhere in this file (not scoped yet)" : "";
+    string P150Ban(string p150Code) {
+        var p150Problems=new List<string>();
+        foreach(var (p150Pin,p150Start,p150End) in new[]{("p123","conststringP123Signature=","varp123Shared="),("p122","conststringP122Signature=","stringP148Blank(")}) {
+            var p150From=p150Code.IndexOf(p150Start,StringComparison.Ordinal);
+            var p150To=p150From<0 ? -1 : p150Code.IndexOf(p150End,p150From,StringComparison.Ordinal);
+            if(p150To<0) p150Problems.Add("the "+p150Pin+" pin's bounds are not found");
+            else if(p150Code[p150From..p150To].Contains("CommentsBlanked(",StringComparison.Ordinal)) p150Problems.Add("a CommentsBlanked( call (own line mapping) is left in the "+p150Pin+" pin");
+        }
+        return string.Join("; ",p150Problems);
+    }
     var p148Problems=new[]{
         p148Code.Contains("stringP122Body(stringp122Text)=>DeadlineSourceScan.MemberLines(p122Text,P122Signature);",StringComparison.Ordinal) ? "" : "P122Body does not read through MemberLines",
         p148Code.Contains("varp123Code=DeadlineSourceScan.MemberLines(p123Source,P123Signature);",StringComparison.Ordinal) ? "" : "p123Code does not read through MemberLines",

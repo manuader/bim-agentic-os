@@ -1702,13 +1702,10 @@ internal static class RevitCommandDeadlineTests
         return windows ? (true, "::warning::cli-inputs P1-46 " + SummaryEscape("symbolic link not created (" + reason + ")") + "; the symlink resolution of ControlLocationProblem is not exercised on this Windows runner", record) : (false, null, record);
     }
 
-    // P1-48: the % CR LF escape of CliInputsSummary.Line (tests/cli/Program.cs, its private Escape), read by reflection so
-    // this file keeps no copy; null when the method is gone (the P1-48 self-test then fails by name).
-    static readonly Func<string, string>? SummaryEscapeMethod =
-        typeof(CliInputsSummary).GetMethod("Escape", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static, null, new[] { typeof(string) }, null) is { } escape
-        && escape.ReturnType == typeof(string) ? escape.CreateDelegate<Func<string, string>>() : null;
-    static string SummaryEscape(string text) => SummaryEscapeMethod is { } escape ? escape(text)
-        : throw new InvalidOperationException("P1-48: CliInputsSummary.Escape(string) is not found in tests/cli/Program.cs");
+    // P1-48: the % CR LF escape of CliInputsSummary.Line (tests/cli/Program.cs), so this file keeps no copy. P1-50: that
+    // Escape is internal and called directly (the P1-48 reflection is dropped): a renamed or removed Escape is a compile
+    // error naming it, not a run-time exception.
+    static string SummaryEscape(string text) => CliInputsSummary.Escape(text);
 
     // P1-48: GitHub Actions shows at most this many ::warning:: annotations per step (later ones stay in the log only).
     const int WarningsPerStep = 10;
@@ -1824,7 +1821,44 @@ internal static class RevitCommandDeadlineTests
     const int DeadlineWarningLines = 3;
     const int StepSummaryWorstWarning = 21;
 
-    static (int Verbs, int Modes, string Problems) ProbeWarnings(string deleted) => (0, 0, "P1-50 red: the probe warnings are not counted yet (" + N(deleted.Length) + " characters read)");
+    static (int Verbs, int Modes, string Problems) ProbeWarnings(string deleted)
+    {
+        var text = DeadlineSourceScan.CommentsBlanked(deleted.ReplaceLineEndings("\n"));
+        var problems = new List<string>();
+        static int Count(string scanned, string pattern) => System.Text.RegularExpressions.Regex.Matches(scanned, pattern).Count;
+        static IEnumerable<string> Captured(string scanned, string pattern) => System.Text.RegularExpressions.Regex.Matches(scanned, pattern).Select(match => match.Groups[1].Value);
+        static IEnumerable<string> Literals(string scanned) => Captured(scanned, "\"([^\"]*)\"");
+        var verbs = 0;
+        var modes = 0;
+        if (DeadlineSourceScan.MemberBody(text, "static void Cases(", raw: true) is not { } cases) problems.Add("no Cases block");
+        else
+        {
+            var named = new HashSet<string>(Captured(cases, @"\bcases\s*\.\s*Add\s*\(\s*\(\s*""([^""]*)"""), StringComparer.Ordinal);
+            var loopVerbs = Captured(cases, @"\bforeach\s*\(\s*var\s+verb\s+in\s+new\s*\[\s*\]\s*\{([^}]*)\}\s*\)").SelectMany(list => Literals(list)).ToArray();
+            var byName = Count(cases, @"\bcases\s*\.\s*Add\s*\(\s*\(\s*name\s*,");
+            if (Count(cases, @"\bcases\s*\.\s*Add\s*\(\s*\(") != Count(cases, @"\bcases\s*\.\s*Add\s*\(\s*\(\s*""") + byName || (byName > 0 && loopVerbs.Length == 0))
+                problems.Add("a Cases verb that is neither a literal nor a foreach verb");
+            if (byName > 0) named.UnionWith(loopVerbs);
+            if (Count(cases, @"(?<![\w.])RunCases\s*\(") != 1) problems.Add("Cases does not call RunCases once");
+            verbs += named.Count;
+        }
+        if (DeadlineSourceScan.MemberBody(text, "static void Remainder(", raw: true) is not { } remainder) problems.Add("no Remainder block");
+        else
+        {
+            var probeVerbs = new HashSet<string>(Captured(remainder, @"\bprobeCases\s*\.\s*Add\s*\(\s*\(\s*""([^""]*)"""), StringComparer.Ordinal);
+            if (Count(remainder, @"\bprobeCases\s*\.\s*Add\s*\(\s*\(") != Count(remainder, @"\bprobeCases\s*\.\s*Add\s*\(\s*\(\s*""")) problems.Add("a Remainder probe verb that is not a literal");
+            if (Count(remainder, @"(?<![\w.])RunCases\s*\(") != 1) problems.Add("Remainder does not call RunCases once");
+            verbs += probeVerbs.Count;
+            var modeLoops = Captured(remainder, @"\bforeach\s*\(\s*var\s+mode\s+in\s+new\s*\[\s*\]\s*\{([^}]*)\}\s*\)\s*RunUnsearchable\s*\(").ToArray();
+            if (modeLoops.Length != 1) problems.Add("Remainder does not run RunUnsearchable in one foreach over its modes");
+            else modes = Literals(modeLoops[0]).Count();
+        }
+        var code = StripCode(text);
+        if (Count(code, @"(?<![\w.])RunCases\s*\(") != 3) problems.Add("RunCases is not called from Cases and Remainder alone");
+        if (Count(code, @"(?<![\w.])RunUnsearchable\s*\(") != 2) problems.Add("RunUnsearchable is not called from Remainder's mode loop alone");
+        if (CountOf(text, "::warning::") != 2) problems.Add(N(CountOf(text, "::warning::")) + " ::warning:: sites, not the P10-30 and P10-32 probes");
+        return (verbs, modes, string.Join("; ", problems));
+    }
 
     // P1-50: "" when the counted worst-case position of the step summary is the pinned StepSummaryWorstWarning.
     static string SummaryPositionProblems(string deleted)
@@ -2033,18 +2067,46 @@ internal static class RevitCommandDeadlineTests
 
     // P1-50: the ::warning:: sites (in code or literals, comments blanked) of sources (repository path to text) and the
     // most times they can print in one run, the sum of their methods' CallRuns; problems as CallRuns names them.
-    static (int Sites, long Bound, string Problems) MirrorWarningBound(IReadOnlyDictionary<string, string> sources) => (0, 0, "P1-50 red: the call chains are not read yet (" + N(sources.Count) + " files)");
+    static (int Sites, long Bound, string Problems) MirrorWarningBound(IReadOnlyDictionary<string, string> sources)
+    {
+        var files = new Dictionary<string, (string Mask, List<SourceBlock> Blocks)>(StringComparer.Ordinal);
+        var blanked = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var (path, source) in sources)
+        {
+            var text = source.ReplaceLineEndings("\n");
+            var mask = DeadlineSourceScan.CodeMask(text);
+            files[path] = (mask, SourceBlocks(mask));
+            blanked[path] = DeadlineSourceScan.CommentsBlanked(text);
+        }
+        var problems = new List<string>();
+        var sites = 0;
+        long bound = 0;
+        foreach (var path in files.Keys.OrderBy(name => name, StringComparer.Ordinal))
+        {
+            var (mask, blocks) = files[path];
+            var text = blanked[path];
+            for (var at = text.IndexOf("::warning::", StringComparison.Ordinal); at >= 0; at = text.IndexOf("::warning::", at + 1, StringComparison.Ordinal))
+            {
+                sites++;
+                var context = ContextAt(blocks, at);
+                var problem = ChainProblem(path, mask, context, at, "the ::warning:: site");
+                if (problem.Length > 0) { problems.Add(problem); continue; }
+                bound += context.Type is null || context.Member is null ? 1 : CallRuns(files, context.Type, context.Member, new HashSet<string>(StringComparer.Ordinal), problems);
+            }
+        }
+        return (sites, bound, string.Join("; ", problems));
+    }
 
     // P1-48: the link warning escape, the single link-pass assertion and the step's warning budget (static, self-tests).
     static void LinkWarningPinned(string root, Action<bool, string, string> check)
     {
         const string Reason = "IOException: 50% done\r\nsecond\rthird\nfourth";
         var skip = LinkOutcome(false, false, true, Reason).Warning ?? "";
-        check(SummaryEscapeMethod is not null && skip == "::warning::cli-inputs P1-46 symbolic link not created (IOException: 50%25 done%0D%0Asecond%0Dthird%0Afourth); the symlink resolution of ControlLocationProblem is not exercised on this Windows runner",
+        check(skip == "::warning::cli-inputs P1-46 symbolic link not created (IOException: 50%25 done%0D%0Asecond%0Dthird%0Afourth); the symlink resolution of ControlLocationProblem is not exercised on this Windows runner",
             "P1-48 link outcome self-test: the ::warning:: line escapes % CR LF (the link-skip reason kept, not flattened)", skip);
         var summary = CliInputsSummary.Line(new[] { Reason });
-        check(SummaryEscapeMethod is not null && summary == "::warning::" + CliInputsSummary.Title + ": 1 FAIL: #1 " + SummaryEscape(Reason) && skip.Contains(SummaryEscape("(" + Reason + ")"), StringComparison.Ordinal),
-            "P1-48 link outcome self-test: the escape is CliInputsSummary.Line's own helper (its Escape, read by reflection)", summary + " | " + skip);
+        check(summary == "::warning::" + CliInputsSummary.Title + ": 1 FAIL: #1 " + SummaryEscape(Reason) && skip.Contains(SummaryEscape("(" + Reason + ")"), StringComparison.Ordinal),
+            "P1-48 link outcome self-test: the escape is CliInputsSummary.Line's own helper (its internal Escape, P1-50)", summary + " | " + skip);
 
         var selfPath = Path.Combine(root, "tests", "cli", "RevitCommandDeadlineTests.cs");
         var self = File.Exists(selfPath) ? File.ReadAllText(selfPath) : "";
