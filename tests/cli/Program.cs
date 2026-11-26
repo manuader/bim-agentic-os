@@ -1571,7 +1571,7 @@ internal static class CliInputsSummary {
     internal const string Title="cli-inputs step";
     internal const int Cap=3000; // one annotation message; every FAIL line stays in the step log
     static string Number(int value)=>value.ToString(System.Globalization.CultureInfo.InvariantCulture);
-    static string Escape(string text)=>text.Replace("%","%25",StringComparison.Ordinal).Replace("\r","%0D",StringComparison.Ordinal).Replace("\n","%0A",StringComparison.Ordinal);
+    internal static string Escape(string text)=>text.Replace("%","%25",StringComparison.Ordinal).Replace("\r","%0D",StringComparison.Ordinal).Replace("\n","%0A",StringComparison.Ordinal);
     internal static string Line(IReadOnlyList<string> failed) {
         if(failed.Count==0) return Title+": 0 FAIL";
         var listed=new StringBuilder();

@@ -632,14 +632,36 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
         Check(p148Got==p148Want,"P1-48 MemberLines self-test: "+p148Label+" | got '"+p148Got.Replace("\n","\\n",StringComparison.Ordinal)+"'");
     }
     // P1-48 static: no line mapping of its own is left in the p122/p123 pins: both read through MemberLines and
-    // CommentsBlanked is not called in this file (read on its StripCode output, so these literals do not count).
+    // CommentsBlanked is not called in them (read on this file's StripCode output, so these literals do not count).
+    // P1-50: the CommentsBlanked ban is scoped to the two pins' reading code (P150Ban), not the whole file.
     var p148Self=DeadlineSourceScan.StripCode(File.ReadAllText(Path.Combine(root,"tests","mcp","Program.cs")).ReplaceLineEndings("\n"));
     var p148Code=string.Concat(p148Self.Where(p148Char=>!char.IsWhiteSpace(p148Char)));
+    // P1-50: on that code (whitespace removed), the p123 pin runs from its P123Signature declaration to the shared-file
+    // check after it (var p123Shared=), the p122 pin from its P122Signature declaration to the P1-48 MemberLines
+    // self-test (string P148Blank(); a CommentsBlanked( call inside either is an own line mapping, one elsewhere in
+    // this file is not flagged. "" when neither pin calls it; a pin whose bounds are not found is named.
+    string P150Ban(string p150Code) {
+        var p150Problems=new List<string>();
+        foreach(var (p150Pin,p150Start,p150End) in new[]{("p123","conststringP123Signature=","varp123Shared="),("p122","conststringP122Signature=","stringP148Blank(")}) {
+            var p150From=p150Code.IndexOf(p150Start,StringComparison.Ordinal);
+            var p150To=p150From<0 ? -1 : p150Code.IndexOf(p150End,p150From,StringComparison.Ordinal);
+            if(p150To<0) p150Problems.Add("the "+p150Pin+" pin's bounds are not found");
+            else if(p150Code[p150From..p150To].Contains("CommentsBlanked(",StringComparison.Ordinal)) p150Problems.Add("a CommentsBlanked( call (own line mapping) is left in the "+p150Pin+" pin");
+        }
+        return string.Join("; ",p150Problems);
+    }
     var p148Problems=new[]{
         p148Code.Contains("stringP122Body(stringp122Text)=>DeadlineSourceScan.MemberLines(p122Text,P122Signature);",StringComparison.Ordinal) ? "" : "P122Body does not read through MemberLines",
         p148Code.Contains("varp123Code=DeadlineSourceScan.MemberLines(p123Source,P123Signature);",StringComparison.Ordinal) ? "" : "p123Code does not read through MemberLines",
-        p148Code.Contains("CommentsBlanked(",StringComparison.Ordinal) ? "a CommentsBlanked( call (own line mapping) is left" : ""}.Where(p148Problem=>p148Problem.Length>0).ToArray();
+        P150Ban(p148Code)}.Where(p148Problem=>p148Problem.Length>0).ToArray();
     Check(p148Problems.Length==0,"P1-48 static: the p122 and p123 pins share DeadlineSourceScan.MemberLines (no own line mapping) | "+string.Join("; ",p148Problems));
+    var p150Outside=P150Ban(p148Code+"varp150Lines=DeadlineSourceScan.CommentsBlanked(p150Text);");
+    Check(P150Ban(p148Code)=="" && p150Outside=="","P1-50 CommentsBlanked ban self-test: a CommentsBlanked( call outside the p122 and p123 pins is not flagged | "+p150Outside);
+    foreach(var (p150Label,p150Mutant) in new[]{
+        ("a CommentsBlanked( call in the p123 pin",p148Code.Replace("varp123Shared=","varp150Lines=DeadlineSourceScan.CommentsBlanked(p123Source);varp123Shared=",StringComparison.Ordinal)),
+        ("a CommentsBlanked( call in the p122 pin",p148Code.Replace("stringP148Blank(","varp150Lines=DeadlineSourceScan.CommentsBlanked(p122Text);stringP148Blank(",StringComparison.Ordinal)),
+        ("the p123 pin's end bound gone",p148Code.Replace("varp123Shared=","varp123Moved=",StringComparison.Ordinal))})
+        Check(p150Mutant!=p148Code && P150Ban(p150Mutant)!="","P1-50 CommentsBlanked ban mutation self-test: "+p150Label+" is flagged");
     Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
     // Each project compiles the shared file itself (a Compile Include resolving to interfaces/cli/RevitCommandOptions.cs,
     // either path separator), read as XML so attribute order and layout do not matter.
