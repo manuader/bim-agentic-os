@@ -883,9 +883,9 @@ internal static class DeletedCwdPathTests
     // P10-47: the parameter list may hold balanced parentheses (a default containing calls). P10-49: parentheses inside
     // string (raw, verbatim, regular) and char defaults are skipped; stated limit: an interpolated string default
     // ($"...") is read as a regular string, so a quote inside one of its holes ends it early.
-    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(
-        @"\bPathProblem\s*\((?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{",
-        System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-51: the parameter list pattern (after the opening parenthesis, through the closing one), shared with LockVerbs47.
+    const string Parameters49 = @"(?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)";
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\(" + Parameters49 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? FilterProblem41(string source)
     {
@@ -1079,8 +1079,9 @@ internal static class DeletedCwdPathTests
                 if (end < 0) return -1;
                 i = end;
             }
-            else if (c == '(' || c == '[') parens++;
-            else if ((c == ')' || c == ']') && parens > 0) parens--;
+            // P10-51: parentheses and brackets are counted only inside holes, where they guard the format clause ':'.
+            else if (hole && (c == '(' || c == '[')) parens++;
+            else if (hole && (c == ')' || c == ']') && parens > 0) parens--;
             else if (hole && c == ':' && depth == 0 && parens == 0) return source.IndexOf('}', i + 1);
             else if (c == '{') depth++;
             else if (c == '}' && depth-- == 0) return i;
@@ -1107,8 +1108,10 @@ internal static class DeletedCwdPathTests
                 {
                     var run = Run(i, '{');
                     if (run < dollars) { i += run - 1; continue; }
+                    // P10-51: of a brace run at a hole, n (the dollars) open or close it and the rest, fewer than n, are text.
+                    if (run >= 2 * dollars) return -1;
                     var close = CodeEnd47(source, i + run, hole: true);
-                    if (close < 0 || Run(close, '}') < dollars) return -1;
+                    if (close < 0 || Run(close, '}') < dollars || Run(close, '}') >= 2 * dollars) return -1;
                     i = close + dollars - 1;
                 }
             }
@@ -1178,7 +1181,8 @@ internal static class DeletedCwdPathTests
     // Declaration-style balanced parentheses and BlockEnd45) the one RestoreProblems45 call must pass both calls' restore
     // problems, ("reference", reference.Restore) and ("locked", result.Restore), into restoreProblem, which the restore check
     // requires empty, with reference = Call(false) and result = Call(true). Whitespace free. Null when wired, else why.
-    static readonly System.Text.RegularExpressions.Regex LockVerbs47 = new(@"\bstatic\s+void\s+LockVerbsUnsearchable41\s*\((?>[^()]|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-51: the parameter list skips parentheses inside string and char defaults (Parameters49, as Declaration45).
+    static readonly System.Text.RegularExpressions.Regex LockVerbs47 = new(@"\bstatic\s+void\s+LockVerbsUnsearchable41\s*\(" + Parameters49 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? RestoreWiringProblem47(string source)
     {
