@@ -1018,21 +1018,38 @@ internal static class GenerateTypologyToolTests
             static int BareGrepPipes(string text)
             {
                 var bare = 0;
+                // P3-48: masked lines are joined into logical lines first: a trailing backslash (dropped) or a trailing
+                // `|`, `|&` or `&&` (bare pipe, or-list, and-list; `||` included) continues onto the next line, except a
+                // YAML block scalar header (`run: |`). A continuation left open at the end of the text is marked open.
+                var logical = new List<(string Line, bool Open)>();
+                var pending = "";
                 foreach (var raw in text.Split('\n'))
                 {
-                    var line = Mask(raw.TrimEnd('\r'));
-                    var continued = line.TrimEnd().EndsWith('\\');
+                    var masked = Mask(raw.TrimEnd('\r'));
+                    var trimmed = masked.TrimEnd();
+                    if (trimmed.EndsWith('\\')) { pending += trimmed[..^1] + " "; continue; }
+                    if (!Regex.IsMatch(trimmed, @":\s*\|[-+]?$") && (trimmed.EndsWith('|') || trimmed.EndsWith("&&", StringComparison.Ordinal) || trimmed.EndsWith("|&", StringComparison.Ordinal)))
+                    {
+                        pending += trimmed + " ";
+                        continue;
+                    }
+                    logical.Add((pending + masked, false));
+                    pending = "";
+                }
+                if (pending.Length > 0) logical.Add((pending, true));
+                foreach (var (line, open) in logical)
+                {
                     foreach (Match grep in Regex.Matches(line, @"(?<=^|[\s;|&({])grep\s"))
                     {
                         var before = line[..grep.Index];
-                        var open = new Stack<bool>();
+                        var groups = new Stack<bool>();
                         for (var i = 0; i < before.Length; i++)
                         {
-                            if (before[i] == '(') open.Push(i > 0 && before[i - 1] == '$');
-                            else if (before[i] == ')' && open.Count > 0) open.Pop();
+                            if (before[i] == '(') groups.Push(i > 0 && before[i - 1] == '$');
+                            else if (before[i] == ')' && groups.Count > 0) groups.Pop();
                         }
-                        var substituted = open.Contains(true);
-                        var piped = Regex.IsMatch(before, @"(?<!\|)\|\s*(?:(?<!\$)\(\s*|\{\s*)*$");
+                        var substituted = groups.Contains(true);
+                        var piped = Regex.IsMatch(before, @"(?<!\|)\|&?\s*(?:(?<!\$)\(\s*|\{\s*)*$");
                         var guarded = false;
                         var depth = 0;
                         for (var i = grep.Index + 4; i < line.Length; i++)
@@ -1042,14 +1059,17 @@ internal static class GenerateTypologyToolTests
                             if (c is '(' or '{') { depth++; continue; }
                             if (c is ')' or '}') { if (depth > 0) depth--; continue; }
                             if (depth > 0) continue;
-                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*true(?![\w-])"); break; }
-                            if (c == '|') { piped = true; continue; }
+                            // P3-48: `|| :` guards as `|| true` does; any other or-list does not.
+                            if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*(?:true(?![\w-])|:(?![^\s;)}&|]))"); break; }
+                            if (c == '|') { piped = true; if (next == '&') i++; continue; }
                             if (c == '&' && i > 0 && line[i - 1] is '>' or '<') continue;
+                            // P3-48: `&>` and `&>>` redirect stdout and stderr; they are no background `&`.
+                            if (c == '&' && next == '>') continue;
                             if (c == '&') break;
                             if (c == ';') { if (line[(i + 1)..].TrimStart().StartsWith('}')) continue; break; }
                         }
-                        if (continued) guarded = false;
-                        if (!guarded && (piped || substituted || continued)) bare++;
+                        if (open) guarded = false;
+                        if (!guarded && (piped || substituted || open)) bare++;
                     }
                 }
                 return bare;
