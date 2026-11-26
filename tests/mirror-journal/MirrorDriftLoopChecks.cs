@@ -2478,13 +2478,31 @@ static class MirrorDriftLoopChecks
     // P2-48: the drift check's not-run line: the gate's not-run notice plus the drift fields the red setup check hides
     // (MacCountsDrift of the live counts against the recorded ones), so a rounded lowered value or a failed lever still
     // shows which recorded counts the run differs from.
-    static string MacDriftNotRunNotice(MacSendBufferCounts live, MacSendBufferCounts recorded) =>
-        MacNotRunNotice(MacDriftName) + " hidden_drift=[" + string.Join(" ; ", MacCountsDrift(live, recorded)) + "]";
+    // P2-49: the suffix only when a field differs (the plain not-run notice otherwise, no empty hidden_drift=[]); a failed
+    // lever's line lists LeversOk and the -1 values of the lever that never ran (pinned in MacSelfTestPins).
+    static string MacDriftNotRunNotice(MacSendBufferCounts live, MacSendBufferCounts recorded)
+    {
+        var drift = MacCountsDrift(live, recorded);
+        return MacNotRunNotice(MacDriftName) + (drift.Length == 0 ? "" : " hidden_drift=[" + string.Join(" ; ", drift) + "]");
+    }
 
     // P2-46: the record's fields in the order MacCountsDrift lists them: the parameters of its positional (primary)
     // constructor, the only public one with more than one parameter (not the metadata order of its properties).
     static string[] MacCountsFields() => typeof(MacSendBufferCounts).GetConstructors()
         .Single(x => x.GetParameters().Length > 1).GetParameters().Select(p => p.Name ?? "").ToArray();
+
+    // P2-49: builds a value with the given current culture and restores the caller's culture afterwards, also when the
+    // build throws: the one culture swap of the macOS culture pins (MacSelfTestPins, MacRequestedTextCulture).
+    static T UnderCulture<T>(CultureInfo culture, Func<T> build)
+    {
+        var saved = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = culture;
+            return build();
+        }
+        finally { CultureInfo.CurrentCulture = saved; }
+    }
 
     // P2-46: the self-tests' expected texts, the counts notice and the live checks around the drift check, as pure data
     // on every OS: planted negative values under a culture whose negative sign is '~' give the same texts as written
@@ -2494,20 +2512,9 @@ static class MirrorDriftLoopChecks
     {
         var exotic = (CultureInfo)CultureInfo.InvariantCulture.Clone();
         exotic.NumberFormat.NegativeSign = "~";
-        var saved = CultureInfo.CurrentCulture;
         var planted = MacRecordedCounts with { Read = -4096, InBuffer = -1, Lowered = -6144, RequestedLowered = -6144, LoweredQueued = -6144, LoweredHanded = -1 };
-        MacSelfTestTexts exoticTexts, invariantTexts;
-        string exoticCounts, invariantCounts;
-        try
-        {
-            CultureInfo.CurrentCulture = exotic;
-            exoticTexts = MacSelfTestExpected(-8192, -6144, -4096, -1024);
-            exoticCounts = MacCountsText(planted);
-            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            invariantTexts = MacSelfTestExpected(-8192, -6144, -4096, -1024);
-            invariantCounts = MacCountsText(planted);
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
+        var (exoticTexts, exoticCounts) = UnderCulture(exotic, () => (MacSelfTestExpected(-8192, -6144, -4096, -1024), MacCountsText(planted)));
+        var (invariantTexts, invariantCounts) = UnderCulture(CultureInfo.InvariantCulture, () => (MacSelfTestExpected(-8192, -6144, -4096, -1024), MacCountsText(planted)));
         var written = new MacSelfTestTexts(
             "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=-4096, requested=-6144 = 3/4 of default -8192)",
             "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=-6144, requested=-7168)",
@@ -2559,15 +2566,8 @@ static class MirrorDriftLoopChecks
         // P2-47: the self-tests' detail text writes the counts with InvariantCulture numbers (MacCountsText and
         // MacNumber, not the record's ToString): planted negative under the '~' culture it equals the text written with '-'.
         var detailPlanted = planted with { RaisedDefault = -8192, LoweredDefault = -8192, Chunk = -1024, LeversOk = false, LoweredRun = false };
-        string exoticDetail, invariantDetail;
-        try
-        {
-            CultureInfo.CurrentCulture = exotic;
-            exoticDetail = MacOutcomeText(new[] { "red" }, new[] { "not run" }, detailPlanted);
-            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            invariantDetail = MacOutcomeText(new[] { "red" }, new[] { "not run" }, detailPlanted);
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
+        var exoticDetail = UnderCulture(exotic, () => MacOutcomeText(new[] { "red" }, new[] { "not run" }, detailPlanted));
+        var invariantDetail = UnderCulture(CultureInfo.InvariantCulture, () => MacOutcomeText(new[] { "red" }, new[] { "not run" }, detailPlanted));
         const string detailWritten = "red=[red] not_run=[not run] counts=macos send buffer counts (P2-37): wire=39757 read=-4096 in_buffer=-1 default=8192 raised=16384 raised_queued=16384 raised_handed=20480 lowered=-6144 lowered_requested=-6144 lowered_queued=-6144 lowered_handed=-1 cli_queued=8192"
             + " levers_ok=False raised_default=-8192 lowered_default=-8192 chunk=-1024 lowered_run=False";
         check(exoticDetail == detailWritten && invariantDetail == detailWritten,
@@ -2588,37 +2588,62 @@ static class MirrorDriftLoopChecks
         // detail) writes InvariantCulture numbers: planted negative under the '~' culture it equals the text written with '-'.
         var plantedLever = new LeverRecord { Calls = -2, Default = -8192, Requested = -6144, Set = -6143 };
         var erroredLever = new LeverRecord { Calls = 1, Default = 8192, Requested = 6144, Set = 6144, Error = "planted" };
-        string exoticLever, invariantLever, erroredText;
-        try
-        {
-            CultureInfo.CurrentCulture = exotic;
-            exoticLever = plantedLever.ToString();
-            erroredText = erroredLever.ToString();
-            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            invariantLever = plantedLever.ToString();
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
+        var (exoticLever, erroredText) = UnderCulture(exotic, () => (plantedLever.ToString(), erroredLever.ToString()));
+        var invariantLever = UnderCulture(CultureInfo.InvariantCulture, () => plantedLever.ToString());
         const string leverWritten = "calls=-2 default=-8192 requested=-6144 set=-6143 error=<none>";
         check(exoticLever == leverWritten && invariantLever == leverWritten && erroredText == "calls=1 default=8192 requested=6144 set=6144 error=planted",
             "macos pin self-test (P2-48): a lever record's text writes its numbers through MacNumber (planted negative under a '~' negative-sign culture it equals the text written with '-')",
             "exotic=" + exoticLever + " | invariant=" + invariantLever + " | errored=" + erroredText);
 
         // P2-48: the self-test texts as detail text field by field (MacSelfTestTextsDetail), not the record's ToString.
-        var textsDetail = typeof(MirrorDriftLoopChecks).GetMethod("MacSelfTestTextsDetail", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var textsSeen = textsDetail?.Invoke(null, new object[] { new MacSelfTestTexts("a", "b", "c", "d", "e", "f") }) as string;
+        // P2-49: called directly (not by reflection), so a renamed helper fails to compile.
+        var textsSeen = MacSelfTestTextsDetail(new MacSelfTestTexts("a", "b", "c", "d", "e", "f"));
         check(textsSeen == "rounded_kept=[a] mismatch_kept=[b] kept=[c] precondition=[d] self_test=[e] zero_self_test=[f]",
             "macos pin self-test (P2-48): the self-test expected texts print as detail field by field (MacSelfTestTextsDetail), not through the record's ToString",
-            "helper=" + (textsDetail?.Name ?? "<none>") + " seen=" + (textsSeen ?? "<none>"));
+            "seen=" + textsSeen);
 
         // P2-48: the drift check's not-run line names the drift the red setup check hides: a kernel rounding (6143 kept
-        // for 6144 requested) lists the Lowered field; the recorded counts themselves list none.
-        var driftNotRun = typeof(MirrorDriftLoopChecks).GetMethod("MacDriftNotRunNotice", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        var roundedLine = driftNotRun?.Invoke(null, new object[] { roundedInput, MacRecordedCounts }) as string;
-        var recordedLine = driftNotRun?.Invoke(null, new object[] { MacRecordedCounts, MacRecordedCounts }) as string;
+        // for 6144 requested) lists the Lowered field. P2-49: called directly; with nothing drifted (the recorded counts
+        // themselves, which the live gate never hands it: a not-run drift check means a failed lever or a rounded lowered
+        // value, both of which differ from the recorded counts) the line is the plain not-run notice, no empty suffix.
+        var roundedLine = MacDriftNotRunNotice(roundedInput, MacRecordedCounts);
+        var recordedLine = MacDriftNotRunNotice(MacRecordedCounts, MacRecordedCounts);
         const string noticeWritten = "::notice::drift-loop: write progress per OS (P2-33): macos pin (P2-45): the live gate's counts equal the recorded macOS counts (MacRecordedCounts) field by field not run (setup red)";
-        check(roundedLine == noticeWritten + " hidden_drift=[Lowered: live=6143 recorded=6144]" && recordedLine == noticeWritten + " hidden_drift=[]",
-            "macos pin self-test (P2-48): the drift check's not-run line names the drift fields the red setup check hides (a kernel rounding lists 'Lowered: live=6143 recorded=6144'; the recorded counts list none)",
-            "helper=" + (driftNotRun?.Name ?? "<none>") + " rounded=" + (roundedLine ?? "<none>") + " recorded=" + (recordedLine ?? "<none>"));
+        check(roundedLine == noticeWritten + " hidden_drift=[Lowered: live=6143 recorded=6144]" && recordedLine == noticeWritten,
+            "macos pin self-test (P2-48): the drift check's not-run line names the drift fields the red setup check hides (a kernel rounding lists 'Lowered: live=6143 recorded=6144'; P2-49: with nothing drifted it is the plain not-run notice, no hidden_drift suffix)",
+            "rounded=" + roundedLine + " recorded=" + recordedLine);
+
+        // P2-49: a failed lever's drift not-run line, pinned as written text: a lever that never ran leaves its record's -1
+        // default and read-back values (and, for the lowered lever, its -1 requested value) in the gate's counts, so the
+        // line lists LeversOk and those fields, numbers with InvariantCulture (built under the '~' culture, written with '-').
+        var raisedOkLever = new LeverRecord { Calls = 1, Default = 8192, Requested = 16384, Set = 16384 };
+        var loweredOkLever = new LeverRecord { Calls = 1, Default = 8192, Requested = 6144, Set = 6144 };
+        var neverRanLever = new LeverRecord { Calls = 0 };
+        var loweredNeverRan = WithLevers(MacRecordedCounts, raisedOkLever, neverRanLever);
+        var raisedNeverRan = WithLevers(MacRecordedCounts, neverRanLever, loweredOkLever);
+        var (loweredFailedLine, raisedFailedLine) = UnderCulture(exotic, () => (MacDriftNotRunNotice(loweredNeverRan, MacRecordedCounts), MacDriftNotRunNotice(raisedNeverRan, MacRecordedCounts)));
+        var (loweredFailedNotRun, raisedFailedNotRun) = (Live(loweredNeverRan).NotRun, Live(raisedNeverRan).NotRun);
+        check(loweredFailedLine == noticeWritten + " hidden_drift=[LeversOk: live=False recorded=True ; LoweredDefault: live=-1 recorded=8192 ; Lowered: live=-1 recorded=6144 ; RequestedLowered: live=-1 recorded=6144]"
+            && raisedFailedLine == noticeWritten + " hidden_drift=[LeversOk: live=False recorded=True ; RaisedDefault: live=-1 recorded=8192 ; Raised: live=-1 recorded=16384]"
+            && loweredFailedNotRun.LastOrDefault() == driftWritten && raisedFailedNotRun.LastOrDefault() == driftWritten,
+            "macos pin self-test (P2-49): a failed lever's drift not-run line lists LeversOk and the -1 fields the lever that never ran leaves (lowered: default, read-back and requested; raised: default and read-back) with InvariantCulture numbers (built under a '~' negative-sign culture it equals the text written with '-')",
+            "lowered_never_ran=" + loweredFailedLine + " | raised_never_ran=" + raisedFailedLine + " | lowered_not_run=[" + string.Join(" ; ", loweredFailedNotRun) + "] raised_not_run=[" + string.Join(" ; ", raisedFailedNotRun) + "]");
+
+        // P2-49: UnderCulture builds under the culture it is given and restores the caller's culture after a return and
+        // after a planted throw. The culture is set back here as well after the throw: a broken helper cannot restore it.
+        var before = CultureInfo.CurrentCulture;
+        var (threw, thrownSeen) = (false, "<none>");
+        try { UnderCulture<int>(exotic, () => { thrownSeen = (-1).ToString(CultureInfo.CurrentCulture); throw new InvalidOperationException("planted UnderCulture throw"); }); }
+        catch (InvalidOperationException) { threw = true; }
+        var restoredOnThrow = ReferenceEquals(CultureInfo.CurrentCulture, before);
+        var signAfterThrow = CultureInfo.CurrentCulture.NumberFormat.NegativeSign;
+        CultureInfo.CurrentCulture = before;
+        var built = UnderCulture(exotic, () => (-1).ToString(CultureInfo.CurrentCulture));
+        var restoredOnReturn = ReferenceEquals(CultureInfo.CurrentCulture, before);
+        check(threw && thrownSeen == "~1" && restoredOnThrow && built == "~1" && restoredOnReturn,
+            "macos pin self-test (P2-49): UnderCulture builds under the given culture (-1 written '~1' under the '~' culture) and restores the caller's culture after a return and after a planted throw",
+            "threw=" + (threw ? "True" : "False") + " thrown_seen=" + thrownSeen + " restored_on_throw=" + (restoredOnThrow ? "True" : "False") + " sign_after_throw=" + signAfterThrow
+            + " built=" + built + " restored_on_return=" + (restoredOnReturn ? "True" : "False"));
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
@@ -2688,16 +2713,8 @@ static class MirrorDriftLoopChecks
         exotic.NumberFormat.NegativeSign = "~";
         var ratio = MacRecordedCounts with { LoweredDefault = -8192, RequestedLowered = -6144, Lowered = -6144 };
         var bare = MacRecordedCounts with { LoweredDefault = -8192, RequestedLowered = -7168, Lowered = -7168 };
-        var saved = CultureInfo.CurrentCulture;
-        string ratioText, bareText, positiveText;
-        try
-        {
-            CultureInfo.CurrentCulture = exotic;
-            ratioText = MacRequestedText(ratio);
-            bareText = MacRequestedText(bare);
-            positiveText = MacRequestedText(MacRecordedCounts);
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
+        // P2-49: the culture swaps through UnderCulture (restored also on a throw).
+        var (ratioText, bareText, positiveText) = UnderCulture(exotic, () => (MacRequestedText(ratio), MacRequestedText(bare), MacRequestedText(MacRecordedCounts)));
         check(ratioText == "-6144 = 3/4 of default -8192" && bareText == "-7168" && positiveText == "6144 = 3/4 of default 8192",
             "macos pin (P2-44): MacRequestedText writes InvariantCulture numbers in both branches (a current culture whose negative sign is '~' does not reach the ratio branch or the bare one)",
             "ratio=" + ratioText + " bare=" + bareText + " positive=" + positiveText);
@@ -2707,20 +2724,8 @@ static class MirrorDriftLoopChecks
         // names built under the '~' culture must equal independently written text with '-' signs (and the names built
         // under the invariant culture).
         var planted = MacRecordedCounts with { LoweredDefault = -8192, RequestedLowered = -6144, Lowered = -6144, Read = -4096, Chunk = -1024 };
-        MacCheckNames exoticNames;
-        try
-        {
-            CultureInfo.CurrentCulture = exotic;
-            exoticNames = MacNames(planted);
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
-        MacCheckNames invariantNames;
-        try
-        {
-            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
-            invariantNames = MacNames(planted);
-        }
-        finally { CultureInfo.CurrentCulture = saved; }
+        var exoticNames = UnderCulture(exotic, () => MacNames(planted));
+        var invariantNames = UnderCulture(CultureInfo.InvariantCulture, () => MacNames(planted));
         const string keptText = "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=-6144, requested=-6144 = 3/4 of default -8192)";
         const string preconditionText = "macos precondition (P2-42: the P2-41 lever setup check gates it, so no lever clause here): each lever's client default send buffer == the default unix send buffer; raised > default is a whole multiple of the -1024-byte piece, as are the -4096 bytes the fake reads; a kept lowered value (0 < lowered < default; rounding is the P2-39 setup check) differs from them (P2-38: handed == read + lowered is not 2 x read); and the fake's receive buffer (InBufferSize, all broken-after lines equal) is above the raised send buffer";
         const string selfTestText = "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (-8192) with queued == lowered (-6144)";
