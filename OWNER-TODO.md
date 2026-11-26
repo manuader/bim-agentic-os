@@ -501,3 +501,5 @@ Relay302 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P3-52, P
 
 ## Relay303 (2026-11-26, cloud scheduled)
 - Relay303 merged P10-56, P6-55, P7-56 (all test-only). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
+
+Relay304 (cloud, 2026-11-26): merged P1-50, P5-44, P2-49 (test-only). No new owner action required; pending items above unchanged (ADR0010/ADR0011, -Catalogue run, N21 run 3, git pull — main is now 41111f8d).
