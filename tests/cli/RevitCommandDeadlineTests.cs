@@ -1636,6 +1636,159 @@ internal static class RevitCommandDeadlineTests
         return windows ? (true, "::warning::cli-inputs P1-46 " + record + "; the symlink resolution of ControlLocationProblem is not exercised on this Windows runner", record) : (false, null, record);
     }
 
+    // P1-48: the % CR LF escape of CliInputsSummary.Line (tests/cli/Program.cs, its private Escape), read by reflection so
+    // this file keeps no copy; null when the method is gone (the P1-48 self-test then fails by name).
+    static readonly Func<string, string>? SummaryEscapeMethod =
+        typeof(CliInputsSummary).GetMethod("Escape", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static, null, new[] { typeof(string) }, null) is { } escape
+        && escape.ReturnType == typeof(string) ? escape.CreateDelegate<Func<string, string>>() : null;
+    static string SummaryEscape(string text) => SummaryEscapeMethod is { } escape ? escape(text)
+        : throw new InvalidOperationException("P1-48: CliInputsSummary.Escape(string) is not found in tests/cli/Program.cs");
+
+    // P1-48: GitHub Actions shows at most this many ::warning:: annotations per step (later ones stay in the log only).
+    const int WarningsPerStep = 10;
+    const string LinkPassCheck = "check(link.Pass, \"P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)\", link.Record + \"; \" + detail);";
+
+    // P1-48: the link pass is asserted once: the P1-44 check keeps its name and carries the P1-46 record in its detail
+    // (StripCode output: a check(link.Pass, call in a literal is not counted). "" when it holds.
+    static string LinkPassProblems(string source)
+    {
+        var text = source.ReplaceLineEndings("\n");
+        var calls = System.Text.RegularExpressions.Regex.Matches(StripCode(text), @"\bcheck\s*\(\s*link\s*\.\s*Pass\s*,").Count;
+        var named = CountOf(DeadlineSourceScan.CommentsBlanked(text), LinkPassCheck);
+        return (calls == 1 ? "" : N(calls) + " check(link.Pass, calls; ") + (named == 1 ? "" : N(named) + " P1-44 link checks with the record in the detail");
+    }
+
+    static int CountOf(string text, string token)
+    {
+        var count = 0;
+        for (var at = text.IndexOf(token, StringComparison.Ordinal); at >= 0; at = text.IndexOf(token, at + token.Length, StringComparison.Ordinal)) count++;
+        return count;
+    }
+
+    // P1-48: LinkOutcome escapes its warning text with SummaryEscape (CliInputsSummary's helper), no replace of its own.
+    const string LinkOutcomeSignature = "static (bool Pass, string? Warning, string Record) LinkOutcome(";
+    static string LinkEscapeProblems(string source)
+    {
+        var body = MemberBody(StripCode(source.ReplaceLineEndings("\n")), LinkOutcomeSignature);
+        if (body is null) return "no LinkOutcome block";
+        return (body.Contains("SummaryEscape(", StringComparison.Ordinal) ? "" : "no SummaryEscape( call; ")
+            + (body.Contains(".Replace(", StringComparison.Ordinal) ? "an own .Replace( escape" : "");
+    }
+
+    // P1-48: the warning budget of the step that runs cli-inputs (scripts/verify.ps1; the macOS job runs tests/cli alone).
+    // GitHub Actions keeps the first WarningsPerStep warning annotations of a step. Only tests/cli and tests/mirror-journal
+    // print ::warning:: lines, and verify.ps1 runs mirror-journal after cli-inputs, so no other gate's warning comes first.
+    // In cli-inputs this file writes three lines (VisibilitySelfTest's Windows runtime warning, the first thing RunSteps
+    // does; ControlLocationSelfTest's P1-46 link-skip warning, Windows only; Run's FailSummary at its end) and runs
+    // before DeletedCwdPathTests (P10-30/P10-32 probes, one per failing verb or mode) and before Program.cs's step-wide
+    // CliInputsSummary line (its last line, P1-45/P1-47). So: a green run prints at most 2 warnings from here plus
+    // mirror-journal's (its sites), within the budget; in a failing run the deadline summary is at most the 3rd warning
+    // of the step, and the step summary comes after the failing probes (stated, not counted: one per failing verb or
+    // mode), every FAIL line staying in the log. warningCounts maps a repository path ('/') to its count of ::warning::
+    // in code and literals (comments blanked); "" when the budget holds.
+    static string WarningBudgetProblems(IReadOnlyDictionary<string, int> warningCounts, string verify, string cliProgram, string self)
+    {
+        var problems = new List<string>();
+        foreach (var (path, _) in warningCounts.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+            if (path is not ("tests/cli/Program.cs" or "tests/cli/DeletedCwdPathTests.cs" or "tests/cli/RevitCommandDeadlineTests.cs") && !path.StartsWith("tests/mirror-journal/", StringComparison.Ordinal))
+                problems.Add("a ::warning:: source outside cli-inputs and mirror-journal: " + path);
+        var cliInputs = verify.IndexOf("Invoke-EvidenceCommand cli-inputs ", StringComparison.Ordinal);
+        var mirror = verify.IndexOf("Invoke-EvidenceCommand mirror-journal-tests ", StringComparison.Ordinal);
+        if (cliInputs < 0 || mirror < 0 || mirror < cliInputs) problems.Add("verify.ps1 does not run mirror-journal-tests after cli-inputs");
+        var program = StripCode(cliProgram.ReplaceLineEndings("\n"));
+        var deadline = program.IndexOf("RevitCommandDeadlineTests.Run(", StringComparison.Ordinal);
+        var deleted = program.IndexOf("DeletedCwdPathTests.Run(", StringComparison.Ordinal);
+        if (deadline < 0 || deleted < 0 || deleted < deadline) problems.Add("tests/cli/Program.cs does not run RevitCommandDeadlineTests before DeletedCwdPathTests");
+        var code = StripCode(self.ReplaceLineEndings("\n"));
+        var writes = System.Text.RegularExpressions.Regex.Matches(code, @"\bConsole\s*\.\s*(?:(?:Out|Error)\s*\.\s*)?Write(?:Line)?\s*\(").Count;
+        var flat = string.Concat(code.Where(c => !char.IsWhiteSpace(c)));
+        var known = new[] { "Console.WriteLine(notice);", "Console.WriteLine(skipWarning);", "Console.WriteLine(FailSummary(names));" };
+        if (writes != known.Length || known.Any(write => CountOf(flat, write) != 1))
+            problems.Add(N(writes) + " console writes in RevitCommandDeadlineTests.cs, not the runtime warning, the link-skip warning and FailSummary once each");
+        var mirrorSites = warningCounts.Where(entry => entry.Key.StartsWith("tests/mirror-journal/", StringComparison.Ordinal)).Sum(entry => entry.Value);
+        const int OwnBeforeSummary = 2; // the runtime and link-skip warnings
+        if (OwnBeforeSummary + mirrorSites > WarningsPerStep) problems.Add("a green run can print " + N(OwnBeforeSummary + mirrorSites) + " warnings, over " + N(WarningsPerStep));
+        if (OwnBeforeSummary + 1 > WarningsPerStep) problems.Add("the deadline summary is past warning " + N(WarningsPerStep));
+        return string.Join("; ", problems);
+    }
+
+    // P1-48: the counts WarningBudgetProblems reads: every .cs/.ps1/.psm1 file of the repository (no dot, bin or obj
+    // folder) with ::warning:: outside its comments (C# comments blanked; a PowerShell line starting with '#' skipped).
+    static Dictionary<string, int> WarningCounts(string root)
+    {
+        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var full = Path.GetFullPath(root);
+        foreach (var file in Directory.EnumerateFiles(full, "*", new EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }))
+        {
+            var relative = Path.GetRelativePath(full, file).Replace('\\', '/');
+            if (relative.Split('/').SkipLast(1).Any(part => part.StartsWith('.') || part is "bin" or "obj")) continue;
+            var extension = Path.GetExtension(file);
+            string text;
+            if (extension == ".cs") text = DeadlineSourceScan.CommentsBlanked(File.ReadAllText(file).ReplaceLineEndings("\n"));
+            else if (extension is ".ps1" or ".psm1") text = string.Join("\n", File.ReadAllText(file).ReplaceLineEndings("\n").Split('\n').Where(line => !line.TrimStart().StartsWith('#')));
+            else continue;
+            var count = CountOf(text, "::warning::");
+            if (count > 0) counts[relative] = count;
+        }
+        return counts;
+    }
+
+    // P1-48: the link warning escape, the single link-pass assertion and the step's warning budget (static, self-tests).
+    static void LinkWarningPinned(string root, Action<bool, string, string> check)
+    {
+        const string Reason = "IOException: 50% done\r\nsecond\rthird\nfourth";
+        var skip = LinkOutcome(false, false, true, Reason).Warning ?? "";
+        check(SummaryEscapeMethod is not null && skip == "::warning::cli-inputs P1-46 symbolic link not created (IOException: 50%25 done%0D%0Asecond%0Dthird%0Afourth); the symlink resolution of ControlLocationProblem is not exercised on this Windows runner",
+            "P1-48 link outcome self-test: the ::warning:: line escapes % CR LF (the link-skip reason kept, not flattened)", skip);
+        var summary = CliInputsSummary.Line(new[] { Reason });
+        check(SummaryEscapeMethod is not null && summary == "::warning::" + CliInputsSummary.Title + ": 1 FAIL: #1 " + SummaryEscape(Reason) && skip.Contains(SummaryEscape("(" + Reason + ")"), StringComparison.Ordinal),
+            "P1-48 link outcome self-test: the escape is CliInputsSummary.Line's own helper (its Escape, read by reflection)", summary + " | " + skip);
+
+        var selfPath = Path.Combine(root, "tests", "cli", "RevitCommandDeadlineTests.cs");
+        var self = File.Exists(selfPath) ? File.ReadAllText(selfPath) : "";
+        var escapeProblems = self.Length == 0 ? "not read" : LinkEscapeProblems(self);
+        check(escapeProblems.Length == 0, "P1-48 static: LinkOutcome escapes its warning with SummaryEscape and no replace of its own", escapeProblems);
+        const string CleanOutcome = "static class F\n{\n    static (bool Pass, string? Warning, string Record) LinkOutcome(bool created, string reason)\n    {\n"
+            + "        var record = \"not created (\" + reason.ReplaceLineEndings(\" \") + \")\";\n        return (true, \"::warning::x \" + SummaryEscape(\"(\" + reason + \")\"), record);\n    }\n}\n";
+        check(LinkEscapeProblems(CleanOutcome).Length == 0, "P1-48 link escape mutation self-test: SummaryEscape in LinkOutcome passes", LinkEscapeProblems(CleanOutcome));
+        foreach (var (label, source) in new[]
+        {
+            ("an own .Replace( escape", CleanOutcome.Replace("SummaryEscape(\"(\" + reason + \")\")", "(\"(\" + reason + \")\").Replace(\"%\", \"%25\")", StringComparison.Ordinal)),
+            ("SummaryEscape only in a comment", CleanOutcome.Replace("SummaryEscape(\"(\" + reason + \")\")", "record /* SummaryEscape( */", StringComparison.Ordinal)),
+        })
+            check(source != CleanOutcome && LinkEscapeProblems(source).Length > 0, "P1-48 link escape mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        var passProblems = self.Length == 0 ? "not read" : LinkPassProblems(self);
+        check(passProblems.Length == 0, "P1-48 static: the link pass is asserted once (the P1-44 name kept, the P1-46 record in its detail)", passProblems);
+        const string CleanPass = "static class F\n{\n    static void T(Action<bool, string, string> check)\n    {\n        " + LinkPassCheck + "\n    }\n}\n";
+        check(LinkPassProblems(CleanPass).Length == 0, "P1-48 link pass mutation self-test: one P1-44 check passes", LinkPassProblems(CleanPass));
+        foreach (var (label, source) in new[]
+        {
+            ("a second check(link.Pass, assertion", CleanPass.Replace(LinkPassCheck, LinkPassCheck + "\n        check(link.Pass, \"P1-46 control location self-test: \" + link.Record, detail);", StringComparison.Ordinal)),
+            ("the P1-44 name changed", CleanPass.Replace("P1-44 control location", "P1-48 control location", StringComparison.Ordinal)),
+            ("the record dropped from the detail", CleanPass.Replace("link.Record + \"; \" + detail", "detail", StringComparison.Ordinal)),
+        })
+            check(source != CleanPass && LinkPassProblems(source).Length > 0, "P1-48 link pass mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        var verifyPath = Path.Combine(root, "scripts", "verify.ps1");
+        var programPath = Path.Combine(root, "tests", "cli", "Program.cs");
+        var verify = File.Exists(verifyPath) ? File.ReadAllText(verifyPath).ReplaceLineEndings("\n") : "";
+        var cliProgram = File.Exists(programPath) ? File.ReadAllText(programPath) : "";
+        var counts = WarningCounts(root);
+        var budget = WarningBudgetProblems(counts, verify, cliProgram, self);
+        check(budget.Length == 0, "P1-48 static: the step's ::warning:: lines fit GitHub's " + N(WarningsPerStep) + " per step (the link-skip warning and the deadline summary come before any other gate's)",
+            budget + " | " + string.Join(", ", counts.Select(entry => entry.Key + " " + N(entry.Value))));
+        foreach (var (label, mutantCounts, mutantVerify, mutantProgram, mutantSelf) in new (string, IReadOnlyDictionary<string, int>, string, string, string)[]
+        {
+            ("a ::warning:: in tests/mcp (a gate run before cli-inputs)", new Dictionary<string, int>(counts) { ["tests/mcp/Program.cs"] = 1 }, verify, cliProgram, self),
+            ("mirror-journal run before cli-inputs", counts, verify.Replace("Invoke-EvidenceCommand cli-inputs ", "Invoke-EvidenceCommand cli-inputs-moved ", StringComparison.Ordinal) + "\nInvoke-EvidenceCommand cli-inputs x\n", cliProgram, self),
+            ("DeletedCwdPathTests run before the deadline tests", counts, verify, cliProgram.Replace("RevitCommandDeadlineTests.Run(", "RevitCommandDeadlineTests.Later(", StringComparison.Ordinal) + "\nRevitCommandDeadlineTests.Run(root);\n", self),
+            ("a fourth console write here", counts, verify, cliProgram, self + "\nstatic class G { static void W() => Console.WriteLine(\"::warning::extra\"); }\n"),
+            ("nine mirror-journal warning sites", new Dictionary<string, int>(counts) { ["tests/mirror-journal/Extra.cs"] = 9 }, verify, cliProgram, self),
+        })
+            check(WarningBudgetProblems(mutantCounts, mutantVerify, mutantProgram, mutantSelf).Length > 0, "P1-48 warning budget mutation self-test: " + label + " is flagged", "no problem flagged");
+    }
+
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
     // between the temp folder and the root (a path reached through a link to the root is inside it). Self-test in a
     // scratch repository under the temp folder: real/repo (git init) and alias -> real.
@@ -1751,6 +1904,7 @@ internal static class RevitCommandDeadlineTests
         check(link.Pass, "P1-44 control location self-test: a symbolic link between the temp folder and the root is resolved (a path inside the root through a link is refused, one beside it accepted)", link.Record + "; " + detail);
         check(link.Pass, "P1-46 control location self-test: " + link.Record, detail);
         check(!Directory.Exists(scratch), "P1-44 control location self-test: the scratch link folder is removed", scratch);
+        LinkWarningPinned(root, check);
     }
 
     // P1-44: the argument-mapping parser (with StripCode and MemberBody) exists once, in tests/cli/DeadlineSourceScan.cs:
