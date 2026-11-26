@@ -60,6 +60,7 @@ the point Arc.vertices() gives at the middle of its counter-clockwise span, for 
 
 import contextlib
 import io
+import math
 import os
 import re
 import sys
@@ -1049,6 +1050,10 @@ def _drift_failures(differing):
     return ["new C-extension drift rows: " + ", ".join(new) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")"] if new else []
 
 
+# P6-54: defined before _c_ext_failures, which uses it.
+_DRIFT_KINDS = ("not committed: ", "not produced by the generator: ")
+
+
 def _c_ext_failures(failures, names):
     # P6-52: (failures, drifting row names) under the C extensions; names[i] is the row failures[i] is about. A row
     # drifts when its name has exactly one generated row not committed and one committed row not produced; drifting rows
@@ -1061,9 +1066,6 @@ def _c_ext_failures(failures, names):
     drifting = [name for name, k in counts.items() if k == [1, 1]]
     kept = ["kept under the C extensions: " + f for f, n in zip(failures, names) if not (f.startswith(_DRIFT_KINDS) and n in drifting)]
     return kept + _drift_failures(drifting), drifting
-
-
-_DRIFT_KINDS = ("not committed: ", "not produced by the generator: ")
 
 
 def _compare(generated, committed):
@@ -1116,8 +1118,21 @@ def _compare(generated, committed):
     return failures, matched, unused, list(dict.fromkeys(differing)), differing
 
 
+def _nudged(source, generated, names):
+    # P6-54: (old, new) text planting a drift of the committed row named names: its first number, found by regex in the
+    # committed line, replaced by the next double above this run's generated value, so the row differs with or without
+    # the C extensions. (None, None) when the row is not committed exactly once or not generated exactly once.
+    prefix = "        (" + ", ".join('"' + n + '"' for n in names) + ", "
+    found = list(re.finditer("^(" + re.escape(prefix) + r"(?:new\[\] \{ )?)(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?), ", source, re.MULTILINE))
+    values = [numbers[0] for _, gnames, numbers in generated if gnames == tuple(names)]
+    if len(found) != 1 or len(values) != 1:
+        return None, None
+    return found[0].group(0), found[0].group(1) + repr(math.nextafter(values[0], math.inf)) + ", "
+
+
 def _self_tests(generated, source, cs_path):
     # Planted copies of the C# file that the check must fail, each with the failure it must report.
+    k2_old, k2_new = _nudged(source, generated, ("K2", "TG"))
     plants = [
         ("an extra JustifiedPoints row", '        ("K2", "TG", ', '        ("K9", "TZ", 1.0, 2.0, 3.0, 4.0),\n        ("K2", "TG", ', "not produced by the generator: JustifiedPoints"),
         ("a Cells row with one number more", "-124.99999999999977, 3948.5571585149864 }),", "-124.99999999999977, 3948.5571585149864, 0.0 }),", "not produced by the generator: Cells"),
@@ -1133,7 +1148,8 @@ def _self_tests(generated, source, cs_path):
         ("a label with no LABEL_ROWS entry", 'Text("L2", ', 'Text("L9", ', "not produced by the generator: Drawing() line"),
         # P6-50: a row outside C_EXT_DRIFT that differs is reported by the C-extension drift check (as in CI's run with
         # the C extensions), named in the failure.
-        ("a new C-extension drift row", '("K2", "TG", 39676.59614009593, ', '("K2", "TG", 39676.59614009594, ', "new C-extension drift rows: K2 TG ", "K2 TG", True),
+        # P6-54: its old value is found by regex (_nudged), not written here.
+        ("a new C-extension drift row", k2_old or "<K2 TG row>", k2_new, "new C-extension drift rows: K2 TG ", "K2 TG", True),
     ]
     failures = []
     for label, old, new, expected, *extra in plants:
@@ -1155,12 +1171,21 @@ def _self_tests(generated, source, cs_path):
     unused_line = next((line for line, names, _ in generated if any(n in UNUSED for n in names) and names[0] not in DECOYS), None)
     pinned_line = next((line for line, names, _ in generated if names == ("C1>NB",)), None)
     pinned_old = re.findall(r'^        \("C1>NB", .*$', source, re.MULTILINE)
+    # P6-54: the pinned row C1>NB drifting (nudged as above) and committed twice.
+    c1_old, c1_new = _nudged(source, generated, ("C1>NB",))
+    twice_old = pinned_old[0] if len(pinned_old) == 1 and c1_old and pinned_old[0].startswith(c1_old) else "<C1>NB row>"
+    twice_new = twice_old.replace(str(c1_old), str(c1_new), 1)
     c_plants = [
-        ("a new drift row under the C extensions", '("K2", "TG", 39676.59614009593, ', '("K2", "TG", 39676.59614009594, ', 1, "new C-extension drift rows: K2 TG ", None),
+        ("a new drift row under the C extensions", k2_old or "<K2 TG row>", k2_new, 1, "new C-extension drift rows: K2 TG ", None),
         ("a missing table under the C extensions", "double[] Corners)[] Cells =\n", "double[] Corners)[] CellsGone =\n", 1, "kept under the C extensions: table not found: Cells", None),
         ("an extra row under the C extensions", '        ("K2", "TG", ', '        ("K9", "TZ", 1.0, 2.0, 3.0, 4.0),\n        ("K2", "TG", ', 1, "kept under the C extensions: not produced by the generator: JustifiedPoints", "K9 TZ"),
         ("an unused row committed under the C extensions", '        ("K2", "TG", ', '        ' + str(unused_line) + '\n        ("K2", "TG", ', 1, "kept under the C extensions: listed as unused but committed: ", None),
+        # P6-54: this plant discriminates only under the C extensions: in the pure-Python run (c_ext forced) no pinned
+        # row drifts, so C1>NB is named as no longer drifting with or without the plant.
         ("a pinned row that stops drifting under the C extensions", pinned_old[0] if len(pinned_old) == 1 else "<C1>NB row>", '        ' + str(pinned_line), 0, "pinned C-extension drift rows no longer drifting: ", None),
+        # P6-54: a pinned row that drifts and is committed twice is not a drifting row (two committed rows not produced):
+        # its failures are kept and fail, and it is listed as kept as failures, not as no longer drifting.
+        ("a pinned row drifting and committed twice under the C extensions", twice_old, twice_new + "\n" + twice_new, 1, "kept under the C extensions: committed twice: ", None),
     ]
     for label, old, new, status, line, unnamed in c_plants:
         if source.count(old) != 1 or unused_line is None or pinned_line is None:
@@ -1171,8 +1196,12 @@ def _self_tests(generated, source, cs_path):
             got = check_main(cs_path, c_ext=True, source=source.replace(old, new), generated=generated, self_tests=False)
         lines = out.getvalue().splitlines()
         printed = [l for l in lines if l.startswith(line)]
-        if label.startswith("a pinned row"):
+        if label.startswith("a pinned row that stops"):
             printed = [l for l in printed if "C1>NB" in l.split(": ", 1)[1].split(" (")[0].split(", ")]
+        if label.startswith("a pinned row drifting"):
+            stale = [l for l in lines if l.startswith("pinned C-extension drift rows no longer drifting: ")]
+            listed = [l for l in lines if l.startswith("C-extension drift: ") and "; kept as failures: C1>NB" in l]
+            printed = printed if listed and not any("C1>NB" in l.split(": ", 1)[1].split(" (")[0].split(", ") for l in stale) else []
         named = unnamed is not None and any(l.startswith("new C-extension drift rows: ") and unnamed in l for l in lines)
         caught = got == status and printed and not named
         print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(got) + ")")
@@ -1209,9 +1238,12 @@ def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True
         print(failure)
     print("differing rows: " + (", ".join(differing) if differing else "none"))
     if c_ext:
-        stale = [d for d in C_EXT_DRIFT if d not in drifting]
+        # P6-54: a pinned row with kept failures (say committed twice while drifting) is listed as kept as failures,
+        # not as no longer drifting.
+        failing = [d for d in C_EXT_DRIFT if d not in drifting and d in names]
+        stale = [d for d in C_EXT_DRIFT if d not in drifting and d not in names]
         print("C-extension drift: pinned " + ", ".join(C_EXT_DRIFT) + "; new: " + (", ".join(d for d in drifting if d not in C_EXT_DRIFT) or "none")
-              + "; no longer drifting: " + (", ".join(stale) or "none"))
+              + "; no longer drifting: " + (", ".join(stale) or "none") + "; kept as failures: " + (", ".join(failing) or "none"))
         if stale:
             # P6-52: named on a line of its own, which the CI step turns into a warning annotation.
             print("pinned C-extension drift rows no longer drifting: " + ", ".join(stale) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")")

@@ -2026,6 +2026,44 @@ internal static class MinsertEzdxfTests
             c(cextAbsent.Count == 0 && staleAbsent.Count == 0 && !generator.Contains("failures = _drift_failures(differing)", StringComparison.Ordinal),
                 "justified: generator: P6-52 under the C extensions structural failures are kept beside the drift failures, check_main's C-extension path is self-tested, and a pinned row that stops drifting is a warning annotation",
                 "generator missing " + string.Join(" | ", cextAbsent) + "; step missing " + string.Join(" | ", staleAbsent) + "; structural dropped " + generator.Contains("failures = _drift_failures(differing)", StringComparison.Ordinal));
+
+            // P6-54: the stale-row wiring is one shell function, self-checked by the step on a planted stale line (the
+            // annotation it must yield, else the step fails) before it is applied to the C-extension run's output; the
+            // planted line starts with the prefix the generator prints.
+            const string StaleWarn = "stale_warn() { grep '^pinned C-extension drift rows no longer drifting: ' | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
+            const string StalePlanted = "planted='pinned C-extension drift rows no longer drifting: C1>NB (planted by the step)'";
+            const string StaleCheck = "if [ \"$(printf '%s\\n' 'differing rows: none' \"$planted\" 'C-extension drift: none' | stale_warn)\" != \"::warning title=ezdxf-check-c-ext-stale::$planted\" ]; then";
+            const string StaleApplied = "printf '%s\\n' \"$cext\" | stale_warn\n";
+            var staleAt = new[] { StaleWarn, StalePlanted, StaleCheck, StaleApplied }.Select(s => stepText.IndexOf(s, StringComparison.Ordinal)).ToList();
+            var staleInOrder = staleAt.All(i => i >= 0) && staleAt.Zip(staleAt.Skip(1), (a, b) => a < b).All(x => x);
+            var staleExit = staleAt[2] < 0 ? -1 : stepText.IndexOf("exit 1", staleAt[2], StringComparison.Ordinal);
+            var staleFails = staleExit > 0 && staleExit < staleAt[3];
+            var staleUnwired = stepText.Contains("printf '%s\\n' \"$cext\" | grep '^pinned C-extension drift rows no longer drifting: '", StringComparison.Ordinal);
+            c(staleInOrder && staleFails && !staleUnwired && generator.Contains("print(\"pinned C-extension drift rows no longer drifting: \"", StringComparison.Ordinal),
+                "justified: generator: P6-54 the CI step's stale-row grep-to-warning wiring is one function, self-checked on a planted stale line (the step fails unless it yields the warning annotation) before it reads the C-extension run",
+                "positions " + string.Join(",", staleAt.Select(i => i.ToString(CultureInfo.InvariantCulture))) + " fails on mismatch " + staleFails + " inline pipeline left " + staleUnwired);
+            // P6-54: the C-extension annotation counts its lines cut at 900 characters.
+            string[] cutNeeded = { "awk 'length > 900'", "lines cut at 900 characters: $ccut" };
+            var cutAbsent = cutNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
+            c(cutAbsent.Count == 0,
+                "justified: generator: P6-54 the ezdxf-check-c-ext annotation counts the lines it cuts at 900 characters",
+                "missing " + string.Join(" | ", cutAbsent));
+            // P6-54: a pinned row that drifts and is also committed twice is classified by a planted self-test (kept as a
+            // failure, not named as no longer drifting); the drift plants derive their values by regex from the committed
+            // and generated rows (no hard-coded K2 TG number); the stop-drifting plant states it discriminates only under
+            // the C extensions; _DRIFT_KINDS is defined before _c_ext_failures uses it.
+            string[] dupNeeded =
+            {
+                "(\"a pinned row drifting and committed twice under the C extensions\", ", "def _nudged(source, generated, names):",
+                "\"; kept as failures: \"", "discriminates only under the C extensions",
+            };
+            var dupAbsent = dupNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            var kindsAt = generator.IndexOf("\n_DRIFT_KINDS = ", StringComparison.Ordinal);
+            var kindsBefore = kindsAt >= 0 && kindsAt < generator.IndexOf("\ndef _c_ext_failures(", StringComparison.Ordinal);
+            var hardCoded = generator.Contains("39676.59614009593", StringComparison.Ordinal);
+            c(dupAbsent.Count == 0 && kindsBefore && !hardCoded,
+                "justified: generator: P6-54 a pinned drifting row committed twice is classified by a self-test, the drift plants derive their values by regex, the stop-drifting plant states its C-extension-only reach, and _DRIFT_KINDS precedes its use",
+                "missing " + string.Join(" | ", dupAbsent) + " _DRIFT_KINDS before use " + kindsBefore + " K2 TG number hard-coded " + hardCoded);
         }
         catch (Exception error)
         {
