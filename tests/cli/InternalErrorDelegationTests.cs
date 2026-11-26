@@ -952,7 +952,10 @@ internal static class InternalErrorDelegationTests
     // neither break the parameter list nor read as object creation. The hiding `new` accepts a generic return type
     // nested to any depth (balancing group: `new Dictionary<A<B<(int, int)>>, C> M()`). An unsafe local function
     // returning a pointer without `new` (`unsafe int* Later()`) already matched.
-    static readonly System.Text.RegularExpressions.Regex InnerAttributes = new(@"(?<=[(,<]\s*)\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\]",
+    // P3-47: a run of attribute sections on one parameter or type parameter (`([A] [B(new[] { 1 })] int n)`) is reduced
+    // to one `[]` (the sections after the first are not after '(', ',' or '<'). A collection expression after '(' or ','
+    // in a call (`F([1, 2])`) is reduced the same way (pinned): harmless, no header test reads call arguments.
+    static readonly System.Text.RegularExpressions.Regex InnerAttributes = new(@"(?<=[(,<]\s*)\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\](?:\s*\[(?>[^\[\]]+|\[(?<d>)|\](?<-d>))*(?(d)(?!))\])*",
         System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
     static readonly System.Text.RegularExpressions.Regex LambdaHeader = new(@"(?:=>|\bdelegate\s*(?:\([^(){};]*\))?)\s*$",
         System.Text.RegularExpressions.RegexOptions.None, TimeSpan.FromSeconds(1));
