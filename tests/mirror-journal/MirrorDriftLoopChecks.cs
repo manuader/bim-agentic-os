@@ -2166,7 +2166,8 @@ static class MirrorDriftLoopChecks
         public int Requested = -1;
         public int Set = -1;
         public string Error = "";
-        public override string ToString() => "calls=" + Calls + " default=" + Default + " requested=" + Requested + " set=" + Set + " error=" + (Error.Length == 0 ? "<none>" : Error);
+        // P2-48: numbers through MacNumber (InvariantCulture), pinned under a '~' culture by MacSelfTestPins.
+        public override string ToString() => "calls=" + MacNumber(Calls) + " default=" + MacNumber(Default) + " requested=" + MacNumber(Requested) + " set=" + MacNumber(Set) + " error=" + (Error.Length == 0 ? "<none>" : Error);
     }
 
     // P2-40: the lowered lever's ratio (3/4 of the client's default send buffer), declared once: the second macOS seam
@@ -2406,7 +2407,8 @@ static class MirrorDriftLoopChecks
             if (failures.Length == 1) covered.Add(failures[0]);
             leverPlantsOk &= failures.Length == 1 && failures[0] == what && !input.LeversOk
                 && Same(outcome.Red, MacLeversName) && Same(outcome.NotRun, MacNames(input).All);
-            leverSeen.Add(what + ": " + outcome.Seen);
+            // P2-48: with the planted lever records (their invariant text, LeverRecord.ToString).
+            leverSeen.Add(what + ": raised_lever " + raisedLever + " lowered_lever " + loweredLever + " " + outcome.Seen);
         }
         check(leverPlantsOk && covered.SequenceEqual(new[] { "lowered calls=0", "lowered calls=2", "lowered error", "raised calls=0", "raised calls=2", "raised error" }, StringComparer.Ordinal),
             "macos self-test (P2-43): planted lever records (raised or lowered with calls 0 or 2, or with an error) through WithLevers give only the lever setup red '" + MacLeversName + "' and five not-run lines (P2-44: each plant breaks exactly the one thing its label names, and the six cover both levers x calls 0, calls 2 and an error)",
@@ -2430,6 +2432,10 @@ static class MirrorDriftLoopChecks
     // self-test names, and the lowered self-test name of a lowered lever that never ran), written independently of
     // MacNames from the baseline's default, lowered, read and piece values.
     sealed record MacSelfTestTexts(string RoundedKept, string MismatchKept, string Kept, string Precondition, string SelfTest, string ZeroSelfTest);
+
+    // P2-48: the expected texts as check detail, field by field (not the record's ToString).
+    static string MacSelfTestTextsDetail(MacSelfTestTexts t) => "rounded_kept=[" + t.RoundedKept + "] mismatch_kept=[" + t.MismatchKept + "] kept=[" + t.Kept
+        + "] precondition=[" + t.Precondition + "] self_test=[" + t.SelfTest + "] zero_self_test=[" + t.ZeroSelfTest + "]";
 
     static MacSelfTestTexts MacSelfTestExpected(int s, int lowered, int read, int chunk) => new(
         "macos setup (P2-39): the kernel kept the lowered send buffer the lever requested (measured lowered=" + MacNumber(read) + ", requested=" + MacNumber(lowered) + " = 3/4 of default " + MacNumber(s) + ")",
@@ -2469,6 +2475,12 @@ static class MirrorDriftLoopChecks
         return checks;
     }
 
+    // P2-48: the drift check's not-run line: the gate's not-run notice plus the drift fields the red setup check hides
+    // (MacCountsDrift of the live counts against the recorded ones), so a rounded lowered value or a failed lever still
+    // shows which recorded counts the run differs from.
+    static string MacDriftNotRunNotice(MacSendBufferCounts live, MacSendBufferCounts recorded) =>
+        MacNotRunNotice(MacDriftName) + " hidden_drift=[" + string.Join(" ; ", MacCountsDrift(live, recorded)) + "]";
+
     // P2-46: the record's fields in the order MacCountsDrift lists them: the parameters of its positional (primary)
     // constructor, the only public one with more than one parameter (not the metadata order of its properties).
     static string[] MacCountsFields() => typeof(MacSendBufferCounts).GetConstructors()
@@ -2505,7 +2517,7 @@ static class MirrorDriftLoopChecks
             "macos self-test (P2-39): the lowered relation rejects a planted handed == 2 x read (-8192) with queued == lowered (-1)");
         check(exoticTexts == written && invariantTexts == written,
             "macos pin self-test (P2-46): the self-tests' expected texts (rounded and mismatch kept reds, kept, precondition, lowered self-test and never-ran lowered self-test) write InvariantCulture numbers: planted negative under a '~' negative-sign culture they equal the text written with '-'",
-            "exotic=" + exoticTexts + " | invariant=" + invariantTexts);
+            "exotic=" + MacSelfTestTextsDetail(exoticTexts) + " | invariant=" + MacSelfTestTextsDetail(invariantTexts));
         const string countsWritten = "macos send buffer counts (P2-37): wire=39757 read=-4096 in_buffer=-1 default=8192 raised=16384 raised_queued=16384 raised_handed=20480 lowered=-6144 lowered_requested=-6144 lowered_queued=-6144 lowered_handed=-1 cli_queued=8192";
         const string recordedWritten = "macos send buffer counts (P2-37): wire=39757 read=4096 in_buffer=32768 default=8192 raised=16384 raised_queued=16384 raised_handed=20480 lowered=6144 lowered_requested=6144 lowered_queued=6144 lowered_handed=10240 cli_queued=8192";
         var recordedText = MacCountsText(MacRecordedCounts);
@@ -2571,6 +2583,42 @@ static class MirrorDriftLoopChecks
             && firstLast.SequenceEqual(new[] { "LeversOk: live=False recorded=True", "LoweredHanded: live=1 recorded=10240" }, StringComparer.Ordinal),
             "macos pin self-test (P2-46): the recorded-count drift lists fields in the record's positional constructor parameter order (written as text), first field before last",
             "fields=[" + string.Join(" ; ", fields) + "] first_last=[" + string.Join(" ; ", firstLast) + "]");
+
+        // P2-48: a lever record's text (the live macOS detail's raised_lever/lowered_lever and the lever-plant self-test's
+        // detail) writes InvariantCulture numbers: planted negative under the '~' culture it equals the text written with '-'.
+        var plantedLever = new LeverRecord { Calls = -2, Default = -8192, Requested = -6144, Set = -6143 };
+        var erroredLever = new LeverRecord { Calls = 1, Default = 8192, Requested = 6144, Set = 6144, Error = "planted" };
+        string exoticLever, invariantLever, erroredText;
+        try
+        {
+            CultureInfo.CurrentCulture = exotic;
+            exoticLever = plantedLever.ToString();
+            erroredText = erroredLever.ToString();
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            invariantLever = plantedLever.ToString();
+        }
+        finally { CultureInfo.CurrentCulture = saved; }
+        const string leverWritten = "calls=-2 default=-8192 requested=-6144 set=-6143 error=<none>";
+        check(exoticLever == leverWritten && invariantLever == leverWritten && erroredText == "calls=1 default=8192 requested=6144 set=6144 error=planted",
+            "macos pin self-test (P2-48): a lever record's text writes its numbers through MacNumber (planted negative under a '~' negative-sign culture it equals the text written with '-')",
+            "exotic=" + exoticLever + " | invariant=" + invariantLever + " | errored=" + erroredText);
+
+        // P2-48: the self-test texts as detail text field by field (MacSelfTestTextsDetail), not the record's ToString.
+        var textsDetail = typeof(MirrorDriftLoopChecks).GetMethod("MacSelfTestTextsDetail", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var textsSeen = textsDetail?.Invoke(null, new object[] { new MacSelfTestTexts("a", "b", "c", "d", "e", "f") }) as string;
+        check(textsSeen == "rounded_kept=[a] mismatch_kept=[b] kept=[c] precondition=[d] self_test=[e] zero_self_test=[f]",
+            "macos pin self-test (P2-48): the self-test expected texts print as detail field by field (MacSelfTestTextsDetail), not through the record's ToString",
+            "helper=" + (textsDetail?.Name ?? "<none>") + " seen=" + (textsSeen ?? "<none>"));
+
+        // P2-48: the drift check's not-run line names the drift the red setup check hides: a kernel rounding (6143 kept
+        // for 6144 requested) lists the Lowered field; the recorded counts themselves list none.
+        var driftNotRun = typeof(MirrorDriftLoopChecks).GetMethod("MacDriftNotRunNotice", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var roundedLine = driftNotRun?.Invoke(null, new object[] { roundedInput, MacRecordedCounts }) as string;
+        var recordedLine = driftNotRun?.Invoke(null, new object[] { MacRecordedCounts, MacRecordedCounts }) as string;
+        const string noticeWritten = "::notice::drift-loop: write progress per OS (P2-33): macos pin (P2-45): the live gate's counts equal the recorded macOS counts (MacRecordedCounts) field by field not run (setup red)";
+        check(roundedLine == noticeWritten + " hidden_drift=[Lowered: live=6143 recorded=6144]" && recordedLine == noticeWritten + " hidden_drift=[]",
+            "macos pin self-test (P2-48): the drift check's not-run line names the drift fields the red setup check hides (a kernel rounding lists 'Lowered: live=6143 recorded=6144'; the recorded counts list none)",
+            "helper=" + (driftNotRun?.Name ?? "<none>") + " rounded=" + (roundedLine ?? "<none>") + " recorded=" + (recordedLine ?? "<none>"));
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
@@ -2914,7 +2962,8 @@ static class MirrorDriftLoopChecks
             var driftDetail = "drift=[" + string.Join(" ; ", drift) + "] live=" + MacCountsDetail(gate) + " recorded=" + MacCountsDetail(MacRecordedCounts);
             var notRun = new List<string>();
             foreach (var (ok, name) in MacLiveChecks(gate, MacRecordedCounts, notRun)) Check(ok, name, name == MacDriftName ? driftDetail : macDetail);
-            foreach (var name in notRun) Console.WriteLine(MacNotRunNotice(name));
+            // P2-48: the drift check's not-run line names the drift fields it hides (MacDriftNotRunNotice).
+            foreach (var name in notRun) Console.WriteLine(name == MacDriftName ? MacDriftNotRunNotice(gate, MacRecordedCounts) : MacNotRunNotice(name));
             MacSendBufferSelfTests(gate, (condition, name, detail) => Check(condition, name, detail));
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);

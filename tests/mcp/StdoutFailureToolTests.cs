@@ -172,7 +172,9 @@ internal static class StdoutFailureToolTests
     //      with ReplaceLineEndings(" "); a Message that is null prints as empty instead of losing the line to a
     //      NullReferenceException. The source statement is pinned and the formula is self-tested on a replica, with the
     //      unfolded formula as the mutant (it makes more than one line for the same messages). A Message getter that
-    //      throws is pinned as measured: the guarded write drops the line and exit 1 stands.
+    //      throws makes this P5-39 formula throw (pinned as measured on the replica). Program.cs no longer runs it: since
+    //      P5-41 this section reads Program.cs with ProgramDeltaP541 reversed, and RunP5_41 pins the fallback that prints
+    //      the getter's exception type instead.
     static void RunP5_39(string root, Action<bool, string> check)
     {
         var failures = new List<string>();
@@ -300,7 +302,7 @@ internal static class StdoutFailureToolTests
             try { Line(new MessageGetterThrowsException()); }
             catch (Exception error) { threw = error.GetType().FullName ?? ""; }
             Check(threw == "System.InvalidOperationException",
-                "PINNED AS MEASURED: a write exception whose Message getter throws makes the formula throw, so Program.cs's guarded write drops the line and exit 1 stands alone | " + (threw.Length == 0 ? "did not throw" : threw));
+                "PINNED AS MEASURED: a write exception whose Message getter throws makes the P5-39 formula throw (Program.cs replaced it in P5-41; RunP5_41 pins the type fallback) | " + (threw.Length == 0 ? "did not throw" : threw));
         }
 
         check(failures.Count == 0, "P5-39 mcp stdout edges: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
@@ -318,7 +320,14 @@ internal static class StdoutFailureToolTests
     //   c. Real Release Bim.Mcp.dll (Linux; SKIP elsewhere: /bin/sh and /dev/full): an oversized first line (longer than
     //      MaxLineChars + 1, answered by Run's request_too_large reply) with stdout >/dev/full or 1</dev/null: exit 1,
     //      stdout empty, stderr exactly one line "mcp stdout failed: <type>: ..." (IOException / UnauthorizedAccessException
-    //      as P5-37 measured), no unhandled exception.
+    //      as P5-37 measured), no unhandled exception. Its reach, stated: a real IOException has a readable Message, so the
+    //      real run never reaches the throwing-getter fallback: only the replica (b) covers it (no probe in Program.cs can
+    //      plant such an exception in a real process). The run overlaps P5-37 b and P5-39 section a: P5-37 b runs the same
+    //      redirects and one-line stderr through a regular first reply, and P5-39 section a the same request_too_large
+    //      reply in process; this is that reply through the real process, kept separate, not folded into P5-39 section a,
+    //      because that section runs in process on every OS.
+    //   d. P5-43: the wording of these headers, P5-39 section c's measured check and tests/cli/SkillListTests.cs header
+    //      (width, oracle 19 wrapper sentence) is pinned on the sources.
     static void RunP5_41(string root, string dotnet, string mcpDll, Action<bool, string> check)
     {
         var failures = new List<string>();
@@ -409,6 +418,43 @@ internal static class StdoutFailureToolTests
                     "real Bim.Mcp.dll, an oversized first line (request_too_large reply) with stdout " + redirect + " (Linux): exit 1, stdout empty, stderr exactly one line '" + prefix + "...', no unhandled exception | exit "
                     + run.Exit.ToString(CultureInfo.InvariantCulture) + " out " + JsonSerializer.Serialize(Short(run.Out)) + " err " + JsonSerializer.Serialize(Short(run.Err)));
             }
+        }
+
+        // ---- d. P5-43: the wording of these oracles (text-only clauses, pinned on the sources) ----
+        {
+            // A comment block's words: the lines from the one starting with `first` (trimmed) up to the one containing
+            // `last`, with the comment markers removed and runs of whitespace collapsed.
+            static string Words(string source, string first, string last)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var start = Array.FindIndex(lines, line => line.TrimStart().StartsWith(first, StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.Contains(last, StringComparison.Ordinal));
+                if (start < 0 || end < 0) return "";
+                var text = string.Join(" ", lines[start..end].Select(line => line.Trim().TrimStart('/')));
+                return string.Join(" ", text.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            }
+            var herePath = Path.Combine(root, "tests", "mcp", "StdoutFailureToolTests.cs");
+            var here = File.Exists(herePath) ? File.ReadAllText(herePath).ReplaceLineEndings("\n") : "";
+            var p539 = Words(here, "// P5-39: the remaining MCP stdout edges", "static void RunP5_39(");
+            var p541 = Words(here, "// P5-41: the 'mcp stdout failed' stderr line falls back", "static void RunP5_41(");
+            Check(p541.Contains("a real IOException has a readable Message, so the real run never reaches the throwing-getter fallback: only the replica (b) covers it", StringComparison.Ordinal),
+                "P5-43: the P5-41 header states that the real Bim.Mcp.dll run (c) cannot reach the throwing-getter fallback (a real IOException's Message is readable; only the replica covers it) | " + Short(p541));
+            Check(p541.Contains("overlaps P5-37 b and P5-39 section a", StringComparison.Ordinal),
+                "P5-43: the P5-41 header states the overlap of the real oversized-line run with P5-37 b and P5-39 section a | " + Short(p541));
+            var stale = "guarded write " + "drops the line";
+            Check(p539.Length > 0 && !p539.Contains("drops the line", StringComparison.Ordinal) && p539.Contains("RunP5_41 pins the fallback", StringComparison.Ordinal)
+                && !here.Contains(stale, StringComparison.Ordinal),
+                "P5-43: neither the P5-39 header nor its PINNED AS MEASURED check text says Program.cs drops the line (P5-41 replaced it; the P5-39 header points to RunP5_41) | header " + Short(p539));
+            var cliPath = Path.Combine(root, "tests", "cli", "SkillListTests.cs");
+            var cli = File.Exists(cliPath) ? File.ReadAllText(cliPath).ReplaceLineEndings("\n") : "";
+            var headerLines = cli.Split('\n').TakeWhile(line => !line.StartsWith("internal static class SkillListTests", StringComparison.Ordinal)).ToArray();
+            var wide = headerLines.Select((line, index) => (Line: index + 1, line.Length)).Where(entry => entry.Length > 125).ToArray();
+            Check(cli.Length > 0 && headerLines.Length < cli.Split('\n').Length && wide.Length == 0,
+                "P5-43: tests/cli/SkillListTests.cs header lines are at most 125 characters (the file's comment width) | wider: "
+                + string.Join(", ", wide.Select(entry => entry.Line.ToString(CultureInfo.InvariantCulture) + " (" + entry.Length.ToString(CultureInfo.InvariantCulture) + ")")));
+            var oracle19 = Words(cli, "//  19. P5-39", "internal static class SkillListTests");
+            Check(oracle19.Contains("the leading System.InvalidOperationException is the wrapper Run's fallback builds", StringComparison.Ordinal),
+                "P5-43: tests/cli/SkillListTests.cs oracle 19 states that the two-level diagnostic's leading System.InvalidOperationException is the wrapper Run's fallback builds | " + Short(oracle19));
         }
 
         check(failures.Count == 0, "P5-41 mcp stderr fallback: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));

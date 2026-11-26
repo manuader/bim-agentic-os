@@ -13,9 +13,9 @@ using Bim.Core;
 //      {"status":"failed","code","field","detail","file"} with the loader's values unchanged, a registry refusal
 //      {"status":"failed","code","subject","detail"}, exit 1.
 //   2. Pinned cases: a malformed jurisdiction.json (json_invalid, subject <id>/jurisdiction.json), a trailing separator on
-//      --skills (same skills_path as the default), the repository listing (ids equal the skills/ directory names in ordinal order, CABA kind code not
-//      stub, xx.example stub), a malformed skill.json (json_invalid at <id>/skill.json) and a missing directory
-//      (root_missing at ".", not created).
+//      --skills (same skills_path as the default), the repository listing (ids equal the skills/ directory names in
+//      ordinal order, CABA kind code not stub, xx.example stub), a malformed skill.json (json_invalid at
+//      <id>/skill.json) and a missing directory (root_missing at ".", not created).
 //   3. Package-first: from a CLI copied into <package>/cli beside VERSION, manifest.json and skills/, the package's
 //      skills/ are listed (SkillPackLookup.PackageRoot), not the repository's; --skills overrides it.
 //   4. Usage: unknown, repeated, valueless or positional arguments print skill_list_usage with the usage text.
@@ -161,11 +161,15 @@ using Bim.Core;
 //      nothing escaping Run (also with a rejecting stdout, stderr or both: one attempt per stream); the diagnostic is
 //      "skill-list internal error: System.InvalidOperationException: <type of the exception that reached Run> (its Message
 //      getter threw <type>)" once (the fallback goes through IntentPlan.Internal again, so the internal-error fragment
-//      keeps its one copy in IntentPlan.cs). The probe's original exception type cannot be named there: List's catch (not P5-41's to edit) already lost
-//      it, so the diagnostic states the getter types instead (19b). The one-level and readable-message diagnostics are
-//      unchanged (19a). Static (19d): CommandDeltaP541 (Run's catch: the one-line catch becomes the guarded block),
-//      reversed, gives the P5-39 file byte for byte (the P5-39 SHA-256 kept), and sections 13 and 15 read the file with
-//      it reversed first (documented delta); Run's new catch is pinned whitespace-insensitively.
+//      keeps its one copy in IntentPlan.cs). The wrapper wording, stated (P5-43): the leading
+//      System.InvalidOperationException is the wrapper Run's fallback builds (new InvalidOperationException(<type> +
+//      " (its Message getter threw " + <type> + ")")), not an exception any getter threw; in 19a the same leading type
+//      is the getter's own exception. The probe's original exception type cannot be named there: List's catch (not
+//      P5-41's to edit) already lost it, so the diagnostic states the getter types instead (19b). The one-level and
+//      readable-message diagnostics are unchanged (19a). Static (19d): CommandDeltaP541 (Run's catch: the one-line catch
+//      becomes the guarded block), reversed, gives the P5-39 file byte for byte (the P5-39 SHA-256 kept), and sections
+//      13 and 15 read the file with it reversed first (documented delta); Run's new catch is pinned
+//      whitespace-insensitively.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";
