@@ -440,8 +440,12 @@ internal static class InternalErrorDelegationTests
         // "(planted)" exactly when that case failed in its row's red CI run (red before the row's helper change), so a
         // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
         // P3-51: the marks are pinned per row (plantedByRow below, asserted): each pinned label is a visible failure
-        // annotation of its row's red run (GitHub shows at most 10 failure annotations per job; every pinned label is among
-        // them). Evidence runs, one line per row:
+        // annotation of its row's red run. Evidence runs, one line per row (below the cap note).
+        // P3-53: named limit AnnotationCap: GitHub shows at most 10 annotations per job (10 error annotations per step,
+        // and each test job reports its failed checks from one step), and a run's annotations are the only failure
+        // evidence (its logs cannot be downloaded). A caught case past the cap (its row's red run failed more than 10
+        // checks in a job and its label is not among the 10 shown) is not marked: it carries "(planted)" only once a red
+        // run with at most 10 failures shows it. Every row below fits the cap (at most 8 pinned labels, asserted <= 10).
         //   P3-29 red 44882607530: stored block lambda; nested in a block inside a stored block lambda; stored anonymous
         //         method; stored anonymous method with parameters (WorkProbe). "passed as an argument" is not among its
         //         visible failures, so its mark is dropped (P3-51).
@@ -723,6 +727,10 @@ internal static class InternalErrorDelegationTests
                 "marked but not pinned [" + string.Join(" | ", plantedNames.Except(pinnedPlanted, StringComparer.Ordinal)) + "] pinned but not marked ["
                     + string.Join(" | ", pinnedPlanted.Except(plantedNames, StringComparer.Ordinal)) + "] misplaced [" + string.Join(" | ", misplacedMarks) + "] pinned "
                     + pinnedPlanted.Length.ToString(CultureInfo.InvariantCulture));
+            // P3-53: AnnotationCap: no row pins more labels than one job's annotations can show.
+            Check(plantedByRow.All(r => r.Labels.Length <= 10),
+                "P3-29 seam hygiene: named limit AnnotationCap: every plantedByRow row pins at most 10 labels (GitHub shows at most 10 annotations per job)",
+                string.Join(", ", plantedByRow.Select(r => r.Row + ": " + r.Labels.Length.ToString(CultureInfo.InvariantCulture))));
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
@@ -736,6 +744,7 @@ internal static class InternalErrorDelegationTests
             // multiplication/default-a * b/stacked-run-then-indexer header cases (P3-49: 3 caught, 3 clean controls) for each
             // of the 9 seams; plus 3 header-span pins and 6 ReducedHeader pins: 1186. P3-51: plus 2 order-sensitive
             // ReducedHeader pins, 1 LeadingInnerCommute named-limit self-test and 2 StarOperand named-limit pins: 1191.
+            // P3-53: plus 1 replacement-piece tie pin and 1 changed-string self-test of that tie: 1193.
             // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
             // inside the parentheses do not split it). P3-47: named limit BracketedBraces: a '}' inside brackets outside any
             // parentheses (a collection expression holding a block lambda in a field initializer) still splits the header
@@ -799,7 +808,7 @@ internal static class InternalErrorDelegationTests
                 Check(MethodBody(header), "P3-29 seam hygiene self-test: named limit StarOperand: MethodBody reads [" + header + "] as a method header", header);
                 selfTests++;
             }
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 + 2 + 1 + 2 && selfTests == 1191, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 + 2 + 1 + 2 + 2 && selfTests == 1193, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
             // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
             // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
             // P3-45: so does every regex InBlockLambda and MethodBody use (the lambda/anonymous-method header, the
