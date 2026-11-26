@@ -602,6 +602,90 @@ internal static class TwiceReadToolTests
                 Check(section.Contains("P5-40: ", StringComparison.Ordinal) && section.Contains("45619198150", StringComparison.Ordinal) && section.Contains("45621488770", StringComparison.Ordinal),
                     "P5-42: docs/contracts/module-contracts.md P5-38 section has a P5-40 sentence with runs 45619198150 and 45621488770 | " + Short(section));
             }
+            // P5-44: the no-own-lexer check catches a renamed copy. OwnLexer is the rule: a declaration named like the
+            // removed P5-40 lexer (static string Blank / static int Token, read on CodeMask) or (P5-44) any code that
+            // walks quote runs, i.e. a char literal of the double quote ('"' or the escapes \" \x22 ") in code.
+            // Literals and comments are read through CommentsBlanked and CodeMask, so a quote char inside a string or a
+            // comment (as in the planted lines below) does not count. LIMIT (stated): a lexer that compares against the
+            // quote by another spelling ((char)34, a string such as "\"" or its [0]) is not caught. Self-test: this file
+            // as it is has no own lexer; three planted copies of a quote-run walk under a new name (Scan) are caught,
+            // where the P5-42 name rule alone misses them; the same walk inside a comment or a string literal is not.
+            static string[] QuoteRunWalks(string source)
+            {
+                var text = source.ReplaceLineEndings("\n");
+                var mask = DeadlineSourceScan.CodeMask(text);
+                var kept = DeadlineSourceScan.CommentsBlanked(text);
+                var found = new List<string>();
+                foreach (var quote in new[] { "'\"'", "'\\\"'", "'\\x22'", "'\\u0022'" })
+                {
+                    for (var at = kept.IndexOf(quote, StringComparison.Ordinal); at >= 0; at = kept.IndexOf(quote, at + 1, StringComparison.Ordinal))
+                    {
+                        if (!mask.Substring(at, quote.Length).All(c => c == ' ')) continue;
+                        var before = at - 1;
+                        while (before >= 0 && char.IsWhiteSpace(kept[before])) before--;
+                        if (before >= 0 && mask[before] != kept[before]) continue;
+                        found.Add("line " + (text[..at].Count(c => c == '\n') + 1).ToString(CultureInfo.InvariantCulture) + " " + quote);
+                    }
+                }
+                return found.ToArray();
+            }
+            static bool NamedLexer(string source) =>
+                System.Text.RegularExpressions.Regex.IsMatch(DeadlineSourceScan.CodeMask(source.ReplaceLineEndings("\n")), @"\bstatic\s+(string\s+Blank|int\s+Token)\s*\(");
+            static bool OwnLexer(string source) => NamedLexer(source);
+            {
+                var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
+                var classAt = Array.FindIndex(lines, line => line == "internal static class TwiceReadToolTests");
+                string Planted(params string[] inserted) =>
+                    classAt < 0 ? "" : string.Join("\n", lines[..(classAt + 2)].Concat(inserted).Concat(lines[(classAt + 2)..]));
+                string[] Walk(string quote) => new[]
+                {
+                    "    static int Scan(string text, int index)",
+                    "    {",
+                    "        var quotes = 0;",
+                    "        while (index + quotes < text.Length && text[index + quotes] == " + quote + ") quotes++;",
+                    "        return index + quotes;",
+                    "    }",
+                };
+                Check(classAt >= 0 && !OwnLexer(hereSource) && QuoteRunWalks(hereSource).Length == 0,
+                    "P5-44: tests/mcp/TwiceReadToolTests.cs as it is has no own lexer (no Blank or Token declaration, no code walking quote runs) | " + string.Join(", ", QuoteRunWalks(hereSource)));
+                foreach (var quote in new[] { "'\"'", "'\\\"'", "'\\u0022'" })
+                {
+                    var planted = Planted(Walk(quote));
+                    Check(planted.Length > 0 && OwnLexer(planted) && !NamedLexer(planted),
+                        "P5-44: a planted renamed lexer copy (static int Scan walking a quote run with " + quote + ") is caught by the no-own-lexer rule, which the P5-42 name rule alone misses");
+                }
+                foreach (var (name, inserted) in new[]
+                {
+                    ("a comment", "    // while (text[index + quotes] == '\"') quotes++;"),
+                    ("a string literal", "    static readonly string Note = \"while (text[index + quotes] == '\\\"') quotes++;\";"),
+                })
+                {
+                    var planted = Planted(inserted);
+                    Check(planted.Length > 0 && !OwnLexer(planted),
+                        "P5-44: the same quote-run walk inside " + name + " is not counted as an own lexer");
+                }
+            }
+            // P5-44: tests/cli/SkillListTests.cs section 16's RawChild timeout path reads its buffer through Drain after the
+            // copy's wait (not only an Awaited flag): the helper whose early-return mutant the section's pipe self-test reds.
+            {
+                var cli = thereSource.ReplaceLineEndings("\n");
+                var rawChild = DeadlineSourceScan.MemberBody(cli, "RawChild(string[] arguments, int timeoutMilliseconds)", raw: true) ?? "";
+                Check(rawChild.Contains("= Drain(stdout, buffer, ", StringComparison.Ordinal)
+                    && cli.Contains("P5-44: an early-return Drain mutant", StringComparison.Ordinal)
+                    && cli.Contains("P5-44: after RawChild returns from the zero-timeout case", StringComparison.Ordinal),
+                    "P5-44: SkillListTests.cs RawChild's timeout path reads its buffer through Drain, section 16 holds the early-return mutant self-test and the zero-timeout buffer check | RawChild " + Short(rawChild));
+            }
+            // P5-44: the P5-38 comment in tests/cli/SkillListTests.cs section 16 (the encoder note above the two-drift
+            // Suffix check) names the plus sign without the character itself.
+            {
+                var lines = thereSource.ReplaceLineEndings("\n").Split('\n');
+                var at = Array.FindIndex(lines, line => line.TrimStart().StartsWith("// P5-38: the escaped", StringComparison.Ordinal));
+                var last = at;
+                while (at >= 0 && last + 1 < lines.Length && lines[last + 1].TrimStart().StartsWith("//", StringComparison.Ordinal)) last++;
+                var comment = at < 0 ? "" : string.Join("\n", lines[at..(last + 1)]);
+                Check(comment.Contains("u002B", StringComparison.Ordinal) && comment.Contains("JavaScriptEncoder.Default", StringComparison.Ordinal) && !comment.Contains('+'),
+                    "P5-44: the P5-38 encoder comment in tests/cli/SkillListTests.cs section 16 names the plus sign with no literal plus | " + Short(comment));
+            }
             // P5-38 mutant self-test: a copy of tests/cli/SkillListTests.cs whose section-16 builder grew by one line (the
             // terminating ';' moved to an added `+ "..."` line) must fail the pin, for the Sidecar and for the Manifest.
             // P5-40: Grown takes the file and the method; the builder is looked up inside that method's Span only.
