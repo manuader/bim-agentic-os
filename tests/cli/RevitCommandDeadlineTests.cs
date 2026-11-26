@@ -1124,9 +1124,10 @@ internal static class RevitCommandDeadlineTests
 
         // P1-47: P1-43's FailSummary shares CliInputsSummary.Line's escape and cap (its own title in place of the step's),
         // so a long deadline FAIL list is cut the same way.
+        // P1-49: read through RetitleOutcome, so a changed prefix fails this check instead of throwing out of the self-test.
         var deadlineLong = FailSummary(longNames);
-        check(deadlineLong == Retitled(longLine, SummaryTitle) && deadlineLong.StartsWith("::warning::" + SummaryTitle + ": 400 FAIL: #1 ", StringComparison.Ordinal)
-            && deadlineLong.EndsWith("; +364 more", StringComparison.Ordinal) && FailSummary(stepNames) == Retitled(stepLine, SummaryTitle)
+        check("returned " + deadlineLong == RetitleOutcome(longLine) && deadlineLong.StartsWith("::warning::" + SummaryTitle + ": 400 FAIL: #1 ", StringComparison.Ordinal)
+            && deadlineLong.EndsWith("; +364 more", StringComparison.Ordinal) && "returned " + FailSummary(stepNames) == RetitleOutcome(stepLine)
             && FailSummary(Array.Empty<string>()) == SummaryTitle + ": 0 FAIL",
             "P1-47 summary self-test: P1-43 FailSummary is CliInputsSummary.Line under its own title (same % CR LF escape, same cap and '; +N more')",
             N(deadlineLong.Length) + " chars; tail " + deadlineLong[Math.Max(0, deadlineLong.Length - 60)..]);
