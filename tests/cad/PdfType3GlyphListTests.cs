@@ -754,16 +754,41 @@ internal static class PdfType3GlyphListTests
             C(cadCommand.Length > 0 && respaced != cadCommand && Occurrences(respaced, inputHash) == 0 && CodeProblems(respaced, cadCommandPins, cadCommandAnchors) is null,
                 "p6-49 hash self-test: the input hash and the cad-draft branch reformatted in CadCommand.cs still pass the hash-place check (whitespace-free)",
                 respaced == cadCommand ? "self-test anchor not found" : CodeProblems(respaced, cadCommandPins, cadCommandAnchors) ?? "tolerated");
-            // P6-49 one stripper: StripCommentsAndLiterals has one block-bodied definition among the tests/cad sources, in
-            // CodePins.cs, and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class).
+            // P6-51 zero-count self-tests: a pin with count 0 is a ban, so it is counted as a plain substring of the squeezed
+            // code (no identifier boundary): a longer identifier such as BriefSerializerX or CadBriefDocument.CreateDraft
+            // still holds the banned name and is caught; pins with a count above 0 keep the P6-49 boundaries.
+            foreach (var (label, inserted, expect) in new[]
+            {
+                ("BriefSerializerX.Serialize(...)", "var serialized = BriefSerializerX.Serialize(null!);", "'BriefSerializer' x1 (want 0)"),
+                ("CadBriefDocument.CreateDraft(...)", "var created = CadBriefDocument.CreateDraft(null!);", "'CadBriefDocument.Create' x1 (want 0)"),
+                ("XBriefExtract.FromDxf(...)", "var extracted = XBriefExtract.FromDxf(null!);", "'BriefExtract.' x1 (want 0)"),
+            })
+            {
+                var banned = cadCommand.Replace(optionsLine, optionsLine + "\n                " + inserted, StringComparison.Ordinal);
+                C(cadCommand.Length > 0 && banned != cadCommand && CodeProblems(banned, cadCommandPins, cadCommandAnchors) is { } bannedCaught && bannedCaught.Contains(expect, StringComparison.Ordinal),
+                    "p6-51 zero-count self-test: " + label + " in CadCommand.cs is caught by the zero-count pin (substring, no identifier boundary)",
+                    banned == cadCommand ? "self-test anchor not found" : CodeProblems(banned, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            }
+            // P6-49 one stripper: StripCommentsAndLiterals has one definition among the tests/cad sources, in CodePins.cs,
+            // and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class). P6-51: a
+            // definition is block-bodied ({) or expression-bodied (=>), so a one-line forwarder counts as a second home
+            // (self-test below); the P6-49 forwarder in this file is gone and its callers call CodePins directly.
+            static bool DefinesStripper(string code) => System.Text.RegularExpressions.Regex.IsMatch(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
             var cadTestsDir = Path.Combine(root, "tests", "cad");
             var stripperHomes = string.Join(",", Directory.GetFiles(cadTestsDir, "*.cs")
-                .Where(f => System.Text.RegularExpressions.Regex.IsMatch(StripCommentsAndLiterals(File.ReadAllText(f)), @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*\{"))
+                .Where(f => DefinesStripper(CodePins.StripCommentsAndLiterals(File.ReadAllText(f))))
                 .Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
+            var forwarder = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n");
+            var forwarderSplit = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source)\n        => CodePins.StripCommentsAndLiterals(source);\n");
+            var blockBodied = CodePins.StripCommentsAndLiterals("    internal static string StripCommentsAndLiterals(string source)\n    {\n        return source;\n    }\n");
+            var callOnly = CodePins.StripCommentsAndLiterals("        var code = CodePins.StripCommentsAndLiterals(File.ReadAllText(path)); // static string StripCommentsAndLiterals(string s) => x\n");
+            C(DefinesStripper(forwarder) && DefinesStripper(forwarderSplit) && DefinesStripper(blockBodied) && !DefinesStripper(callOnly),
+                "p6-51 one stripper self-test: an expression-bodied StripCommentsAndLiterals forwarder (one line or split before =>) counts as a definition like a block-bodied one; a call or a commented definition does not",
+                "forwarder " + DefinesStripper(forwarder) + " split " + DefinesStripper(forwarderSplit) + " block " + DefinesStripper(blockBodied) + " call " + DefinesStripper(callOnly));
             var minsertPath = Path.Combine(cadTestsDir, "MinsertEzdxfTests.cs");
-            var minsertCode = File.Exists(minsertPath) ? StripCommentsAndLiterals(File.ReadAllText(minsertPath)) : "";
+            var minsertCode = File.Exists(minsertPath) ? CodePins.StripCommentsAndLiterals(File.ReadAllText(minsertPath)) : "";
             C(stripperHomes == "CodePins.cs" && Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(") >= 1 && Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)") == 0,
-                "p6-49 one stripper: StripCommentsAndLiterals is defined once, in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
+                "p6-49 one stripper: StripCommentsAndLiterals is defined once (block- or expression-bodied, P6-51), in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
                 "defined in [" + stripperHomes + "], MinsertEzdxfTests calls CodePins x" + I(Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(")) + ", typeof(PdfType3GlyphListTests) x" + I(Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)")));
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code

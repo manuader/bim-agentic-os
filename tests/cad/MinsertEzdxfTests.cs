@@ -502,6 +502,10 @@ internal static class MinsertEzdxfTests
                 ("p6-43", "a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
                 // P6-47: the == exclusion of the MaxInputBytes= count does not drop a second assignment.
                 ("p6-47", "a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                // P6-51: a compound assignment (+=, -=, ??=) changes the cap too and counts as an assignment.
+                ("p6-51", "a MaxInputBytes += compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes += 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                ("p6-51", "a MaxInputBytes -= compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes -= 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                ("p6-51", "a MaxInputBytes ??= compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes ??= 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
             })
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
                     tag + " reader options self-test: " + label + " in CadCommand.cs is caught",
@@ -519,6 +523,8 @@ internal static class MinsertEzdxfTests
                 ("p6-49", "an OtherMaxInputBytes = assignment in code", cadCommand.Replace(CliDxfRead, "var OtherMaxInputBytes = 5; " + CliDxfRead, StringComparison.Ordinal)),
                 // P6-49: an expression-bodied MaxInputBytes => (here a property of another type) is not an assignment.
                 ("p6-49", "an expression-bodied MaxInputBytes => in code", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "32 * 1024 * 1024;\n    private sealed class Limits { public int MaxInputBytes => CadCommand.MaxInputBytes; }", StringComparison.Ordinal)),
+                // P6-51: the compound-assignment count does not take a comparison (>=, <=, !=) for an assignment.
+                ("p6-51", "MaxInputBytes >=, <= and != comparisons in code", cadCommand.Replace(CliDxfRead, "var bounds = MaxInputBytes >= bytes.Length && MaxInputBytes <= int.MaxValue && MaxInputBytes != 0; " + CliDxfRead, StringComparison.Ordinal)),
             })
                 c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
                     tag + " reader options self-test: " + label + " in CadCommand.cs does not fail the pin",
