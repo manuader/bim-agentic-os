@@ -2478,8 +2478,13 @@ static class MirrorDriftLoopChecks
     // P2-48: the drift check's not-run line: the gate's not-run notice plus the drift fields the red setup check hides
     // (MacCountsDrift of the live counts against the recorded ones), so a rounded lowered value or a failed lever still
     // shows which recorded counts the run differs from.
-    static string MacDriftNotRunNotice(MacSendBufferCounts live, MacSendBufferCounts recorded) =>
-        MacNotRunNotice(MacDriftName) + " hidden_drift=[" + string.Join(" ; ", MacCountsDrift(live, recorded)) + "]";
+    // P2-49: the suffix only when a field differs (the plain not-run notice otherwise, no empty hidden_drift=[]); a failed
+    // lever's line lists LeversOk and the -1 values of the lever that never ran (pinned in MacSelfTestPins).
+    static string MacDriftNotRunNotice(MacSendBufferCounts live, MacSendBufferCounts recorded)
+    {
+        var drift = MacCountsDrift(live, recorded);
+        return MacNotRunNotice(MacDriftName) + (drift.Length == 0 ? "" : " hidden_drift=[" + string.Join(" ; ", drift) + "]");
+    }
 
     // P2-46: the record's fields in the order MacCountsDrift lists them: the parameters of its positional (primary)
     // constructor, the only public one with more than one parameter (not the metadata order of its properties).
@@ -2491,10 +2496,12 @@ static class MirrorDriftLoopChecks
     static T UnderCulture<T>(CultureInfo culture, Func<T> build)
     {
         var saved = CultureInfo.CurrentCulture;
-        CultureInfo.CurrentCulture = culture;
-        var value = build();
-        CultureInfo.CurrentCulture = saved;
-        return value;
+        try
+        {
+            CultureInfo.CurrentCulture = culture;
+            return build();
+        }
+        finally { CultureInfo.CurrentCulture = saved; }
     }
 
     // P2-46: the self-tests' expected texts, the counts notice and the live checks around the drift check, as pure data
