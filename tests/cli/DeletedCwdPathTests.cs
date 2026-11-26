@@ -883,9 +883,10 @@ internal static class DeletedCwdPathTests
     // P10-47: the parameter list may hold balanced parentheses (a default containing calls). P10-49: parentheses inside
     // string (raw, verbatim, regular) and char defaults are skipped; stated limit: an interpolated string default
     // ($"...") is read as a regular string, so a quote inside one of its holes ends it early.
-    // P10-51: the parameter list pattern (after the opening parenthesis, through the closing one), shared with LockVerbs47.
-    const string Parameters49 = @"(?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)";
-    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\(" + Parameters49 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-51: the parameter list pattern (after the opening parenthesis, through the closing one), shared with LockVerbs47
+    // (P10-53: renamed from the P10-49 name to its P10-51 name; the interpolated string default limit above applies to both).
+    const string Parameters51 = @"(?>(?<q>""{3,})[\s\S]*?\k<q>|@""(?:[^""]|"""")*""|""(?:[^""\\\n]|\\.)*""|'(?:[^'\\\n]|\\.)*'|[^()""']|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)";
+    static readonly System.Text.RegularExpressions.Regex Declaration45 = new(@"\bPathProblem\s*\(" + Parameters51 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? FilterProblem41(string source)
     {
@@ -947,6 +948,7 @@ internal static class DeletedCwdPathTests
             ScopingSelfTest47(skillLock, Check);
             ScopingSelfTest49(skillLock, Check);
             ScopingSelfTest51(Check);
+            ScopingSelfTest53(Check);
         }
     }
 
@@ -1007,6 +1009,32 @@ internal static class DeletedCwdPathTests
         };
         var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
         Check(taken.Length == 0, Label("BlockEnd45 reports a raw hole whose opening or closing brace run reaches twice the dollars as unclosed"), string.Join(" | ", taken));
+    }
+
+    // P10-53 self-tests: a raw interpolated literal's content (outside holes) may hold a closing brace run only shorter
+    // than the dollars (C# CS9007: too many closing braces as content); a closing run right after a hole is the hole's
+    // run (ScopingSelfTest51). A content run of as many braces as dollars or more is reported unclosed.
+    static void ScopingSelfTest53(Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-53 static pin scanner self-test: " + what;
+        var q3 = "\"\"\"";
+        var accepted = new (string Name, string Text)[]
+        {
+            ("$$ content with single closing braces around a hole", "{ a = $$" + q3 + " } {{x}} } " + q3 + "; }"),
+            ("$$$ content with a two-brace closing run", "{ a = $$$" + q3 + " }} " + q3 + "; }"),
+        };
+        var wrong = accepted.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 accepts a raw content closing brace run shorter than the dollars"), string.Join(" | ", wrong));
+        var refused = new (string Name, string Text)[]
+        {
+            ("$$ content closing run of two", "{ a = $$" + q3 + " }} " + q3 + "; }"),
+            ("$ raw content closing brace", "{ a = $" + q3 + " } " + q3 + "; }"),
+            ("$$ content closing run of two after a hole and a space", "{ a = $$" + q3 + "{{x}} }} " + q3 + "; }"),
+            ("$$$ content closing run of three", "{ a = $$$" + q3 + " }}} " + q3 + "; }"),
+        };
+        var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
+        Check(taken.Length == 0, Label("BlockEnd45 reports a raw content closing brace run of as many braces as dollars or more (not right after a hole) as unclosed"), string.Join(" | ", taken));
     }
 
     // P10-45: the "inside PathProblem" check is brace scoping, not indentation. Mutants of the SkillLockTool source:
@@ -1181,8 +1209,8 @@ internal static class DeletedCwdPathTests
     // Declaration-style balanced parentheses and BlockEnd45) the one RestoreProblems45 call must pass both calls' restore
     // problems, ("reference", reference.Restore) and ("locked", result.Restore), into restoreProblem, which the restore check
     // requires empty, with reference = Call(false) and result = Call(true). Whitespace free. Null when wired, else why.
-    // P10-51: the parameter list skips parentheses inside string and char defaults (Parameters49, as Declaration45).
-    static readonly System.Text.RegularExpressions.Regex LockVerbs47 = new(@"\bstatic\s+void\s+LockVerbsUnsearchable41\s*\(" + Parameters49 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+    // P10-51: the parameter list skips parentheses inside string and char defaults (Parameters51, as Declaration45).
+    static readonly System.Text.RegularExpressions.Regex LockVerbs47 = new(@"\bstatic\s+void\s+LockVerbsUnsearchable41\s*\(" + Parameters51 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
 
     static string? RestoreWiringProblem47(string source)
     {
@@ -1222,15 +1250,20 @@ internal static class DeletedCwdPathTests
         }
         var unused = source.Replace("restoreProblem.Length == 0", "true", StringComparison.Ordinal);
         Check(unused != source && RestoreWiringProblem47(unused) is not null, Label("a mutant whose restore check ignores the aggregate is refused"), unused == source ? "not planted" : RestoreWiringProblem47(unused) ?? "accepted");
-        // P10-51: the declaration reader skips parentheses inside string and char parameter defaults (the name is split so
-        // this file's text holds no second declaration).
+        LockVerbsSelfTest51(source, Check);
+    }
+
+    // P10-51 self-tests (moved out of RestoreWiring47 by P10-53): the LockVerbs47 declaration reader skips parentheses
+    // inside string and char parameter defaults (the name is split so this file's text holds no second declaration).
+    static void LockVerbsSelfTest51(string source, Action<bool, string, string> Check)
+    {
         var declared = "LockVerbs" + "Unsearchable41(";
         var literals = "static void " + declared + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
         Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + declared + "string a = \"(\" {"),
-            "P10-51 lock verbs restore wiring: LockVerbs47 skips parentheses inside string and char parameter defaults", literals);
+            "P10-51 lock verbs restore wiring (LockVerbsSelfTest51): LockVerbs47 skips parentheses inside string and char parameter defaults", literals);
         var defaults = source.Replace("static void " + declared + "string root,", "static void " + declared + "string note = \")\", char open = '(', string root,", StringComparison.Ordinal);
         Check(defaults != source && RestoreWiringProblem47(defaults) is null,
-            "P10-51 lock verbs restore wiring: the pin accepts a LockVerbsUnsearchable41 declaration whose string and char defaults hold parentheses",
+            "P10-51 lock verbs restore wiring (LockVerbsSelfTest51): the pin accepts a LockVerbsUnsearchable41 declaration whose string and char defaults hold parentheses",
             defaults == source ? "not planted" : RestoreWiringProblem47(defaults) ?? "");
     }
 
@@ -1278,6 +1311,14 @@ internal static class DeletedCwdPathTests
         Check(p51.Contains("string and char literals", StringComparison.Ordinal) && p51.Contains("brace run", StringComparison.Ordinal) && p51.Contains("twice the dollars", StringComparison.Ordinal)
             && p51.Contains("only inside holes", StringComparison.Ordinal) && p51.Contains("green 45665616001", StringComparison.Ordinal),
             "P10-51 contract: the P10-51 paragraph states the lock-verb declaration literals, the raw hole brace runs and the hole-only parenthesis count",
+            section.Length == 0 ? "section not found" : p51.Length == 0 ? "P10-51 paragraph not found" : p51);
+        // P10-53: the P10-51 paragraph cites its green run (not the branch-head placeholder), states that the interpolated
+        // string default limit applies to LockVerbs47, and cross-references the P10-53 content closing brace run check.
+        Check(p51.Contains("green 45742797443", StringComparison.Ordinal) && !p51.Contains("branch head", StringComparison.Ordinal),
+            "P10-53 contract: the P10-51 paragraph cites green 45742797443 instead of the branch-head placeholder", section.Length == 0 ? "section not found" : p51.Length == 0 ? "P10-51 paragraph not found" : p51);
+        Check(p51.Contains("interpolated string default", StringComparison.Ordinal) && p51.Contains("applies to `LockVerbs47`", StringComparison.Ordinal)
+            && p51.Contains("P10-53 adds", StringComparison.Ordinal) && p51.Contains("content closing brace run", StringComparison.Ordinal),
+            "P10-53 contract: the P10-51 paragraph states the interpolated string default limit for LockVerbs47 and the P10-53 content closing brace run check",
             section.Length == 0 ? "section not found" : p51.Length == 0 ? "P10-51 paragraph not found" : p51);
     }
 
