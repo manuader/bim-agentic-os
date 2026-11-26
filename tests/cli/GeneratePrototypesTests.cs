@@ -4412,6 +4412,8 @@ internal static class GeneratePrototypesTests
             ("a comparison with an operator a < b + 1, c > (d)", "M(a < b + 1, c > (d))", false, 2),
             ("a comparison a < b, c > d", "M(a < b, c > d)", false, 2),
             ("a < b > (c), a generic call as C# parses it (the stated limit)", "M(a < b > (c))", true, 1),
+            // P7-54: a comma inside the angles (outside any brace): a comparison would be two arguments, the call is one.
+            ("a < b, c > (d), a generic call as C# parses it (the stated limit)", "M(a < b, c > (d))", true, 1),
         };
         foreach (var (label, text, list, items) in angleTexts)
         {
@@ -4499,6 +4501,60 @@ internal static class GeneratePrototypesTests
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-52 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-54 (ac): Values keeps test as a value of a null-forgiving parenthesised operand before ?? ((test)! ?? d: the
+        // ! is postfix, no cast) and of a conditional whose first branch is a collection expression (c ?[x] : test, the ]
+        // followed by :); (ad) an exponent literal's sign (1e-5, 2.5E+3) is no binary operator, a hex 0x1e - 5 is.
+        var tidyValueTexts = new (string Label, string Code, bool Named)[]
+        {
+            ("a null-forgiving parenthesised operand before ?? (test)! ?? d", "(test)! ?? d", true),
+            ("a null-forgiving parenthesised operand before a member (test)!.M", "(test)!.M", false),
+            ("a cast of a logical not (bool)!test", "(bool)!test", false),
+            ("a conditional with a spaced collection branch c ? [x] : test", "c ? [x] : test", true),
+            ("a conditional with an unspaced collection branch c ?[x] : test", "c ?[x] : test", true),
+            ("a conditional whose branch is an element access c ? a?[0] : test", "c ? a?[0] : test", true),
+            ("an element access before ?? a?[0] ?? test", "a?[0] ?? test", true),
+        };
+        foreach (var (label, text, named) in tidyValueTexts)
+        {
+            var values = Values(text, 0, text.Length);
+            var isValue = values.Any(v => text[v.Start..v.End] == "test");
+            Check(isValue == named, "P7-54 value self-test: " + label + (named ? " has test as a value" : " does not have test itself as a value"),
+                "values [" + string.Join(", ", values.Select(v => text[v.Start..v.End])) + "]");
+        }
+        var exponentTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("an exponent literal 1e-5 is one value", "1e-5", new[] { "1e-5" }),
+            ("an exponent literal 2.5E+3 in a sum is not split at its sign", "2.5E+3 + test", new[] { "2.5E+3 + test", "2.5E+3", "test" }),
+            ("an exponent literal 1_0e-5 after a subtraction keeps its sign", "test - 1_0e-5", new[] { "test - 1_0e-5", "test" }),
+            ("a hex literal 0x1e - 5 is a subtraction", "0x1e-5", new[] { "0x1e-5", "0x1e" }),
+        };
+        foreach (var (label, text, expected) in exponentTexts)
+        {
+            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
+            Check(values.SequenceEqual(expected), "P7-54 exponent self-test: " + label,
+                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
+        }
+        var tidyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(ac) a lambda's parameter passed on null-forgiving parenthesised before ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test)! ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(ac) a lambda's parameter passed on after a collection branch", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(path.Length > 0 ?[null] : test); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+            ("(ac) a Notifier parameter passed on parenthesised before ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe((test) ?? (() => 0));" + ProbeTail) },
+                "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
+            ("(ac) a Notifier parameter passed on null-forgiving parenthesised before ??", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe((test)! ?? (() => 0));" + ProbeTail) },
+                "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
+        };
+        foreach (var (label, edits, reason) in tidyMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-54 reach self-test: " + label + " is rejected for " + reason,
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
