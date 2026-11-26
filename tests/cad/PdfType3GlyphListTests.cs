@@ -777,12 +777,12 @@ internal static class PdfType3GlyphListTests
             // and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class). P6-51: a
             // definition is block-bodied ({) or expression-bodied (=>), so a one-line forwarder counts as a second home
             // (self-test below); the P6-49 forwarder in this file is gone and its callers call CodePins directly.
-            static bool DefinesStripper(string code) => System.Text.RegularExpressions.Regex.IsMatch(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
+            static bool DefinesStripper(string code) => StripperDefinitions(code) > 0;
             var cadTestsDir = Path.Combine(root, "tests", "cad");
             // P6-53: the aggregate is one function over (file name, source) pairs, so the planted self-test below runs it too.
             // P6-55: definitions are counted per file, so a file with two is listed as "name xN" (a second definition
             // inside CodePins.cs is red too); the scanned files are in ordinal name order.
-            static int StripperDefinitions(string code) => DefinesStripper(code) ? 1 : 0;
+            static int StripperDefinitions(string code) => System.Text.RegularExpressions.Regex.Count(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
             static string StripperHomes(IEnumerable<(string Name, string Source)> files) => string.Join(",", files
                 .Select(f => (f.Name, Count: StripperDefinitions(CodePins.StripCommentsAndLiterals(f.Source))))
                 .Where(f => f.Count > 0)
@@ -806,7 +806,7 @@ internal static class PdfType3GlyphListTests
             // P6-55: the planted target is the first scanned file other than CodePins.cs (ordinal name order), not a named one.
             const string plantedForwarder = "\ninternal static class PlantedStripper\n{\n    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n}\n";
             var firstOther = scanned.Select(f => f.Name).FirstOrDefault(n => n != "CodePins.cs") ?? "";
-            var plantedTarget = "MinsertEzdxfTests.cs";
+            var plantedTarget = firstOther;
             var plantedHomes = StripperHomes(scanned.Select(f => f.Name == plantedTarget ? (f.Name, f.Source + plantedForwarder) : (f.Name, f.Source)));
             var plantedWant = string.Join(",", new[] { "CodePins.cs", plantedTarget }.Order(StringComparer.Ordinal));
             C(firstOther.Length > 0 && plantedTarget == firstOther,
@@ -855,8 +855,15 @@ internal static class PdfType3GlyphListTests
             // null when the signature is not code exactly once or the text above it is not comment only.
             static string? CommentAbove(string source, string signature)
             {
-                var at = source.LastIndexOf(signature, StringComparison.Ordinal);
-                return at < 0 ? null : source[(source.LastIndexOf("\n\n", at, StringComparison.Ordinal) + 2)..at];
+                var code = new List<int>();
+                for (var at = source.IndexOf(signature, StringComparison.Ordinal); at >= 0; at = source.IndexOf(signature, at + 1, StringComparison.Ordinal))
+                {
+                    if (CodePins.StripCommentsAndLiterals(source[..(at + signature.Length)]).EndsWith(signature, StringComparison.Ordinal)) code.Add(at);
+                }
+                if (code.Count != 1 || Occurrences(CodePins.StripCommentsAndLiterals(source), signature) != 1) return null;
+                var blank = source.LastIndexOf("\n\n", code[0], StringComparison.Ordinal);
+                var comment = source[(blank < 0 ? 0 : blank + 2)..code[0]];
+                return CodePins.StripCommentsAndLiterals(comment).Trim().Length == 0 ? comment : null;
             }
             const string guardSignature = "private static string? SwallowGuard(";
             var selfSource = File.ReadAllText(Path.Combine(cadTestsDir, "PdfType3GlyphListTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
@@ -872,8 +879,8 @@ internal static class PdfType3GlyphListTests
             const string literalLater = "\n    private static string Later() => \"private static string? SwallowGuard(\";\n}\n";
             foreach (var (what, sample, want) in new (string, string, string?)[]
             {
-                ("repeated in a later string literal", "class S\n{\n\n    // the guard comment\n" + guardDefinition + literalLater, "    // the guard comment\n"),
-                ("repeated in a later comment", "class S\n{\n\n    /* the guard\n       comment */\n" + guardDefinition + "\n    // see private static string? SwallowGuard( above\n}\n", "    /* the guard\n       comment */\n"),
+                ("repeated in a later string literal", "class S\n{\n\n    // the guard comment\n" + guardDefinition + literalLater, "    // the guard comment\n    "),
+                ("repeated in a later comment", "class S\n{\n\n    /* the guard\n       comment */\n" + guardDefinition + "\n    // see private static string? SwallowGuard( above\n}\n", "    /* the guard\n       comment */\n    "),
                 ("only in a comment", "class S\n{\n    // private static string? SwallowGuard(string s) => s;\n}\n", null),
                 ("only in a string literal", "class S\n{" + literalLater, null),
                 ("with code above it", "class S\n{\n    // a comment\n    private int x;\n" + guardDefinition + "}\n", null),
