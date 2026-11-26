@@ -2064,6 +2064,48 @@ internal static class MinsertEzdxfTests
             c(dupAbsent.Count == 0 && kindsBefore && !hardCoded,
                 "justified: generator: P6-54 a pinned drifting row committed twice is classified by a self-test, the drift plants derive their values by regex, the stop-drifting plant states its C-extension-only reach, and _DRIFT_KINDS precedes its use",
                 "missing " + string.Join(" | ", dupAbsent) + " _DRIFT_KINDS before use " + kindsBefore + " K2 TG number hard-coded " + hardCoded);
+
+            // P6-56: the header and docstring P6-50 paragraphs (compared whole above) name the kept-as-failures list and
+            // the duplicate plant.
+            string[] keptProse = { "\"; kept as failures: \"", "a pinned row drifting and committed twice" };
+            var keptAbsent = keptProse.Where(n => !headerParagraph.Contains(n, StringComparison.Ordinal) || !docParagraph.Contains(n, StringComparison.Ordinal)).ToList();
+            c(headerParagraph == docParagraph && keptAbsent.Count == 0,
+                "justified: generator: P6-56 the header and docstring P6-50 paragraphs name the kept-as-failures list and the plant of a pinned row drifting and committed twice",
+                "missing " + string.Join(" | ", keptAbsent) + " paragraphs equal " + (headerParagraph == docParagraph));
+            // P6-56: stale_warn exits 0 when no line is stale (grep's no-match guarded), checked by the step under bash
+            // -eo pipefail on output with no stale line; the planted stale line is printed by the generator (the function
+            // check_main prints it with), not written in the step; and the stale warning's cut at 900 characters is counted.
+            const string StaleWarnGuarded = "stale_warn() { { grep '^pinned C-extension drift rows no longer drifting: ' || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
+            const string StalePipefail = "if ! quiet=$(set -eo pipefail; printf '%s\\n' 'differing rows: none' 'C-extension drift: none' | stale_warn) || [ -n \"$quiet\" ]; then";
+            const string StaleGenerated = "planted=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-line 'C1>NB')";
+            const string StaleCounted = "printf '%s\\n' \"$cdiff\" \"$cpick\" \"$clast\" \"$cstale\" | awk 'length > 900'";
+            string[] pipefailNeeded = { StaleWarnGuarded, StalePipefail, StaleGenerated, StaleCounted };
+            var pipefailAt = pipefailNeeded.Select(s => stepText.IndexOf(s, StringComparison.Ordinal)).ToList();
+            var pipefailExit = pipefailAt[1] < 0 ? -1 : stepText.IndexOf("exit 1", pipefailAt[1], StringComparison.Ordinal);
+            var appliedAt = stepText.IndexOf(StaleApplied, StringComparison.Ordinal);
+            var pipefailOk = pipefailAt.All(i => i >= 0) && pipefailAt[0] < pipefailAt[1] && pipefailExit > 0 && pipefailExit < appliedAt && pipefailAt[2] < appliedAt
+                && !stepText.Contains("(planted by the step)", StringComparison.Ordinal);
+            string[] lineNeeded =
+            {
+                "def _stale_line(names):", "print(_stale_line(stale))", "if sys.argv[2:3] == [\"--stale-line\"]:", "print(_stale_line(sys.argv[3:]))",
+            };
+            var lineAbsent = lineNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            c(pipefailOk && lineAbsent.Count == 0,
+                "justified: generator: P6-56 stale_warn is green under bash -eo pipefail with no stale row (guarded, step self-check), its planted line is printed by the generator, and its 900-character cut is counted",
+                "positions " + string.Join(",", pipefailAt.Select(i => i.ToString(CultureInfo.InvariantCulture))) + " applied " + appliedAt.ToString(CultureInfo.InvariantCulture) + " exit " + pipefailExit.ToString(CultureInfo.InvariantCulture)
+                + " literal plant left " + stepText.Contains("(planted by the step)", StringComparison.Ordinal) + " generator missing " + string.Join(" | ", lineAbsent));
+            // P6-56: the duplicate plant reads C1>NB from the kept-as-failures list (any position, _listed), not as the
+            // list's first name; _nudged states which number it nudges.
+            string[] listedNeeded =
+            {
+                "def _listed(line, marker):", "\"C1>NB\" in _listed(l, \"; kept as failures: \")",
+                "the first number of the row is the first numeric literal after its quoted names",
+            };
+            var listedAbsent = listedNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            var firstOnly = generator.Contains("\"; kept as failures: C1>NB\" in l", StringComparison.Ordinal);
+            c(listedAbsent.Count == 0 && !firstOnly,
+                "justified: generator: P6-56 the duplicate plant finds C1>NB anywhere in the kept-as-failures list, and _nudged states the scope of the first number it nudges",
+                "missing " + string.Join(" | ", listedAbsent) + " first-position check left " + firstOnly);
         }
         catch (Exception error)
         {
