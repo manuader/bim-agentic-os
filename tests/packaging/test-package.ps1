@@ -3015,6 +3015,38 @@ try {
             $p440Late = Get-P436Header ("#Requires -Version 7.2`n# P4-38: a`n# P4-39: b`nparam()`n# P4-39: after the leading block")
             Assert ($p440Late -ceq 'P4-38,P4-39') "P4-40 self-test: Get-P436Header reads a P4-39 header line: $p440Late (want P4-38,P4-39)"
         } catch { $failures.Add("P4-40 brace/compound/concatenation/header self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-41 self-test: a CleanupFailed literal followed by a comment and then + is named a concatenation; one followed by
+        # a member access ("x".Trim(), "x"?.Trim()) names it; a declaration literal followed by another token (a second
+        # declarator) names that token; an auto-property initialiser (string CleanupFailed { get; } = "...") is refused by
+        # name with one message; in an interpolated raw string with n $, a content run of n or more } (not after a hole) and
+        # an opening run of 2n or more { are refused by name (C# rejects both); shorter runs stay content.
+        try {
+            $p441Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p441Into 'P4-41' '/p4-41/left' { param($l, $p) 'W' }
+            $p441Prefix = if ($p441Into.Count -eq 1 -and $p441Into[0].EndsWith('W')) { $p441Into[0].Substring(0, $p441Into[0].Length - 1) } else { '<none>' }
+            $p441Decl = 'const string CleanupFailed = "' + $p441Prefix + '";'
+            $p441At = $p441Decl.Length + 8
+            $p441Concat = 'CleanupFailed literal followed by + (a concatenation, not one literal) '
+            $p441Cases = @(
+                @{ Label = 'block comment before + in a declaration'; Text = 'const string CleanupFailed = "' + $p441Prefix + '" /* why */ + "";'; Want = $p441Concat + '"' + $p441Prefix + '"' }
+                @{ Label = 'line comment before + on the next line'; Text = $p441Decl + ' void M() { CleanupFailed = "x" // why' + "`n" + '        + y; }'; Want = $p441Concat + '"x"' }
+                @{ Label = 'member access on a declaration literal'; Text = 'static readonly string CleanupFailed = "' + $p441Prefix + '".Trim();'; Want = 'CleanupFailed literal followed by a member access (.Trim), not one literal "' + $p441Prefix + '"' }
+                @{ Label = 'null-conditional member access after a comment'; Text = $p441Decl + ' void M() { CleanupFailed = "x" /* c */ ?.Trim(); }'; Want = 'CleanupFailed literal followed by a member access (?.Trim), not one literal "x"' }
+                @{ Label = 'second declarator after the declaration literal'; Text = 'const string CleanupFailed = "' + $p441Prefix + '", Other = "y";'; Want = 'CleanupFailed declaration literal followed by '','' (not one declaration) "' + $p441Prefix + '"' }
+                @{ Label = 'auto-property initialiser refused by name'; Text = 'public static string CleanupFailed { get; } = "' + $p441Prefix + '";'; Want = 'CleanupFailed auto-property initialiser refused "' + $p441Prefix + '"' }
+                @{ Label = 'auto-property with a comment and init accessor'; Text = 'string CleanupFailed /* c */ { get; init; }' + "`n" + '    = @"P4-33: cleanup failed: ";'; Want = 'CleanupFailed auto-property initialiser refused @"P4-33: cleanup failed: "' }
+                @{ Label = '$$ raw content run of two } without a hole'; Text = $p441Decl + ' return $$"""a }} b""";'; Want = "refused C# literal at offset $($p441At): raw string content has a run of 2 } (at most 1 for 2 `$)" }
+                @{ Label = '$ raw content } without a hole'; Text = $p441Decl + ' return $"""a } b""";'; Want = "refused C# literal at offset $($p441At): raw string content has a run of 1 } (at most 0 for 1 `$)" }
+                @{ Label = 'one } without a hole in $$ raw content is content'; Text = $p441Decl + ' return $$"""a } P4-33: cleanup failed: """;'; Want = 'other cleanup-failed literal $$"""a } P4-33: cleanup failed: """' }
+                @{ Label = '$$ raw opening run of four {'; Text = $p441Decl + ' return $$"""{{{{x}} y""";'; Want = "refused C# literal at offset $($p441At): raw interpolation hole opened by a run of 4 { (at most 3 for 2 `$)" }
+                @{ Label = '$ raw opening run of two {'; Text = $p441Decl + ' return $"""{{x} y""";'; Want = "refused C# literal at offset $($p441At): raw interpolation hole opened by a run of 2 { (at most 1 for 1 `$)" }
+                @{ Label = '$$ raw opening run of three { is one content brace and a hole'; Text = $p441Decl + ' return $$"""{{{x}} P4-33: cleanup failed: """;'; Want = 'other cleanup-failed literal $$"""{{{x}} P4-33: cleanup failed: """' }
+            )
+            foreach ($p441Case in $p441Cases) {
+                $p441Found = Get-P435PrefixMismatch $p441Case.Text $p441Prefix
+                Assert (($p441Found -join '|') -ceq $p441Case.Want) "P4-41 self-test: $($p441Case.Label): $(Format-P431List $p441Found) (want [$($p441Case.Want)])"
+            }
+        } catch { $failures.Add("P4-41 concatenation/member access/auto-property/raw brace self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
