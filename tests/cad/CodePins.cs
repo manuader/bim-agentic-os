@@ -8,7 +8,8 @@ using System.Text;
 // OtherMaxInputBytes= does not count as MaxInputBytes=. P6-51: CountAnywhere is the plain substring count the zero-count
 // (banned-name) pins use, so a longer identifier such as BriefSerializerX still holds the banned BriefSerializer; and
 // Assignments counts simple and compound assignments (=, +=, -=, ??= and the other compound operators) to an identifier,
-// not comparisons (==, !=, <=, >=) or an expression body (=>).
+// not comparisons (==, !=, <=, >=) or an expression body (=>). P6-53: Assignments and CountAnywhere have direct self-tests
+// (and the one-stripper aggregate a planted-second-definition self-test) in the P6-39 block of PdfType3GlyphListTests.
 internal static class CodePins
 {
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal

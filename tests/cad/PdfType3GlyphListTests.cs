@@ -263,7 +263,7 @@ internal static class PdfType3GlyphListTests
 
             // Static check: the font decoder reads affected names through PdfSimpleEncoding.UnsupportedGlyphListName(code)
             // and the glyph-list filter is applied in exactly one place. P6-31: the sources are read through
-            // StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
+            // CodePins.StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
             static string Code(string path) => CodePins.StripCommentsAndLiterals(File.ReadAllText(path));
             var content = Code(Path.Combine(adapter, "PdfContent.cs"));
@@ -727,8 +727,9 @@ internal static class PdfType3GlyphListTests
             }
             var cadCommandPath = Path.Combine(root, "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
+            const string entryLabel = "p6-41 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only, makes the one FromDxf/FromPdf call with one options line, writes its ToUtf8Bytes and hashes the input only for cad-draft; zero-count (banned-name) pins are counted as substrings of the squeezed code, no identifier boundary (P6-51)";
             C(cadCommand.Length > 0 && CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) is null,
-                "p6-41 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only, makes the one FromDxf/FromPdf call with one options line, writes its ToUtf8Bytes and hashes the input only for cad-draft",
+                entryLabel,
                 cadCommandPath + " " + (CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) ?? "pins hold"));
             var drifted = cadCommand.Replace("new PdfReadOptions(MaxBytes: MaxInputBytes)", "new PdfReadOptions(MaxBytes: MaxInputBytes, MaxWarnings: 5)", StringComparison.Ordinal);
             C(cadCommand.Length > 0 && CodeProblems(drifted, cadCommandPins, cadCommandAnchors) is { } caught && caught.Contains("MaxBytes: MaxInputBytes));", StringComparison.Ordinal),
@@ -778,9 +779,12 @@ internal static class PdfType3GlyphListTests
             // (self-test below); the P6-49 forwarder in this file is gone and its callers call CodePins directly.
             static bool DefinesStripper(string code) => System.Text.RegularExpressions.Regex.IsMatch(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
             var cadTestsDir = Path.Combine(root, "tests", "cad");
-            var stripperHomes = string.Join(",", Directory.GetFiles(cadTestsDir, "*.cs")
-                .Where(f => DefinesStripper(CodePins.StripCommentsAndLiterals(File.ReadAllText(f))))
-                .Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
+            // P6-53: the aggregate is one function over (file name, source) pairs, so the planted self-test below runs it too.
+            static string StripperHomes(IEnumerable<(string Name, string Source)> files) => string.Join(",", files
+                .Where(f => DefinesStripper(CodePins.StripCommentsAndLiterals(f.Source)))
+                .Select(f => f.Name).Order(StringComparer.Ordinal));
+            var scanned = Directory.GetFiles(cadTestsDir, "*.cs").Select(f => (Name: Path.GetFileName(f), Source: File.ReadAllText(f))).ToArray();
+            var stripperHomes = StripperHomes(scanned);
             var forwarder = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n");
             var forwarderSplit = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source)\n        => CodePins.StripCommentsAndLiterals(source);\n");
             var blockBodied = CodePins.StripCommentsAndLiterals("    internal static string StripCommentsAndLiterals(string source)\n    {\n        return source;\n    }\n");
@@ -793,6 +797,47 @@ internal static class PdfType3GlyphListTests
             C(stripperHomes == "CodePins.cs" && Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(") >= 1 && Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)") == 0,
                 "p6-49 one stripper: StripCommentsAndLiterals is defined once (block- or expression-bodied, P6-51), in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
                 "defined in [" + stripperHomes + "], MinsertEzdxfTests calls CodePins x" + I(Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(")) + ", typeof(PdfType3GlyphListTests) x" + I(Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)")));
+            // P6-53 planted second stripper: a forwarder appended (in memory, no file written) to a scanned tests/cad file
+            // makes that file a second home, so the stripperHomes aggregate the p6-49 check compares with CodePins.cs is red.
+            const string plantedForwarder = "\ninternal static class PlantedStripper\n{\n    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n}\n";
+            var plantedHomes = StripperHomes(scanned.Select(f => f.Name == "MinsertEzdxfTests.cs" ? (f.Name, f.Source + plantedForwarder) : (f.Name, f.Source)));
+            C(stripperHomes == "CodePins.cs" && plantedHomes == "CodePins.cs,MinsertEzdxfTests.cs",
+                "p6-53 one stripper self-test: a second StripCommentsAndLiterals definition planted in a scanned file (MinsertEzdxfTests.cs, in memory) turns the stripperHomes aggregate red",
+                "real [" + stripperHomes + "] planted [" + plantedHomes + "]");
+            // P6-53 CodePins direct self-tests on squeezed snippets. Assignments counts = and the compound operators (longest
+            // first, so >>= and >>>= are read whole) to an identifier at its boundaries, not ==, !=, <=, >= or =>; ++ and --
+            // are not counted (stated limit: squeezed, x - -1 reads as x--1, so they cannot be told apart from a subtraction).
+            foreach (var (snippet, want) in new[]
+            {
+                ("x=1;", 1), ("x+=1;", 1), ("x-=1;", 1), ("x??=y;", 1), ("x>>=1;", 1), ("x<<=1;", 1), ("x>>>=1;", 1), ("x=1;x*=2;", 2),
+                ("x==1;", 0), ("x!=1;", 0), ("x<=1;", 0), ("x>=1;", 0), ("x=>1;", 0), ("x++;", 0), ("x--;", 0), ("++x;", 0), ("xx=1;", 0),
+            })
+            {
+                C(CodePins.Assignments(snippet, "x") == want, "p6-53 CodePins.Assignments self-test: '" + snippet + "' has " + I(want) + " assignment(s) to x",
+                    "got " + I(CodePins.Assignments(snippet, "x")));
+            }
+            // CountAnywhere is the zero-count (ban) rule: non-overlapping substrings, no identifier boundary; Count keeps it.
+            foreach (var (haystack, needle, anywhere, bounded) in new[]
+            {
+                ("varz=BriefSerializerX.Serialize();", "BriefSerializer", 1, 0), ("XBriefExtract.FromDxf();", "BriefExtract.", 1, 0),
+                ("BriefSerializer;BriefSerializer;", "BriefSerializer", 2, 2), ("aaaa", "aa", 2, 0), ("abc", "", 0, 0), ("", "x", 0, 0),
+            })
+            {
+                C(CodePins.CountAnywhere(haystack, needle) == anywhere && CodePins.Count(haystack, needle) == bounded,
+                    "p6-53 CodePins.CountAnywhere self-test: '" + needle + "' in '" + haystack + "' counts " + I(anywhere) + " as a substring, " + I(bounded) + " at identifier boundaries",
+                    "anywhere " + I(CodePins.CountAnywhere(haystack, needle)) + " bounded " + I(CodePins.Count(haystack, needle)));
+            }
+            // P6-53 wording: the p6-41 entry label states the substring rule of the zero-count pins; the comment above
+            // SwallowGuard (next to where the P6-49 forwarder was) names CodePins.StripCommentsAndLiterals; no doubled blank line.
+            var selfSource = File.ReadAllText(Path.Combine(cadTestsDir, "PdfType3GlyphListTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
+            var guardAt = selfSource.LastIndexOf("private static string? SwallowGuard(", StringComparison.Ordinal);
+            var guardComment = guardAt < 0 ? "" : selfSource[(selfSource.LastIndexOf("\n\n", guardAt, StringComparison.Ordinal) + 2)..guardAt];
+            C(entryLabel.Contains("zero-count", StringComparison.Ordinal) && entryLabel.Contains("substring", StringComparison.Ordinal),
+                "p6-53 wording: the p6-41 entry label states that zero-count pins are counted as substrings", entryLabel);
+            C(guardComment.Contains("CodePins.StripCommentsAndLiterals", StringComparison.Ordinal),
+                "p6-53 wording: the comment above SwallowGuard names CodePins.StripCommentsAndLiterals", guardComment.Trim());
+            C(!selfSource.Contains("\n\n\n", StringComparison.Ordinal),
+                "p6-53 wording: PdfType3GlyphListTests.cs has no doubled blank line", "at " + I(selfSource.IndexOf("\n\n\n", StringComparison.Ordinal)));
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
             // check names it as missing.
@@ -1039,9 +1084,9 @@ internal static class PdfType3GlyphListTests
 
     private static int Occurrences(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
 
-    // P6-33: the one swallow guard for a source read through StripCommentsAndLiterals (it replaces the P6-25 and P6-27
-    // copies): balanced braces, a final '}', and every anchor exactly once and in the given order. Null when the stripped
-    // text passes, otherwise what failed.
+    // P6-33: the one swallow guard for a source read through CodePins.StripCommentsAndLiterals (it replaces the P6-25 and
+    // P6-27 copies): balanced braces, a final '}', and every anchor exactly once and in the given order. Null when the
+    // stripped text passes, otherwise what failed.
     private static string? SwallowGuard(string stripped, IReadOnlyList<string> anchors)
     {
         var problems = new List<string>();
@@ -1061,7 +1106,6 @@ internal static class PdfType3GlyphListTests
         }
         return problems.Count == 0 ? null : string.Join("; ", problems);
     }
-
 
     // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
     // block body up to its matching '}'; (-1, -1) when the signature is absent.
