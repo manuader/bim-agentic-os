@@ -710,7 +710,7 @@ internal static class InternalErrorDelegationTests
                         else plantedNames.Add(name[..^Planted.Length]);
                     }
                     var uses = SeamHygiene(source, seam, type);
-                    Check(uses.Clean == clean, "P3-29 seam hygiene self-test:" + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
+                    Check(uses.Clean == clean, "P3-29 seam hygiene self-test: " + seam + ": " + name + (clean ? " is clean" : " is caught"), uses.Detail);
                     selfTests++;
                 }
             }
