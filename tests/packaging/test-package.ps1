@@ -1189,17 +1189,21 @@ try {
         }
         # P7-49: a path argument names $work when it is $work, an array literal with $work as an element, or @() of one of
         # those (one plain expression inside); $work reached through a scriptblock, a call or a subexpression does not count.
+        # P7-51: parentheses and nested @() of one plain expression are unwrapped too (($work), @(@($work)), (@($work, $x)));
+        # an array element is still only a bare $work (named limit: $other, ($work) and $other, @($work) do not count).
+        $plainExpression = {
+            param($Pipeline)
+            if ($Pipeline -is [Management.Automation.Language.PipelineAst] -and $Pipeline.PipelineElements.Count -eq 1 -and $Pipeline.PipelineElements[0] -is [Management.Automation.Language.CommandExpressionAst] -and !$Pipeline.PipelineElements[0].Redirections.Count) { return $Pipeline.PipelineElements[0].Expression }
+            return $null
+        }
         $namesWork = {
             param($Value)
             if (& $isVariable $Value 'work') { return !$Value.Splatted }
             if ($Value -is [Management.Automation.Language.ArrayLiteralAst]) { return @($Value.Elements | Where-Object { (& $isVariable $_ 'work') -and !$_.Splatted }).Count -gt 0 }
-            if ($Value -is [Management.Automation.Language.ArrayExpressionAst] -and $Value.SubExpression.Statements.Count -eq 1) {
-                $only = $Value.SubExpression.Statements[0]
-                if ($only -is [Management.Automation.Language.PipelineAst] -and $only.PipelineElements.Count -eq 1 -and $only.PipelineElements[0] -is [Management.Automation.Language.CommandExpressionAst] -and !$only.PipelineElements[0].Redirections.Count) {
-                    $inner = $only.PipelineElements[0].Expression
-                    if ($inner -is [Management.Automation.Language.VariableExpressionAst] -or $inner -is [Management.Automation.Language.ArrayLiteralAst]) { return (& $namesWork $inner) }
-                }
-            }
+            $inner = $null
+            if ($Value -is [Management.Automation.Language.ArrayExpressionAst] -and $Value.SubExpression.Statements.Count -eq 1) { $inner = & $plainExpression $Value.SubExpression.Statements[0] }
+            elseif ($Value -is [Management.Automation.Language.ParenExpressionAst]) { $inner = & $plainExpression $Value.Pipeline }
+            if ($inner -is [Management.Automation.Language.VariableExpressionAst] -or $inner -is [Management.Automation.Language.ArrayLiteralAst] -or $inner -is [Management.Automation.Language.ArrayExpressionAst] -or $inner -is [Management.Automation.Language.ParenExpressionAst]) { return (& $namesWork $inner) }
             return $false
         }
         # P7-49: a splatted Remove-Item (any @name argument) is refused, since the splat may carry or rebind the path, and
