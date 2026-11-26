@@ -401,7 +401,9 @@ internal static class TwiceReadToolTests
     // \\u002B); the provenance paragraph's words are pinned literally across its reflow. P5-40: Section() brace-matches
     // the method on comment- and literal-blanked code (reformat self-test, the P5-38 line scan as mutant); the grown-builder
     // mutant also runs on this file's builders; the depth check carries its own stand-in (independent of section 14); the
-    // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs.
+    // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs. P5-42: Span
+    // masks with the shared DeadlineSourceScan.CodeMask (no lexer of its own; raw-string edge self-test: a comment in a
+    // raw-string hole, a longer quote run); the RawChild comment and the contract's P5-40 sentence are checked here.
     static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
@@ -434,13 +436,16 @@ internal static class TwiceReadToolTests
             // section 14's identical Manifest cannot stand in for section 16's. ShallowPinned is the P5-36 pin (header +
             // next line anywhere in the file), kept only to prove the grown Manifest mutant below passed it.
             // P5-40: Span finds the method by brace matching: on the source with comments and string and char literals
-            // blanked (Blank; line breaks kept), the one `static void <method>(` and the '}' closing the first '{' after it;
+            // blanked (line breaks kept), the one `static void <method>(` and the '}' closing the first '{' after it;
             // Section is the source lines from the declaration through that closing brace's line (reformat self-test below,
-            // with the P5-38 line scan, OldSection, as its mutant).
+            // with the P5-38 line scan, OldSection, as its mutant). P5-42: the blanking is the shared
+            // DeadlineSourceScan.CodeMask (one literal lexer; this file's own P5-40 Blank/Token copy is removed): comments
+            // and every literal are spaced out at their positions, the code inside an interpolation hole is kept, and a
+            // comment or a longer-quote raw string inside a raw-string hole is read as such (raw-string edge self-test).
             static (int Start, int End) Span(string source, string method)
             {
                 var text = source.ReplaceLineEndings("\n");
-                var code = Blank(text);
+                var code = DeadlineSourceScan.CodeMask(text);
                 var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\bstatic\s+void\s+" + System.Text.RegularExpressions.Regex.Escape(method) + @"\s*\(",
                     System.Text.RegularExpressions.RegexOptions.CultureInvariant);
                 if (declarations.Count != 1) return (-1, -1);
@@ -453,78 +458,6 @@ internal static class TwiceReadToolTests
                         return (text.Take(declarations[0].Index).Count(c => c == '\n'), text.Take(at).Count(c => c == '\n'));
                 }
                 return (-1, -1);
-            }
-            // The text with every comment and string or char literal (regular, verbatim, interpolated with its holes, raw)
-            // replaced by spaces, line breaks kept, so offsets and line numbers are the source's.
-            static string Blank(string text)
-            {
-                var output = text.ToCharArray();
-                for (var index = 0; index < text.Length;)
-                {
-                    var end = Token(text, index);
-                    if (end <= index) { index++; continue; }
-                    for (var at = index; at < end; at++) if (output[at] != '\n') output[at] = ' ';
-                    index = end;
-                }
-                return new string(output);
-            }
-            // The end of the comment or literal starting at index (index itself when none starts there).
-            static int Token(string text, int index)
-            {
-                char At(int at) => at < text.Length ? text[at] : '\0';
-                if (At(index) == '/' && At(index + 1) == '/') { var newline = text.IndexOf('\n', index); return newline < 0 ? text.Length : newline; }
-                if (At(index) == '/' && At(index + 1) == '*') { var close = text.IndexOf("*/", index + 2, StringComparison.Ordinal); return close < 0 ? text.Length : close + 2; }
-                if (At(index) == '\'')
-                {
-                    var at = index + 1;
-                    while (at < text.Length && text[at] != '\'' && text[at] != '\n') at += text[at] == '\\' ? 2 : 1;
-                    return Math.Min(text.Length, at + 1);
-                }
-                var quote = index;
-                var dollars = 0;
-                var verbatim = false;
-                while (At(quote) is '$' or '@') { if (At(quote) == '$') dollars++; else verbatim = true; quote++; }
-                if (At(quote) != '"') return index;
-                var quotes = 0;
-                while (At(quote + quotes) == '"') quotes++;
-                if (!verbatim && quotes >= 3)
-                {
-                    var close = text.IndexOf(new string('"', quotes), quote + quotes, StringComparison.Ordinal);
-                    return close < 0 ? text.Length : close + quotes;
-                }
-                var depth = 0;
-                for (var at = quote + 1; at < text.Length;)
-                {
-                    var c = text[at];
-                    if (depth > 0)
-                    {
-                        var nested = Token(text, at);
-                        if (nested > at) { at = nested; continue; }
-                        if (c == '{') depth++;
-                        else if (c == '}') depth--;
-                        at++;
-                        continue;
-                    }
-                    if (dollars > 0 && (c == '{' || c == '}'))
-                    {
-                        if (At(at + 1) == c) { at += 2; continue; }
-                        if (c == '{') depth = 1;
-                        at++;
-                        continue;
-                    }
-                    if (verbatim)
-                    {
-                        if (c == '"' && At(at + 1) == '"') { at += 2; continue; }
-                        if (c == '"') return at + 1;
-                        at++;
-                        continue;
-                    }
-                    if (c == '\\') { at += 2; continue; }
-                    if (c == '"') return at + 1;
-                    if (c == '\n') return at;
-                    at++;
-                }
-                return text.Length;
             }
             static string[] Section(string source, string method)
             {
@@ -614,6 +547,60 @@ internal static class TwiceReadToolTests
                         + found.Length.ToString(CultureInfo.InvariantCulture) + " of " + reformatted.Length.ToString(CultureInfo.InvariantCulture) + " lines, last " + (found.Length > 0 ? found[^1].Trim() : "<none>")
                         + ", old " + OldSection(variant, method).Length.ToString(CultureInfo.InvariantCulture));
                 }
+            }
+            // P5-42 raw-string edge self-test, both files: two more copies of the method with one line inserted after its
+            // opening brace: a comment inside a raw-string interpolation hole (the comment holds a three-quote run and a
+            // '}'), and raw strings with a longer quote run (four quotes holding a three-quote run and braces, alone and as
+            // the hole of a three-quote interpolated raw string). Section finds exactly that method and the same builders.
+            foreach (var (file, source, method) in new[] { ("tests/mcp/TwiceReadToolTests.cs", hereSource, "Ambiguity"), ("tests/cli/SkillListTests.cs", thereSource, "AmbiguityTwiceRead") })
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var (start, end) = Span(source, method);
+                if (start < 0 || end <= start) { Check(false, "P5-42 raw-string edge self-test: Section(" + method + ") in " + file + " is found"); continue; }
+                var body = lines[start..(end + 1)];
+                foreach (var (name, inserted) in new[]
+                {
+                    ("a comment inside a raw-string hole", "        _ = $\"\"\"{0 /* \"\"\" } */}\"\"\";"),
+                    ("raw strings with a longer quote run", "        _ = \"\"\"\" } \"\"\" { \"\"\"\" + $\"\"\"{\"\"\"\" } \"\"\"\"}\"\"\";"),
+                })
+                {
+                    var reformatted = body.Take(2).Append(inserted).Concat(body.Skip(2)).ToArray();
+                    var variant = string.Join("\n", lines[..start].Concat(reformatted).Concat(lines[(end + 1)..]));
+                    var found = Section(variant, method);
+                    Check(found.SequenceEqual(reformatted) && Builders(variant, method).SequenceEqual(Builders(source, method)),
+                        "P5-42 raw-string edge self-test: " + file + " with " + method + " and " + name + ": Section finds exactly that method and the same builders | found "
+                        + found.Length.ToString(CultureInfo.InvariantCulture) + " of " + reformatted.Length.ToString(CultureInfo.InvariantCulture) + " lines, last " + (found.Length > 0 ? found[^1].Trim() : "<none>"));
+                }
+            }
+            // P5-42: one literal lexer: Span masks the source with the shared DeadlineSourceScan.CodeMask (tests/cli/
+            // DeadlineSourceScan.cs, linked here) and this file declares no lexer of its own (read on its own CodeMask, so
+            // the names in this check's literals do not count).
+            {
+                var mask = DeadlineSourceScan.CodeMask(hereSource.ReplaceLineEndings("\n"));
+                var span = DeadlineSourceScan.MemberBody(hereSource.ReplaceLineEndings("\n"), "static (int Start, int End) Span(string source, string method)", raw: true) ?? "";
+                Check(span.Contains("DeadlineSourceScan.CodeMask(", StringComparison.Ordinal) && !span.Contains("Blank(", StringComparison.Ordinal)
+                    && !System.Text.RegularExpressions.Regex.IsMatch(mask, @"\bstatic\s+(string\s+Blank|int\s+Token)\s*\("),
+                    "P5-42: Span masks with DeadlineSourceScan.CodeMask and this file declares no Blank or Token lexer | Span " + Short(span));
+            }
+            // P5-42: the comment above tests/cli/SkillListTests.cs section 16's RawChild names the six escaped bytes without a
+            // literal plus character.
+            {
+                var lines = thereSource.ReplaceLineEndings("\n").Split('\n');
+                var at = Array.FindIndex(lines, line => line.TrimStart().StartsWith("(int Exit", StringComparison.Ordinal) && line.Contains(" RawChild(", StringComparison.Ordinal));
+                var first = at;
+                while (first > 0 && lines[first - 1].TrimStart().StartsWith("//", StringComparison.Ordinal)) first--;
+                var comment = at < 0 ? "" : string.Join("\n", lines[first..at]);
+                Check(comment.Length > 0 && comment.Contains("u002B", StringComparison.Ordinal) && !comment.Contains('+'),
+                    "P5-42: the RawChild comment in tests/cli/SkillListTests.cs names the escaped bytes with no literal plus | " + Short(comment));
+            }
+            // P5-42: the contract's P5-38 paragraph carries a P5-40 sentence naming the P5-40 red and green runs.
+            {
+                var contract = File.ReadAllText(Path.Combine(root, "docs", "contracts", "module-contracts.md")).ReplaceLineEndings("\n").Split('\n');
+                var heading = Array.FindIndex(contract, line => line == "## jurisdiction-resolve drift before validation and the escaped '+' in refusal details (P5-38)");
+                var next = heading < 0 ? -1 : Array.FindIndex(contract, heading + 1, line => line.StartsWith("## ", StringComparison.Ordinal));
+                var section = heading < 0 ? "" : string.Join("\n", contract[heading..(next < 0 ? contract.Length : next)]);
+                Check(section.Contains("P5-40: ", StringComparison.Ordinal) && section.Contains("45619198150", StringComparison.Ordinal) && section.Contains("45621488770", StringComparison.Ordinal),
+                    "P5-42: docs/contracts/module-contracts.md P5-38 section has a P5-40 sentence with runs 45619198150 and 45621488770 | " + Short(section));
             }
             // P5-38 mutant self-test: a copy of tests/cli/SkillListTests.cs whose section-16 builder grew by one line (the
             // terminating ';' moved to an added `+ "..."` line) must fail the pin, for the Sidecar and for the Manifest.
