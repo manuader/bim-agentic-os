@@ -784,8 +784,8 @@ internal static class RepeatedEnvelopeKeyTests
     static readonly System.Text.RegularExpressions.Regex NewProcess = new(@"\bnew\s+(?:global::\s*)?(?:System\s*\.\s*Diagnostics\s*\.\s*)?Process\s*[({]");
     internal static int ProcessStarts(string source)
     {
-        _ = ProcessStartCall; _ = NewProcess;
-        return source.Split("System.Diagnostics.Process." + "Start(").Length - 1;
+        var code = DocUpdateLinkTests.CodeOf(source);
+        return ProcessStartCall.Matches(code).Count + NewProcess.Matches(code).Count;
     }
 
     static async Task ReleaseAfter(Stream input, int delayMs, CancellationToken token)
@@ -1045,7 +1045,7 @@ internal static class RepeatedEnvelopeKeyTests
                 var launched = Launch(dll, [], timeoutMs, releaseStdinMs, arguments);
                 if (launched.TimedOut)
                     throw new TimeoutException("CLI timed out after " + timeoutMs.ToString(CultureInfo.InvariantCulture) + " ms, killed (exited " + launched.KilledExited
-                        + "), stdin release task " + launched.Release + ": " + string.Join(" ", arguments));
+                        + "), stdin release task " + launched.Release + ": " + string.Join(" ", arguments) + " | stderr " + BoundedStderr(launched.Stderr));
                 using var reader = new StreamReader(new MemoryStream(launched.Stdout), new System.Text.UTF8Encoding(false));
                 return (reader.ReadToEnd().TrimEnd('\r', '\n'), launched.Exit, launched.Stderr, launched.Release);
             }
@@ -1070,12 +1070,11 @@ internal static class RepeatedEnvelopeKeyTests
             // P10-52: the measured CLI part of a parity entry. A failed case, or any child that wrote to stderr, carries its
             // stderr, bounded; a passing case with empty stderr reads as before.
             static string CliPart(string stdout, int exit, string stderr, bool failed) =>
-                "cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (failed && stderr.Length < 0 ? " stderr " + BoundedStderr(stderr) : "");
+                "cli " + stdout + " exit " + exit.ToString(CultureInfo.InvariantCulture) + (failed || stderr.Length > 0 ? " stderr " + BoundedStderr(stderr) : "");
             // P10-52: a copy of the CLI folder under a temporary repository root inside work; policyText, when given, is
             // written as that root's .bim/revit-enabled-roots.txt.
             static string IsolatedCli(string dll, string work, string? policyText)
             {
-                if (dll.Length > 0) return dll;
                 var isolatedRoot = Path.Combine(work, "repo");
                 var folder = Path.Combine(isolatedRoot, "cli");
                 var source = Path.GetDirectoryName(dll)!;
@@ -1119,7 +1118,7 @@ internal static class RepeatedEnvelopeKeyTests
                         ("L3", Diff("82", empty, surrogateProject), new[] { "diff", Input("l3-before.json", empty), Input("l3-after.json", surrogateProject) }, ConvertedPrefix, false),
                         (l4Label ?? L4ParityLabel, Revit("83", SurrogateArgs), new[] { "revit-command", Input("l4-envelope.json", surrogateEnvelope), "bim-agentic-os-2025-1" }, EnvelopeInvalidPrefix, true),
                     };
-                    var labels = new List<string>();
+                    var labels = parity.Select(entry => entry.Label).ToList();
                     var exists = File.Exists(dll);
                     sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
                     if (!exists) return (failing, measured, 0, labels);
