@@ -1706,9 +1706,9 @@ internal static class RevitCommandDeadlineTests
         if (writes != known.Length || known.Any(write => CountOf(flat, write) != 1))
             problems.Add(N(writes) + " console writes in RevitCommandDeadlineTests.cs, not the runtime warning, the link-skip warning and FailSummary once each");
         var mirrorSites = warningCounts.Where(entry => entry.Key.StartsWith("tests/mirror-journal/", StringComparison.Ordinal)).Sum(entry => entry.Value);
-        const int OwnBeforeSummary = 2; // the runtime and link-skip warnings
-        if (OwnBeforeSummary + mirrorSites > WarningsPerStep) problems.Add("a green run can print " + N(OwnBeforeSummary + mirrorSites) + " warnings, over " + N(WarningsPerStep));
-        if (OwnBeforeSummary + 1 > WarningsPerStep) problems.Add("the deadline summary is past warning " + N(WarningsPerStep));
+        var ownBeforeSummary = known.Length - 1; // the runtime and link-skip warnings, both before FailSummary
+        if (ownBeforeSummary + mirrorSites > WarningsPerStep) problems.Add("a green run can print " + N(ownBeforeSummary + mirrorSites) + " warnings, over " + N(WarningsPerStep));
+        if (ownBeforeSummary + 1 > WarningsPerStep) problems.Add("the deadline summary is past warning " + N(WarningsPerStep));
         return string.Join("; ", problems);
     }
 
