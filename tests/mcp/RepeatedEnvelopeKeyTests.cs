@@ -1100,11 +1100,12 @@ internal static class RepeatedEnvelopeKeyTests
             // the L4 label self-test reads the label the L4 case actually uses; l4Label replaces it for the mutant
             // self-test only. policyText is planted in L4's temporary repository root (malformed-file self-test). A CLI
             // timeout is a failing entry carrying the timeout message (with the child's stderr), not a crash of the run.
-            (List<string> Failing, List<string> Measured, int Launches, List<string> Labels) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
+            (List<string> Failing, List<string> Measured, int Launches, List<string> Labels, List<string> Stderrs) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
                 string[]? only = null, string? l4Label = null, string? policyText = null)
             {
                 var failing = new List<string>();
                 var measured = new List<string>();
+                var stderrs = new List<string>();
                 var launchesBefore = launches;
                 var cliWork = Path.Combine(Path.GetTempPath(), "p10-46-cli-" + Guid.NewGuid().ToString("N"));
                 Directory.CreateDirectory(cliWork);
@@ -1121,7 +1122,7 @@ internal static class RepeatedEnvelopeKeyTests
                     var labels = parity.Select(entry => entry.Label).ToList();
                     var exists = File.Exists(dll);
                     sink(exists, "CLI parity precondition: the Release Bim.Cli.dll exists, else no CLI process is launched | " + dll);
-                    if (!exists) return (failing, measured, 0, labels);
+                    if (!exists) return (failing, measured, 0, labels, stderrs);
                     foreach (var (label, line, arguments, prefix, isolated) in parity)
                     {
                         if (only is not null && !only.Contains(label, StringComparer.Ordinal)) continue;
@@ -1135,6 +1136,7 @@ internal static class RepeatedEnvelopeKeyTests
                         int exit;
                         try { (stdout, exit, stderr, _) = Cli(caseDll, 120000, 0, arguments); }
                         catch (TimeoutException error) { (stdout, exit, stderr) = ("<" + error.Message + ">", -1, ""); }
+                        stderrs.Add(stderr);
                         string? text = null;
                         bool? isError = null;
                         try
@@ -1153,7 +1155,7 @@ internal static class RepeatedEnvelopeKeyTests
                     sink(failing.Count == 0,
                         "CLI parity: a nested lone-surrogate name on validate/diff answers the same System.Text.Json 8 message as the CLI, and on revit_query_elements (L4) the same envelope_invalid as CLI revit-command on the same envelope (MCP text == CLI stdout, isError == non-zero exit, no transport send per case; shared P10-43-class runtime-message text) | failing "
                         + string.Join(", ", failing) + " | " + string.Join(" ; ", measured));
-                    return (failing, measured, launches - launchesBefore, labels);
+                    return (failing, measured, launches - launchesBefore, labels, stderrs);
                 }
                 finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
             }
@@ -1185,13 +1187,17 @@ internal static class RepeatedEnvelopeKeyTests
                 if (line.Contains("\"id\":81,", StringComparison.Ordinal)) argumentSends++;
                 return Handled(line);
             }, (ok, name) => plantedSinks.Add((ok, name)), onlyL2);
-            // P10-52: the failing entry carries the CLI stderr part (CliPart, bounded).
+            // P10-52: the failing entry carries the CLI stderr part (CliPart, bounded). P10-54: the captured stderr text
+            // itself, not only the marker: the planted run's child writes host trace to stderr (COREHOST_TRACE), so the
+            // entry must carry that non-empty text bounded; an empty capture reds.
+            var plantedErr = planted.Stderrs.Count == 1 ? planted.Stderrs[0] : "";
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
-                && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal) && planted.Measured[0].Contains(" stderr ", StringComparison.Ordinal)
+                && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal)
+                && plantedErr.Contains("Tracing enabled", StringComparison.Ordinal) && planted.Measured[0].EndsWith(" stderr " + BoundedStderr(plantedErr), StringComparison.Ordinal)
                 && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
                 + "; CLI launches " + planted.Launches.ToString(CultureInfo.InvariantCulture) + " of the full run's " + full.Launches.ToString(CultureInfo.InvariantCulture) + ", "
-                + (full.Launches - planted.Launches).ToString(CultureInfo.InvariantCulture) + " saved)");
+                + (full.Launches - planted.Launches).ToString(CultureInfo.InvariantCulture) + " saved; captured stderr " + plantedErr.Length.ToString(CultureInfo.InvariantCulture) + " chars)");
 
             // c. the timeout self-test, its dll a named precondition.
             (bool Ran, bool Ok, string Entry) TimeoutSelfTest(string dll, Action<bool, string> sink)
@@ -1204,9 +1210,13 @@ internal static class RepeatedEnvelopeKeyTests
                 try { var (stdout, exit, _, _) = Cli(dll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
                 catch (TimeoutException error) { timeout = error.Message; }
                 var waited = clock.ElapsedMilliseconds;
-                // P10-52: the timeout message ends with the killed child's stderr (bounded).
+                // P10-52: the timeout message ends with the killed child's stderr (bounded). P10-54: the text itself: the child
+                // writes host trace to stderr (COREHOST_TRACE) before it blocks on stdin, so the part after the marker is that
+                // captured text; an empty capture reds.
+                var marker = timeout.IndexOf(" | stderr ", StringComparison.Ordinal);
+                var killedErr = marker < 0 ? "" : timeout[(marker + " | stderr ".Length)..];
                 var ok = timeout.StartsWith("CLI timed out after 3000 ms, killed (exited True), stdin release task Canceled:", StringComparison.Ordinal)
-                    && timeout.Contains(" | stderr ", StringComparison.Ordinal) && waited < 20000;
+                    && killedErr.Contains("Tracing enabled", StringComparison.Ordinal) && waited < 20000;
                 return (true, ok, timeout + "; " + waited.ToString(CultureInfo.InvariantCulture) + " ms");
             }
             var timeoutSinks = new List<(bool Ok, string Name)>();
@@ -1237,13 +1247,18 @@ internal static class RepeatedEnvelopeKeyTests
                 ("var p = new " + "Process { StartInfo = info }; p.Start();", 1),
                 ("var p = new " + "System.Diagnostics.Process();", 1),
                 ("var p = new " + "global::System.Diagnostics.Process();", 1),
+                ("Process p = new" + "();", 1),
+                ("using Process p = new" + "() { StartInfo = info };", 1),
+                ("System.Diagnostics.Process? p = new" + " ();", 1),
+                ("global::System.Diagnostics.Process p = new" + "();", 1),
+                ("ProcessStartInfo info = new" + "(\"dotnet\");", 0),
                 ("var info = new " + "ProcessStartInfo(\"dotnet\"); var q = new " + "System.Diagnostics.ProcessStartInfo();", 0),
                 ("// Process" + ".Start(info); new " + "Process();\nvar watch = System.Diagnostics.Stopwatch.StartNew();", 0),
             };
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
             var formsOk = formsWrong.Count == 0;
-            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor) with and without the namespace, not ProcessStartInfo or comments ("
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, not ProcessStartInfo or comments; not recognised: a using alias, a using static Start call, a target-typed constructor assigned to an untyped or earlier-declared variable ("
                 + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
             // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
             // label (missing dll: no launch) that must red the same predicate.
@@ -1298,6 +1313,8 @@ internal static class RepeatedEnvelopeKeyTests
             var malformed = Parity(cliDll, Handled, (ok, name) => malformedSinks.Add((ok, name)), new[] { L4ParityLabel }, policyText: "relative/not-absolute\n");
             var malformedOk = malformedSinks.Count == 2 && malformedSinks[0].Ok && !malformedSinks[1].Ok && malformed.Failing.Count == 1 && malformed.Failing[0] == L4ParityLabel
                 && malformed.Measured.Count == 1 && malformed.Measured[0].Contains("| cli {\"status\":\"failed\",\"code\":\"allowlist_invalid\"", StringComparison.Ordinal)
+                && System.Text.RegularExpressions.Regex.IsMatch(malformed.Measured[0], @" \| temporary repository root \(copied in [0-9]+ ms\), ")
+                && full.Measured.Count(entry => System.Text.RegularExpressions.Regex.IsMatch(entry, @" \| temporary repository root \(copied in [0-9]+ ms\), ")) == 1
                 && malformed.Measured[0].EndsWith("temporary repository root, .bim/revit-enabled-roots.txt planted", StringComparison.Ordinal) && malformed.Launches == 1;
             selfTest.Add((malformedOk ? "ok" : "FAIL") + " a malformed .bim/revit-enabled-roots.txt in L4's temporary root answers allowlist_invalid there (" + string.Join(" ; ", malformed.Measured.Select(BoundedStderr)) + ")");
             Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk,
