@@ -1147,20 +1147,23 @@ try {
     # P7-51: one line naming every failure added by the P7-39/P7-41/P7-43 self-test blocks (mutant names, otherwise the
     # first 60 characters), so all of them reach one CI annotation even when the detailed failures exceed the annotation
     # cap; $null with no failure. Complete cuts each failure line at 900 characters, which bounds how many names show.
+    # P7-53: it is not printed first: the P7-43 finally inserts it at $p751Start, so failures of earlier sections print
+    # above it and the block's own details right after it (its text says how many lines follow).
     function Get-P751FailureSummary([string[]]$Messages) {
         $names = @($Messages | Where-Object { $_ } | ForEach-Object {
                 $one = ($_ -replace '[\r\n]+', ' ')
                 if ($one -cmatch "mutant '([^']+)'") { "mutant $($Matches[1])" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
             })
         if (!$names.Count) { return $null }
-        return "P7-51: $($names.Count) cleanup pin check(s) failed: $($names -join '; ')"
+        return "P7-51: $($names.Count) cleanup pin check(s) failed, detailed in the $($names.Count) line(s) after this one: $($names -join '; ')"
     }
     # P7-53: how many string literals (constant or expandable) of an AST spell the header id list: a string spells it when
     # it contains any run of four consecutive ids of $Ids (starting at any id), so a second copy or a partial copy that
     # starts after P7-39 is counted too; the self-test texts name runs of at most three ids and are not counted.
     function Get-P753SpelledCount([Management.Automation.Language.Ast]$Ast, [string]$Ids) {
-        $needle = @($Ids -split ',')[0..3] -join ','
-        return @($Ast.FindAll({ param($n) ($n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and $n.Value.Contains($needle) }, $true)).Count
+        $list = @($Ids -split ',')
+        $runs = @(for ($i = 0; $i + 4 -le $list.Count; $i++) { $list[$i..($i + 3)] -join ',' })
+        return @($Ast.FindAll({ param($n) ($n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and @($runs | Where-Object { $n.Value.Contains($_) }).Count -gt 0 }, $true)).Count
     }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
@@ -1987,8 +1990,13 @@ try {
                     # P7-51: -LP is a LiteralPath alias only from PowerShell 6 on (Windows PowerShell 5.1 has -PSPath alone). The
                     # script #Requires -Version 7.2; both that requirement and the alias are asserted here, and the -LP case
                     # above expects work 1 only because of them (without the alias the binder reports an unknown parameter).
+                    # P7-53: under #Requires -Version 7.2 this guard cannot fail while that line stays (the script does not
+                    # start below 7.2); its value is catching an edit that drops or lowers the line. It reads the requirement
+                    # from this script's AST parsed once here ($p751Ast, also used by the spelled-once check below).
+                    $p741Own = [IO.File]::ReadAllText($PSCommandPath)
+                    $p751Ast = [Management.Automation.Language.Parser]::ParseInput($p741Own, [ref]$null, [ref]$null)
                     $p751Lp = @((Get-Command Remove-Item -CommandType Cmdlet).Parameters['LiteralPath'].Aliases) -ccontains 'LP'
-                    $p751Requires = ([Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($PSCommandPath), [ref]$null, [ref]$null)).ScriptRequirements
+                    $p751Requires = $p751Ast.ScriptRequirements
                     Assert ($p751Lp -and $null -ne $p751Requires -and $null -ne $p751Requires.RequiredPSVersion -and $p751Requires.RequiredPSVersion.Major -ge 7) "P7-51: the '-LP' alias case depends on PowerShell 7: Remove-Item -LiteralPath has alias LP ($p751Lp, PowerShell $($PSVersionTable.PSVersion)) and this script #Requires -Version 7 or later ($(if ($p751Requires) { $p751Requires.RequiredPSVersion } else { 'none' }))"
                     # P7-51: a path argument in parentheses or nested @() of one plain expression counts; an array element
                     # wrapped on its own ($other, ($work)) is a named limit and does not.
@@ -2019,12 +2027,10 @@ try {
                         $got = Get-P741CleanupPin $text
                         Assert ($got.Summary -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
                     }
-                    $p741Own = [IO.File]::ReadAllText($PSCommandPath)
                     $p741OwnPin = Get-P741CleanupPin $p741Own
                     Assert ($p741OwnPin.Header -ceq $p751HeaderIds -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly $p751HeaderIds (P7-49: every P7 line from P7-39 on, the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
                     # P7-51: the expected id list is spelled in one string only ($p751HeaderIds) and both own-script header
                     # asserts (here and in the P7-43 block) compare against that variable.
-                    $p751Ast = [Management.Automation.Language.Parser]::ParseInput($p741Own, [ref]$null, [ref]$null)
                     # P7-53: the count reads every run of four ids of the list (Get-P753SpelledCount), not only its first four.
                     $p751Spelled = Get-P753SpelledCount $p751Ast $p751HeaderIds
                     $p751Users = @($p751Ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Assert' -and $n.CommandElements.Count -ge 2 -and @($n.CommandElements[1].FindAll({ param($v) $v -is [Management.Automation.Language.VariableExpressionAst] -and $v.VariablePath.UserPath -eq 'p751HeaderIds' }, $true)).Count -gt 0 }, $true)).Count
