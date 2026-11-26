@@ -2571,6 +2571,42 @@ static class MirrorDriftLoopChecks
             && firstLast.SequenceEqual(new[] { "LeversOk: live=False recorded=True", "LoweredHanded: live=1 recorded=10240" }, StringComparer.Ordinal),
             "macos pin self-test (P2-46): the recorded-count drift lists fields in the record's positional constructor parameter order (written as text), first field before last",
             "fields=[" + string.Join(" ; ", fields) + "] first_last=[" + string.Join(" ; ", firstLast) + "]");
+
+        // P2-48: a lever record's text (the live macOS detail's raised_lever/lowered_lever and the lever-plant self-test's
+        // detail) writes InvariantCulture numbers: planted negative under the '~' culture it equals the text written with '-'.
+        var plantedLever = new LeverRecord { Calls = -2, Default = -8192, Requested = -6144, Set = -6143 };
+        var erroredLever = new LeverRecord { Calls = 1, Default = 8192, Requested = 6144, Set = 6144, Error = "planted" };
+        string exoticLever, invariantLever, erroredText;
+        try
+        {
+            CultureInfo.CurrentCulture = exotic;
+            exoticLever = plantedLever.ToString();
+            erroredText = erroredLever.ToString();
+            CultureInfo.CurrentCulture = CultureInfo.InvariantCulture;
+            invariantLever = plantedLever.ToString();
+        }
+        finally { CultureInfo.CurrentCulture = saved; }
+        const string leverWritten = "calls=-2 default=-8192 requested=-6144 set=-6143 error=<none>";
+        check(exoticLever == leverWritten && invariantLever == leverWritten && erroredText == "calls=1 default=8192 requested=6144 set=6144 error=planted",
+            "macos pin self-test (P2-48): a lever record's text writes its numbers through MacNumber (planted negative under a '~' negative-sign culture it equals the text written with '-')",
+            "exotic=" + exoticLever + " | invariant=" + invariantLever + " | errored=" + erroredText);
+
+        // P2-48: the self-test texts as detail text field by field (MacSelfTestTextsDetail), not the record's ToString.
+        var textsDetail = typeof(MirrorDriftLoopChecks).GetMethod("MacSelfTestTextsDetail", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var textsSeen = textsDetail?.Invoke(null, new object[] { new MacSelfTestTexts("a", "b", "c", "d", "e", "f") }) as string;
+        check(textsSeen == "rounded_kept=[a] mismatch_kept=[b] kept=[c] precondition=[d] self_test=[e] zero_self_test=[f]",
+            "macos pin self-test (P2-48): the self-test expected texts print as detail field by field (MacSelfTestTextsDetail), not through the record's ToString",
+            "helper=" + (textsDetail?.Name ?? "<none>") + " seen=" + (textsSeen ?? "<none>"));
+
+        // P2-48: the drift check's not-run line names the drift the red setup check hides: a kernel rounding (6143 kept
+        // for 6144 requested) lists the Lowered field; the recorded counts themselves list none.
+        var driftNotRun = typeof(MirrorDriftLoopChecks).GetMethod("MacDriftNotRunNotice", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        var roundedLine = driftNotRun?.Invoke(null, new object[] { roundedInput, MacRecordedCounts }) as string;
+        var recordedLine = driftNotRun?.Invoke(null, new object[] { MacRecordedCounts, MacRecordedCounts }) as string;
+        const string noticeWritten = "::notice::drift-loop: write progress per OS (P2-33): macos pin (P2-45): the live gate's counts equal the recorded macOS counts (MacRecordedCounts) field by field not run (setup red)";
+        check(roundedLine == noticeWritten + " hidden_drift=[Lowered: live=6143 recorded=6144]" && recordedLine == noticeWritten + " hidden_drift=[]",
+            "macos pin self-test (P2-48): the drift check's not-run line names the drift fields the red setup check hides (a kernel rounding lists 'Lowered: live=6143 recorded=6144'; the recorded counts list none)",
+            "helper=" + (driftNotRun?.Name ?? "<none>") + " rounded=" + (roundedLine ?? "<none>") + " recorded=" + (recordedLine ?? "<none>"));
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
