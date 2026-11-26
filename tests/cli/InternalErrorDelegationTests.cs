@@ -512,7 +512,7 @@ internal static class InternalErrorDelegationTests
                     ("the read nested in a block inside a stored block lambda (planted)", declaration + "\nstatic void W(bool ok) { Action later = () => { if (ok) { " + read + " } }; later(); }\n", false),
                     ("the read moved into a stored anonymous method (planted)", declaration + "\nstatic void W() { Action later = delegate { " + read + " }; later(); }\n", false),
                     ("the read moved into a stored anonymous method with parameters (planted)", declaration + "\nstatic void W() { Action<int> later = delegate (int n) { " + read + " }; later(0); }\n", false),
-                    ("the read moved into a block lambda passed as an argument (planted)", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
+                    ("the read moved into a block lambda passed as an argument", declaration + "\nstatic void W() { Task.Run(() => { " + read + " }); }\n", false),
                     ("the read moved into a stored expression lambda", declaration + "\nstatic void W() { Action later = () => " + read + " later(); }\n", false),
                     // P3-33: local functions, and lambdas with an attribute or an explicit return type before the parameter list.
                     ("the read moved into a local function (planted)", declaration + "\nstatic void W() { void Later() { " + read + " } Later(); }\n", false),
