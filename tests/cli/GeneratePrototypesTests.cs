@@ -4537,7 +4537,7 @@ internal static class GeneratePrototypesTests
             Check(values.SequenceEqual(expected), "P7-54 exponent self-test: " + label,
                 "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
         }
-        var tidyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        var operandTidyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("(ac) a lambda's parameter passed on null-forgiving parenthesised before ??", new[] { (ReadBytesCall, Poke),
                 (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe((test)! ?? (() => 0)); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
@@ -4550,7 +4550,7 @@ internal static class GeneratePrototypesTests
                 (RequireRegular, "static void Poke(string path) => Relay(null); static void Relay(Notifier test) => Probe((test)! ?? (() => 0));" + ProbeTail) },
                 "Execute reaches test [a Notifier parameter of Relay, passed on (not called)"),
         };
-        foreach (var (label, edits, reason) in tidyMutants)
+        foreach (var (label, edits, reason) in operandTidyMutants)
         {
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
