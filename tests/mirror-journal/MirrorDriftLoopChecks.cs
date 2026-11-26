@@ -2243,6 +2243,10 @@ static class MirrorDriftLoopChecks
         return failures.ToArray();
     }
 
+    // P2-47: the kept setup check's condition (the kernel kept the lowered value the lever requested), shared by the gate
+    // and the drift check's gating in MacLiveChecks.
+    static bool MacLoweredKept(MacSendBufferCounts c) => c.Lowered == c.RequestedLowered;
+
     // P2-41: the macOS checks in order as (passed, name); checks skipped because a setup check is red are added to notRun
     // (their names), so the caller prints one 'not run (setup red)' line for each.
     static List<(bool Ok, string Name)> MacSendBufferChecks(MacSendBufferCounts c, List<string> notRun)
@@ -2263,7 +2267,7 @@ static class MirrorDriftLoopChecks
         // P2-40 probe red (run 45243506492) planted lowered - 1: this setup check was the only macOS red.
         // P2-42: no LeversOk clause here or in the precondition: a failed lever returns above (the P2-41 setup check), so
         // every check below runs only with LeversOk true.
-        var loweredKept = c.Lowered == c.RequestedLowered;
+        var loweredKept = MacLoweredKept(c);
         checks.Add((loweredKept, kept));
         // P2-40: no lowered % chunk clause: LoweredCounts requires handed == read + lowered and handed % chunk == 0, so with
         // read % chunk == 0 (checked here) a lowered value that is not a whole number of pieces already fails the lowered
@@ -2443,7 +2447,8 @@ static class MirrorDriftLoopChecks
 
     // P2-47: the counts as check detail text (self-test outcomes, the recorded-count pin, the drift check): the counts
     // notice text plus the fields it does not print, instead of the record's ToString.
-    static string MacCountsDetail(MacSendBufferCounts c) => c.ToString();
+    static string MacCountsDetail(MacSendBufferCounts c) => MacCountsText(c) + " levers_ok=" + (c.LeversOk ? "True" : "False") + " raised_default=" + MacNumber(c.RaisedDefault)
+        + " lowered_default=" + MacNumber(c.LoweredDefault) + " chunk=" + MacNumber(c.Chunk) + " lowered_run=" + (c.LoweredRun ? "True" : "False");
 
     // P2-47: a self-test outcome as detail text: the red and not-run names, then the counts (MacCountsDetail).
     static string MacOutcomeText(string[] red, string[] notRun, MacSendBufferCounts c) =>
@@ -2454,10 +2459,12 @@ static class MirrorDriftLoopChecks
     // P2-46: the live macOS checks: the gate (MacSendBufferChecks), then the recorded-count drift check. A failed lever
     // is the gate's one setup red; its record (LeversOk false, -1 values) would also differ from the recorded counts, so
     // the drift check does not run then and prints a not-run line like the gate's skipped checks.
+    // P2-47: likewise a kernel rounding of the lowered value is the gate's one kept setup red; the rounded value would
+    // also differ from the recorded lowered value, so the drift check runs only when the lowered value was kept too.
     static List<(bool Ok, string Name)> MacLiveChecks(MacSendBufferCounts live, MacSendBufferCounts recorded, List<string> notRun)
     {
         var checks = MacSendBufferChecks(live, notRun);
-        if (live.LeversOk) checks.Add((MacCountsDrift(live, recorded).Length == 0, MacDriftName));
+        if (live.LeversOk && MacLoweredKept(live)) checks.Add((MacCountsDrift(live, recorded).Length == 0, MacDriftName));
         else notRun.Add(MacDriftName);
         return checks;
     }
@@ -2556,14 +2563,14 @@ static class MirrorDriftLoopChecks
             "exotic=" + exoticDetail + " | invariant=" + invariantDetail);
 
         // P2-46: the drift fields in the record's positional constructor parameter order, as written text.
+        // P2-47: no separate one-constructor clause: MacCountsFields already takes the single public constructor with
+        // more than one parameter (Single throws otherwise), so a second count of them here repeated that check.
         var fields = MacCountsFields();
-        var parameters = typeof(MacSendBufferCounts).GetConstructors().Where(x => x.GetParameters().Length > 1).Select(x => x.GetParameters().Select(p => p.Name ?? "").ToArray()).ToArray();
         var firstLast = MacCountsDrift(MacRecordedCounts with { LoweredHanded = 1, LeversOk = false }, MacRecordedCounts);
         check(fields.SequenceEqual(new[] { "LeversOk", "SendBuffer", "RaisedDefault", "LoweredDefault", "Raised", "Lowered", "RequestedLowered", "InBuffer", "Read", "Chunk", "WireBytes", "SeamQueued", "Handed", "CliQueued", "LoweredRun", "LoweredQueued", "LoweredHanded" }, StringComparer.Ordinal)
-            && parameters.Length == 1 && fields.SequenceEqual(parameters[0], StringComparer.Ordinal)
             && firstLast.SequenceEqual(new[] { "LeversOk: live=False recorded=True", "LoweredHanded: live=1 recorded=10240" }, StringComparer.Ordinal),
             "macos pin self-test (P2-46): the recorded-count drift lists fields in the record's positional constructor parameter order (written as text), first field before last",
-            "fields=[" + string.Join(" ; ", fields) + "] constructor=[" + string.Join(" | ", parameters.Select(x => string.Join(" ; ", x))) + "] first_last=[" + string.Join(" ; ", firstLast) + "]");
+            "fields=[" + string.Join(" ; ", fields) + "] first_last=[" + string.Join(" ; ", firstLast) + "]");
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
@@ -2902,6 +2909,7 @@ static class MirrorDriftLoopChecks
             // P2-45: the live counts are checked equal to the recorded macOS values (not only printed in the notice above):
             // a new runner value is a named red listing each differing field, and the row records the new value.
             // P2-46: the drift check is the last of MacLiveChecks (gated on the levers, pinned by MacSelfTestPins).
+            // P2-47: and gated on the kept lowered value too, so a kernel rounding is one red (the kept setup check).
             var drift = MacCountsDrift(gate, MacRecordedCounts);
             var driftDetail = "drift=[" + string.Join(" ; ", drift) + "] live=" + MacCountsDetail(gate) + " recorded=" + MacCountsDetail(MacRecordedCounts);
             var notRun = new List<string>();
