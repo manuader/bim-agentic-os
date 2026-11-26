@@ -729,12 +729,15 @@ internal static class RepeatedEnvelopeKeyTests
     // task that is cancelled when the process ends, so it never outlives the launch (Release: its status afterwards). On
     // timeout the process tree is killed and waited for (KilledExited); stdout is not read then. P10-52: stderr is kept
     // on timeout too (what the killed child wrote, waited for at most 5 s), so a timeout message can report it.
+    // P10-54: environment, when given, is added to the child's environment (the stderr self-tests set COREHOST_TRACE=1
+    // so the child writes host trace text to stderr; the parity and stdio runs pass none).
     internal readonly record struct Launched(byte[] Stdout, string Stderr, int Exit, bool TimedOut, bool KilledExited, TaskStatus Release);
 
-    static Launched Launch(string dll, byte[] stdin, int timeoutMs, int releaseStdinMs, IEnumerable<string> arguments)
+    static Launched Launch(string dll, byte[] stdin, int timeoutMs, int releaseStdinMs, IEnumerable<string> arguments, IReadOnlyDictionary<string, string>? environment = null)
     {
         var dotnet = Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") is { Length: > 0 } host ? host : "dotnet";
         var start = new System.Diagnostics.ProcessStartInfo(dotnet) { RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
+        if (environment is not null) foreach (var (name, value) in environment) start.Environment[name] = value;
         start.ArgumentList.Add(dll);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         using var process = System.Diagnostics.Process.Start(start) ?? throw new InvalidOperationException("process did not start: " + dotnet);
@@ -778,14 +781,17 @@ internal static class RepeatedEnvelopeKeyTests
 
     // P10-52: the process starts written in a source's code (comments removed by DocUpdateLinkTests.CodeOf; string
     // literals kept, so a self-test builds its snippets by concatenation): Process.Start( with or without the
-    // System.Diagnostics (or global::) prefix, and new Process( or new Process { with or without it. A target-typed
-    // new() assigned to a Process, a using alias or a using static Start( are not recognised (stated limit).
+    // System.Diagnostics (or global::) prefix, and new Process( or new Process { with or without it. P10-54: also a
+    // target-typed new() (or new {) in a declaration of a Process variable (Process p = new(), nullable, using, with or
+    // without the prefix). Not recognised (stated limit, also in the self-test label): a using alias, a using static
+    // Start(, and a target-typed new() assigned to an untyped or earlier-declared variable.
     static readonly System.Text.RegularExpressions.Regex ProcessStartCall = new(@"\bProcess\s*\.\s*Start\s*\(");
     static readonly System.Text.RegularExpressions.Regex NewProcess = new(@"\bnew\s+(?:global::\s*)?(?:System\s*\.\s*Diagnostics\s*\.\s*)?Process\s*[({]");
+    static readonly System.Text.RegularExpressions.Regex TargetTypedProcess = new(@"\bProcess\s*\??\s+[A-Za-z_@][A-Za-z0-9_]*\s*=\s*new\s*[({]");
     internal static int ProcessStarts(string source)
     {
         var code = DocUpdateLinkTests.CodeOf(source);
-        return ProcessStartCall.Matches(code).Count + NewProcess.Matches(code).Count;
+        return ProcessStartCall.Matches(code).Count + NewProcess.Matches(code).Count + TargetTypedProcess.Matches(code).Count;
     }
 
     static async Task ReleaseAfter(Stream input, int delayMs, CancellationToken token)
@@ -1039,10 +1045,13 @@ internal static class RepeatedEnvelopeKeyTests
             // never exits), and the release task is cancelled when the process ends.
             // P10-52: Cli also returns the child's stderr and the release task's status (a self-test checks it after a
             // normal exit), and the timeout message ends with the killed child's stderr, bounded (BoundedStderr).
+            // P10-54: Traced runs the child with COREHOST_TRACE=1 (host trace text on its stderr) for the stderr self-tests.
+            var traced = new Dictionary<string, string> { ["COREHOST_TRACE"] = "1" };
+            IReadOnlyDictionary<string, string>? cliEnvironment = null;
             (string Stdout, int Exit, string Stderr, TaskStatus Release) Cli(string dll, int timeoutMs, int releaseStdinMs, params string[] arguments)
             {
                 launches++;
-                var launched = Launch(dll, [], timeoutMs, releaseStdinMs, arguments);
+                var launched = Launch(dll, [], timeoutMs, releaseStdinMs, arguments, cliEnvironment);
                 if (launched.TimedOut)
                     throw new TimeoutException("CLI timed out after " + timeoutMs.ToString(CultureInfo.InvariantCulture) + " ms, killed (exited " + launched.KilledExited
                         + "), stdin release task " + launched.Release + ": " + string.Join(" ", arguments) + " | stderr " + BoundedStderr(launched.Stderr));
@@ -1101,8 +1110,9 @@ internal static class RepeatedEnvelopeKeyTests
             // self-test only. policyText is planted in L4's temporary repository root (malformed-file self-test). A CLI
             // timeout is a failing entry carrying the timeout message (with the child's stderr), not a crash of the run.
             (List<string> Failing, List<string> Measured, int Launches, List<string> Labels, List<string> Stderrs) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
-                string[]? only = null, string? l4Label = null, string? policyText = null)
+                string[]? only = null, string? l4Label = null, string? policyText = null, bool trace = false)
             {
+                cliEnvironment = trace ? traced : null;
                 var failing = new List<string>();
                 var measured = new List<string>();
                 var stderrs = new List<string>();
@@ -1131,7 +1141,9 @@ internal static class RepeatedEnvelopeKeyTests
                         try { response = handle(line); }
                         catch (Exception error) { response = "threw " + error.GetType().Name + ": " + error.Message; }
                         var made = argumentSends - before;
+                        var copyClock = System.Diagnostics.Stopwatch.StartNew();
                         var caseDll = isolated ? IsolatedCli(dll, cliWork, policyText) : dll;
+                        var copyMs = copyClock.ElapsedMilliseconds;
                         string stdout, stderr;
                         int exit;
                         try { (stdout, exit, stderr, _) = Cli(caseDll, 120000, 0, arguments); }
@@ -1149,7 +1161,7 @@ internal static class RepeatedEnvelopeKeyTests
                         var ok = text == stdout && isError == (exit != 0) && stdout.StartsWith(prefix, StringComparison.Ordinal) && made == 0;
                         measured.Add((ok ? "ok " : "FAIL ") + label + " (sends " + made.ToString(CultureInfo.InvariantCulture) + ") mcp " + (text ?? response) + " isError " + (isError?.ToString() ?? "?")
                             + " | " + CliPart(stdout, exit, stderr, !ok)
-                            + (isolated ? " | temporary repository root, .bim/revit-enabled-roots.txt " + (policyText is null ? "absent" : "planted") : ""));
+                            + (isolated ? " | temporary repository root (copied in " + copyMs.ToString(CultureInfo.InvariantCulture) + " ms), .bim/revit-enabled-roots.txt " + (policyText is null ? "absent" : "planted") : ""));
                         if (!ok) failing.Add(label);
                     }
                     sink(failing.Count == 0,
@@ -1157,7 +1169,7 @@ internal static class RepeatedEnvelopeKeyTests
                         + string.Join(", ", failing) + " | " + string.Join(" ; ", measured));
                     return (failing, measured, launches - launchesBefore, labels, stderrs);
                 }
-                finally { try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
+                finally { cliEnvironment = null; try { Directory.Delete(cliWork, true); } catch (IOException) { } catch (UnauthorizedAccessException) { } }
             }
             string Handled(string line) => argumentServer.Handle(line) ?? "none";
             var full = Parity(cliDll, Handled, Check);
@@ -1171,7 +1183,12 @@ internal static class RepeatedEnvelopeKeyTests
             //      stdin release task ended with it (cancelled, no stray 30 s task). P10-50: the dll is that self-test's own
             //      named precondition (a missing dll is one precondition failure, nothing launched), self-tested too;
             //   d. P10-50: one process launcher in this file (Launch, shared by the P10-36 stdio run and Cli), and the L4 parity
-            //      label names its .bim policy-file dependence.
+            //      label names its .bim policy-file dependence;
+            //   e. P10-52: the start count's forms (snippets; P10-54: target-typed into a declared Process variable too), the
+            //      L4 label read from the case table (a plain L4 mutant reds), bounded stderr, a failed launch's stderr in
+            //      the measured part, the stdin release task cancelled after a normal exit, and L4 isolated from a malformed
+            //      policy file planted in its temporary repository root (P10-54: the copy time is listed in the L4 entry);
+            //   f. P10-54: b and c assert the captured stderr text (host trace under COREHOST_TRACE=1), not only the marker.
             var selfTest = new List<string>();
             var missingSinks = new List<(bool Ok, string Name)>();
             var missingLaunchesBefore = launches;
@@ -1186,7 +1203,7 @@ internal static class RepeatedEnvelopeKeyTests
             {
                 if (line.Contains("\"id\":81,", StringComparison.Ordinal)) argumentSends++;
                 return Handled(line);
-            }, (ok, name) => plantedSinks.Add((ok, name)), onlyL2);
+            }, (ok, name) => plantedSinks.Add((ok, name)), onlyL2, trace: true);
             // P10-52: the failing entry carries the CLI stderr part (CliPart, bounded). P10-54: the captured stderr text
             // itself, not only the marker: the planted run's child writes host trace to stderr (COREHOST_TRACE), so the
             // entry must carry that non-empty text bounded; an empty capture reds.
@@ -1207,8 +1224,10 @@ internal static class RepeatedEnvelopeKeyTests
                 if (!exists) return (false, true, "not run: no " + dll);
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 string timeout;
+                cliEnvironment = traced;
                 try { var (stdout, exit, _, _) = Cli(dll, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
                 catch (TimeoutException error) { timeout = error.Message; }
+                finally { cliEnvironment = null; }
                 var waited = clock.ElapsedMilliseconds;
                 // P10-52: the timeout message ends with the killed child's stderr (bounded). P10-54: the text itself: the child
                 // writes host trace to stderr (COREHOST_TRACE) before it blocks on stdin, so the part after the marker is that
