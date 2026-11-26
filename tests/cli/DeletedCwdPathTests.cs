@@ -864,6 +864,7 @@ internal static class DeletedCwdPathTests
         WriteFailed43SelfTest(Check);
         RestoreProblemsSelfTest45(Check);
         RestoreWiring47(root, Check);
+        WiringComments55(root, Check);
         Contract47(root, Check);
         GenericCatch43(scratch, cliDll, Check);
     }
@@ -949,6 +950,80 @@ internal static class DeletedCwdPathTests
             ScopingSelfTest49(skillLock, Check);
             ScopingSelfTest51(Check);
             ScopingSelfTest53(Check);
+            ScopingSelfTest55(Check);
+        }
+    }
+
+    // P10-55 self-tests: a non-raw interpolated literal ($"..." or $@"...") may hold a closing brace in its content only
+    // doubled (}} is an escaped brace); a lone closing brace there is refused by C# (CS8086), so the literal is reported
+    // unclosed. A hole's closing brace and a format clause's closing brace stay hole syntax.
+    static void ScopingSelfTest55(Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-55 static pin scanner self-test: " + what;
+        var accepted = new (string Name, string Text)[]
+        {
+            ("$ escaped closing braces around a hole", "{ a = $\"x }} {y} }}\"; }"),
+            ("$@ escaped closing braces after a hole", "{ a = $@\"{y}}} \"\" }}\"; }"),
+            ("$ format clause hole and an escaped closing brace", "{ a = $\"{y:N2} }}\"; }"),
+        };
+        var wrong = accepted.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 accepts doubled closing braces in non-raw interpolated content"), string.Join(" | ", wrong));
+        var refused = new (string Name, string Text)[]
+        {
+            ("$ lone closing brace", "{ a = $\"x } y\"; }"),
+            ("$@ lone closing brace after a hole", "{ a = $@\"{y} }\"; }"),
+            ("$ three closing braces", "{ a = $\"}}}\"; }"),
+            ("$ lone closing brace after a format clause hole", "{ a = $\"{y:N2} }\"; }"),
+        };
+        var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
+        Check(taken.Length == 0, Label("BlockEnd45 reports a lone closing brace in non-raw interpolated content (C# CS8086) as unclosed"), string.Join(" | ", taken));
+    }
+
+    // P10-55: this file's wiring and comments: P10_41 calls LockVerbsSelfTest51 beside the other P10_41 self-tests (not from
+    // inside RestoreWiring47), and the BlockEnd45 and CodeEnd47 header comments state the P10-51, P10-53 and P10-55 brace
+    // rules. Each header comment is the run of // lines right above the declaration.
+    static void WiringComments55(string root, Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-55 wiring and comments: " + what;
+        string source;
+        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
+        string Body(string declaration)
+        {
+            var at = source.IndexOf("\n    static void " + declaration + "(", StringComparison.Ordinal);
+            var open = at < 0 ? -1 : source.IndexOf("\n    {", at, StringComparison.Ordinal);
+            var close = open < 0 ? -1 : BlockEnd45(source, open + 5);
+            return close < 0 ? "" : source[(open + 5)..(close + 1)];
+        }
+        string Header(string declaration)
+        {
+            var at = source.IndexOf("\n    static int " + declaration + "(", StringComparison.Ordinal);
+            if (at < 0) return "";
+            var lines = new List<string>();
+            for (var end = at; end > 0;)
+            {
+                var start = source.LastIndexOf('\n', end - 1) + 1;
+                var line = source[start..end].Trim();
+                if (!line.StartsWith("//", StringComparison.Ordinal)) break;
+                lines.Insert(0, line[2..].Trim());
+                end = start - 1;
+            }
+            return string.Join(" ", lines);
+        }
+        var p41 = Body("P10_41");
+        var restore = Body("RestoreWiring47");
+        Check(p41.Contains("RestoreWiring47(root, Check);", StringComparison.Ordinal) && p41.Contains("LockVerbsSelfTest51(root, Check);", StringComparison.Ordinal)
+            && restore.Length > 0 && !restore.Contains("LockVerbsSelfTest51(", StringComparison.Ordinal),
+            Label("P10_41 calls LockVerbsSelfTest51 beside RestoreWiring47 and the other P10_41 self-tests"), p41.Length == 0 ? "P10_41 body not found" : restore.Length == 0 ? "RestoreWiring47 body not found" : p41);
+        foreach (var declaration in new[] { "BlockEnd45", "CodeEnd47" })
+        {
+            var header = Header(declaration);
+            Check(header.Contains("P10-51", StringComparison.Ordinal) && header.Contains("twice the dollars", StringComparison.Ordinal)
+                && header.Contains("P10-53", StringComparison.Ordinal) && header.Contains("content closing brace run", StringComparison.Ordinal)
+                && header.Contains("P10-55", StringComparison.Ordinal) && header.Contains("lone closing brace", StringComparison.Ordinal),
+                Label("the " + declaration + " header comment states the P10-51 hole brace run, the P10-53 raw content closing brace run and the P10-55 lone closing brace rules"),
+                header.Length == 0 ? "header comment not found" : header);
         }
     }
 
@@ -1328,6 +1403,15 @@ internal static class DeletedCwdPathTests
             && p51.Contains("P10-53 adds", StringComparison.Ordinal) && p51.Contains("content closing brace run", StringComparison.Ordinal),
             "P10-53 contract: the P10-51 paragraph states the interpolated string default limit for LockVerbs47 and the P10-53 content closing brace run check",
             section.Length == 0 ? "section not found" : p51.Length == 0 ? "P10-51 paragraph not found" : p51);
+        // P10-55: an own paragraph cites the P10-53 runs and states the non-raw lone closing brace check (CS8086), the
+        // LockVerbsSelfTest51 call from P10_41 and the brace-run rules in the BlockEnd45 and CodeEnd47 header comments.
+        var p55 = Paragraph("P10-55 (test tidy");
+        Check(p55.Contains("P10-53", StringComparison.Ordinal) && p55.Contains("red 45796442159", StringComparison.Ordinal) && p55.Contains("green 45799117237", StringComparison.Ordinal),
+            "P10-55 contract: the P10-55 paragraph cites the P10-53 red 45796442159 and green 45799117237", section.Length == 0 ? "section not found" : p55.Length == 0 ? "P10-55 paragraph not found" : p55);
+        Check(p55.Contains("lone closing brace", StringComparison.Ordinal) && p55.Contains("CS8086", StringComparison.Ordinal) && p55.Contains("`LockVerbsSelfTest51`", StringComparison.Ordinal)
+            && p55.Contains("header comments", StringComparison.Ordinal),
+            "P10-55 contract: the P10-55 paragraph states the non-raw lone closing brace check, the LockVerbsSelfTest51 call and the header comments",
+            section.Length == 0 ? "section not found" : p55.Length == 0 ? "P10-55 paragraph not found" : p55);
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
