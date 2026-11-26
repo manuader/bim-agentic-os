@@ -3098,12 +3098,13 @@ internal static class GeneratePrototypesTests
             // P7-52: the last binary + or - at depth 0 (a delegate combination a + b invokes both sides; a removal a - b
             // leaves a's): a binary operator follows an operand's end (a name, a literal, ) or ]), not another operator.
             depth = 0;
-            for (var i = e - 2; i > s; i--)
+            // From the last character, so a closing bracket at the end is counted (a right operand (x) of a + (x)).
+            for (var i = e - 1; i > s; i--)
             {
                 var c = code[i];
                 if (c is ')' or ']' or '}') depth++;
                 else if (c is '(' or '[' or '{') depth--;
-                else if (depth == 0 && c is '+' or '-' && code[i + 1] != c && code[i + 1] != '=' && code[i - 1] != c && code[i + 1] != '>')
+                else if (depth == 0 && i + 1 < e && c is '+' or '-' && code[i + 1] != c && code[i + 1] != '=' && code[i - 1] != c && code[i + 1] != '>')
                 {
                     var p = i - 1;
                     while (p > s && char.IsWhiteSpace(code[p])) p--;
