@@ -939,6 +939,15 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("the notice grep is tested against the PASS names the section's checks print in that run", StringComparison.Ordinal)
                 && paragraph.Contains("P3-44 relay286 CI red 45580685232, green 45583083273", StringComparison.Ordinal),
                 "P3-46 docs/contracts P3-34 paragraph: the grep scan's guard and quoting rules and limit, the printed per-run margin, the notice grep against the printed names and the P3-44 runs | " + Short(paragraph));
+            // P3-48: continued pipelines are joined, redirect forms do not end the command, the accepted guards are stated,
+            // names that differ by OS are covered only by that OS's job, and the P3-46 runs are cited.
+            Check(paragraph.Contains("backslash-continued lines and a line ending in `|`, `||` or `&&` are joined before the scan, so a grep on the next line of a pipeline is checked (a continuation left open at the end of the step counts as unguarded)", StringComparison.Ordinal)
+                && paragraph.Contains("a `&>`, `&>>`, `>&` or `<&` redirection and a `|&` pipe do not end the command", StringComparison.Ordinal)
+                && paragraph.Contains("only a literal `|| true` or `|| :` counts as a guard; any other or-list (`|| echo`, `|| exit 0`) counts as unguarded (safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("a check name that differs by OS (the capacity check's Windows or Linux and macOS wording, and every name carrying the OS) is covered by the notice-grep check only in that OS's job", StringComparison.Ordinal)
+                && paragraph.Contains("P3-46 relay290 CI red 45659554265, green 45662889300", StringComparison.Ordinal)
+                && !paragraph.Contains("a grep on a backslash-continued line counts as unguarded", StringComparison.Ordinal),
+                "P3-48 docs/contracts P3-34 paragraph: continued lines joined, redirect forms, accepted guards, per-OS names covered by their own job, the P3-46 runs | " + Short(paragraph));
             var workflow = File.ReadAllText(Path.Combine(root, ".github", "workflows", "ci.yml")).Replace("\r\n", "\n", StringComparison.Ordinal);
             var macStep = workflow.IndexOf("- name: MCP generate_typology stdio section 9 alone (macOS, P3-38)", StringComparison.Ordinal);
             var macTail = macStep < 0 ? "" : workflow[macStep..];
@@ -1072,8 +1081,33 @@ internal static class GenerateTypologyToolTests
                 (Pad + "grep PASS \"$out\" 2>&1 | cut -c1-9", 1),
                 (Pad + "grep PASS \"$out\" | cut -c1-9 # || true", 1),
                 (Pad + "grep PASS \"$out\" \\", 1),
+                // P3-48: backslash-continued lines and a line ending in a bare pipe (or || / &&) are joined before the scan,
+                // so a grep on the next line of a pipeline is checked and a guard on the next line counts.
+                (Pad + "tail -n 5 \"$out\" |\n" + Pad + "  grep PASS", 1),
+                (Pad + "tail -n 5 \"$out\" |\n" + Pad + "  grep PASS || true", 0),
+                (Pad + "grep PASS \"$out\" |\n" + Pad + "  cut -c1-9 || true", 0),
+                (Pad + "grep PASS \"$out\" \\\n" + Pad + "  | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" \\\n" + Pad + "  | cut -c1-9 || true", 0),
+                (Pad + "tail -n 5 \"$out\" \\\n" + Pad + "  | grep PASS \\\n" + Pad + "  || true", 0),
+                (Pad + "grep PASS \"$out\" | cut -c1-9 ||\n" + Pad + "  true", 0),
+                (Pad + "run: |\n" + Pad + "  grep -q PASS \"$out\"", 0),
+                // P3-48: &>, >&, <& and |& are redirections or a pipe, not a background &: the walk goes on past them.
+                (Pad + "grep PASS \"$out\" &>/dev/null | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" &>>/dev/null | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" >&2 | cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" &>/dev/null | cut -c1-9 || true", 0),
+                (Pad + "grep PASS \"$out\" |& cut -c1-9", 1),
+                (Pad + "grep PASS \"$out\" |& cut -c1-9 || true", 0),
+                (Pad + "cat \"$out\" |& grep PASS", 1),
+                // P3-48: or-colon guards as or-true does; any other or-list (|| echo, || exit 0) does not.
+                (Pad + "tail -n 5 \"$out\" | grep PASS || :", 0),
+                (Pad + "n=$(grep -c PASS \"$out\" || :)", 0),
+                (Pad + "{ grep PASS \"$out\" || :; } | cut -c1-9", 0),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || echo none", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || exit 0", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS || :x", 1),
             };
-            var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim()).ToList();
+            var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim().Replace("\n", " <NL> ", StringComparison.Ordinal)).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
                 && macStepText.Contains("grep '^PASS ' \"$out\" || true;", StringComparison.Ordinal) && BareGrepPipes(macStepText) == 0
                 && !macStepText.Contains("upload-artifact", StringComparison.Ordinal) && macStepText.Contains("id: mcp-section-9", StringComparison.Ordinal)
