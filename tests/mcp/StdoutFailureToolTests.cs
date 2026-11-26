@@ -411,6 +411,43 @@ internal static class StdoutFailureToolTests
             }
         }
 
+        // ---- d. P5-43: the wording of these oracles (text-only clauses, pinned on the sources) ----
+        {
+            // A comment block's words: the lines from the one starting with `first` (trimmed) up to the one containing
+            // `last`, with the comment markers removed and runs of whitespace collapsed.
+            static string Words(string source, string first, string last)
+            {
+                var lines = source.ReplaceLineEndings("\n").Split('\n');
+                var start = Array.FindIndex(lines, line => line.TrimStart().StartsWith(first, StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.Contains(last, StringComparison.Ordinal));
+                if (start < 0 || end < 0) return "";
+                var text = string.Join(" ", lines[start..end].Select(line => line.Trim().TrimStart('/')));
+                return string.Join(" ", text.Split(' ', StringSplitOptions.RemoveEmptyEntries));
+            }
+            var herePath = Path.Combine(root, "tests", "mcp", "StdoutFailureToolTests.cs");
+            var here = File.Exists(herePath) ? File.ReadAllText(herePath).ReplaceLineEndings("\n") : "";
+            var p539 = Words(here, "// P5-39: the remaining MCP stdout edges", "static void RunP5_39(");
+            var p541 = Words(here, "// P5-41: the 'mcp stdout failed' stderr line falls back", "static void RunP5_41(");
+            Check(p541.Contains("a real IOException has a readable Message, so the real run never reaches the throwing-getter fallback: only the replica (b) covers it", StringComparison.Ordinal),
+                "P5-43: the P5-41 header states that the real Bim.Mcp.dll run (c) cannot reach the throwing-getter fallback (a real IOException's Message is readable; only the replica covers it) | " + Short(p541));
+            Check(p541.Contains("overlaps P5-37 b and P5-39 section a", StringComparison.Ordinal),
+                "P5-43: the P5-41 header states the overlap of the real oversized-line run with P5-37 b and P5-39 section a | " + Short(p541));
+            var stale = "guarded write " + "drops the line";
+            Check(p539.Length > 0 && !p539.Contains("drops the line", StringComparison.Ordinal) && p539.Contains("RunP5_41 pins the fallback", StringComparison.Ordinal)
+                && !here.Contains(stale, StringComparison.Ordinal),
+                "P5-43: neither the P5-39 header nor its PINNED AS MEASURED check text says Program.cs drops the line (P5-41 replaced it; the P5-39 header points to RunP5_41) | header " + Short(p539));
+            var cliPath = Path.Combine(root, "tests", "cli", "SkillListTests.cs");
+            var cli = File.Exists(cliPath) ? File.ReadAllText(cliPath).ReplaceLineEndings("\n") : "";
+            var headerLines = cli.Split('\n').TakeWhile(line => !line.StartsWith("internal static class SkillListTests", StringComparison.Ordinal)).ToArray();
+            var wide = headerLines.Select((line, index) => (Line: index + 1, line.Length)).Where(entry => entry.Length > 125).ToArray();
+            Check(cli.Length > 0 && headerLines.Length < cli.Split('\n').Length && wide.Length == 0,
+                "P5-43: tests/cli/SkillListTests.cs header lines are at most 125 characters (the file's comment width) | wider: "
+                + string.Join(", ", wide.Select(entry => entry.Line.ToString(CultureInfo.InvariantCulture) + " (" + entry.Length.ToString(CultureInfo.InvariantCulture) + ")")));
+            var oracle19 = Words(cli, "//  19. P5-39", "internal static class SkillListTests");
+            Check(oracle19.Contains("the leading System.InvalidOperationException is the wrapper Run's fallback builds", StringComparison.Ordinal),
+                "P5-43: tests/cli/SkillListTests.cs oracle 19 states that the two-level diagnostic's leading System.InvalidOperationException is the wrapper Run's fallback builds | " + Short(oracle19));
+        }
+
         check(failures.Count == 0, "P5-41 mcp stderr fallback: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
     }
 
