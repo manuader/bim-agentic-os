@@ -212,6 +212,21 @@ internal static class DeadlineSourceScan
         return null;
     }
 
+    // P1-48: the source lines of the member MemberBody(StripCode(source), signature) finds, read from
+    // CommentsBlanked(source): comments blanked, literal text and code kept, line endings made "\n". StripCode keeps the
+    // source's newlines, so the stripped member's lines are the source's lines (from its signature's line through its
+    // closing brace's line, whole lines). "" when there is no block body. The one line mapping of the tests/mcp p122 and
+    // p123 pins.
+    internal static string MemberLines(string source, string signature)
+    {
+        var raw = source.ReplaceLineEndings("\n");
+        var stripped = StripCode(raw);
+        var member = MemberBody(stripped, signature);
+        if (member is null) return "";
+        var first = stripped[..stripped.IndexOf(signature, StringComparison.Ordinal)].Count(c => c == '\n');
+        return string.Join("\n", CommentsBlanked(raw).Split('\n').Skip(first).Take(member.Count(c => c == '\n') + 1));
+    }
+
     // P1-40/P1-42: a `new [global::][Bim.Cli.]RevitDeadlineTransport(` construction in stripped code.
     internal const string ConstructionPattern = @"\bnew\s+(?:global\s*::\s*)?(?:Bim\s*\.\s*Cli\s*\.\s*)?RevitDeadlineTransport\s*\(";
 

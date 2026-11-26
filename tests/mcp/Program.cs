@@ -346,13 +346,10 @@ Check(IsError(p123Stalled) && FailureCode(p123Stalled)==RevitCommandCodes.PipeRe
     // linked), so a signature in a comment or a brace in a literal is not the member's ("" when there is no block body).
     const string P123Signature="(string Text, bool IsError) RevitCallAll(";
     string P123Body(string p123Text)=>DeadlineSourceScan.MemberBody(DeadlineSourceScan.StripCode(p123Text.ReplaceLineEndings("\n")),P123Signature) ?? "";
-    var p123Raw=p123Source.ReplaceLineEndings("\n");
-    var p123Stripped=DeadlineSourceScan.StripCode(p123Raw);
-    var p123Body=P123Body(p123Raw);
+    var p123Body=P123Body(p123Source);
     // Code only: comments blanked (literal text kept), so prose cannot satisfy or trip the checks; the body's lines
-    // (StripCode keeps the source's newlines, so the stripped body's lines are the source's lines).
-    var p123First=p123Body.Length==0 ? 0 : p123Stripped[..p123Stripped.IndexOf(P123Signature,StringComparison.Ordinal)].Count(p123Char=>p123Char=='\n');
-    var p123Code=p123Body.Length==0 ? "" : string.Join("\n",DeadlineSourceScan.CommentsBlanked(p123Raw).Split('\n').Skip(p123First).Take(p123Body.Count(p123Char=>p123Char=='\n')+1));
+    // (P1-48: through the shared DeadlineSourceScan.MemberLines, the one line mapping of the p122 and p123 pins).
+    var p123Code=DeadlineSourceScan.MemberLines(p123Source,P123Signature);
     // P1-42: the construction is read from its parsed argument list (formatting and named arguments, self-test).
     // P1-44: through the shared parser (tests/cli/DeadlineSourceScan.cs, linked; the one copy): comments and literals
     // stripped first (a '//' inside a string is no comment), each `new RevitDeadlineTransport(` argument list split at
@@ -573,14 +570,8 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
     // there is no block body). The pin then reads the body's own source lines with comments blanked and literal text
     // kept (its refusal-text tokens are literals): StripCode keeps the source's newlines, so the lines line up.
     const string P122Signature="static string? ParseOptions(";
-    string P122Body(string p122Text) {
-        var p122Raw=p122Text.ReplaceLineEndings("\n");
-        var p122Stripped=DeadlineSourceScan.StripCode(p122Raw);
-        var p122Member=DeadlineSourceScan.MemberBody(p122Stripped,P122Signature);
-        if(p122Member is null) return "";
-        var p122First=p122Stripped[..p122Stripped.IndexOf(P122Signature,StringComparison.Ordinal)].Count(p122Char=>p122Char=='\n');
-        return string.Join("\n",DeadlineSourceScan.CommentsBlanked(p122Raw).Split('\n').Skip(p122First).Take(p122Member.Count(p122Char=>p122Char=='\n')+1));
-    }
+    // P1-48: through the shared DeadlineSourceScan.MemberLines (the one line mapping of the p122 and p123 pins).
+    string P122Body(string p122Text)=>DeadlineSourceScan.MemberLines(p122Text,P122Signature);
     // P1-46: what the pin reads in a ParseOptions body: the shared option loop is called, and no value grammar, range
     // or refusal text of its own is there ("" when none is missing or found).
     var p122Tokens=new[]{"TryParse","NumberStyles","PipeTransportWithReadTimeout","takes whole seconds","needs a value","unknown option","repeated option","\"args[\"","Failure("};
@@ -621,6 +612,34 @@ foreach(var value in new[]{"+5"," 5","99999999999999999999","5 ","\u0665"}) {
         ("an own refusal text in a string literal",
             P122Class(P122Member.Replace("        return refusal;","        return refusal ?? \"repeated option\";",StringComparison.Ordinal)))})
         Check(P122Problems(p122Source)!="","P1-46 MCP ParseOptions body self-test: "+p122Label+" is flagged");
+    // P1-48: the p122 and p123 pins read their member's source lines through one shared helper,
+    // DeadlineSourceScan.MemberLines (tests/cli/DeadlineSourceScan.cs, linked): the member found by MemberBody on the
+    // StripCode output, its lines read from CommentsBlanked (comments blanked, literal text kept). Self-test: a block
+    // comment naming the signature and a verbatim literal spanning lines come before the member (the line count stays
+    // aligned), CRLF reads as LF, a trailing and a block comment inside the member are blanked, '//' in a literal is kept.
+    string P148Blank(string p148Text)=>new string(' ',p148Text.Length);
+    const string P148Member="    static void M(int a) // trailing comment\n    {\n        var t = \"x // not a comment\";\n        /* block\n           comment */\n        return;\n    }\n";
+    const string P148Source="sealed class S\n{\n    /* static void M( { } */\n    const string V = @\"line one\nline two {\";\n"+P148Member+"    static void N() { }\n    static int E() => 1;\n}\n";
+    var p148Expected=string.Join("\n","    static void M(int a) "+P148Blank("// trailing comment"),"    {","        var t = \"x // not a comment\";",
+        "        "+P148Blank("/* block"),P148Blank("           comment */"),"        return;","    }");
+    foreach(var (p148Label,p148Text,p148Signature,p148Want) in new[]{
+        ("a member after a commented signature and a multi-line verbatim literal",P148Source,"static void M(",p148Expected),
+        ("the same source with CRLF line endings",P148Source.Replace("\n","\r\n",StringComparison.Ordinal),"static void M(",p148Expected),
+        ("a one-line member",P148Source,"static void N(","    static void N() { }"),
+        ("an expression-bodied member (no block body)",P148Source,"static int E(",""),
+        ("an absent signature",P148Source,"static void Missing(","")}) {
+        var p148Got=DeadlineSourceScan.MemberLines(p148Text,p148Signature);
+        Check(p148Got==p148Want,"P1-48 MemberLines self-test: "+p148Label+" | got '"+p148Got.Replace("\n","\\n",StringComparison.Ordinal)+"'");
+    }
+    // P1-48 static: no line mapping of its own is left in the p122/p123 pins: both read through MemberLines and
+    // CommentsBlanked is not called in this file (read on its StripCode output, so these literals do not count).
+    var p148Self=DeadlineSourceScan.StripCode(File.ReadAllText(Path.Combine(root,"tests","mcp","Program.cs")).ReplaceLineEndings("\n"));
+    var p148Code=string.Concat(p148Self.Where(p148Char=>!char.IsWhiteSpace(p148Char)));
+    var p148Problems=new[]{
+        p148Code.Contains("stringP122Body(stringp122Text)=>DeadlineSourceScan.MemberLines(p122Text,P122Signature);",StringComparison.Ordinal) ? "" : "P122Body does not read through MemberLines",
+        p148Code.Contains("varp123Code=DeadlineSourceScan.MemberLines(p123Source,P123Signature);",StringComparison.Ordinal) ? "" : "p123Code does not read through MemberLines",
+        p148Code.Contains("CommentsBlanked(",StringComparison.Ordinal) ? "a CommentsBlanked( call (own line mapping) is left" : ""}.Where(p148Problem=>p148Problem.Length>0).ToArray();
+    Check(p148Problems.Length==0,"P1-48 static: the p122 and p123 pins share DeadlineSourceScan.MemberLines (no own line mapping) | "+string.Join("; ",p148Problems));
     Check(!serverSource.Contains("OptionRefusal(",StringComparison.Ordinal),"McpServer.cs keeps no private option refusal helper");
     // Each project compiles the shared file itself (a Compile Include resolving to interfaces/cli/RevitCommandOptions.cs,
     // either path separator), read as XML so attribute order and layout do not matter.
