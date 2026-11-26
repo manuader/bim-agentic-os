@@ -488,3 +488,5 @@ No current owner action required for the completed bounded IFC slice. Future exi
 
 ## Relay293 (2026-11-26)
 - Nothing new required. main is now f38e42e (P3-47, P4-40, P6-50 merged, CI green). Pending items above (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull) unchanged.
+
+Relay294 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P3-48, P10-51, P7-51 (all test-only, CI green, main b06a7004). No new owner action required; pending decisions unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
