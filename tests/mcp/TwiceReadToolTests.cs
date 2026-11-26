@@ -401,7 +401,9 @@ internal static class TwiceReadToolTests
     // \\u002B); the provenance paragraph's words are pinned literally across its reflow. P5-40: Section() brace-matches
     // the method on comment- and literal-blanked code (reformat self-test, the P5-38 line scan as mutant); the grown-builder
     // mutant also runs on this file's builders; the depth check carries its own stand-in (independent of section 14); the
-    // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs.
+    // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs. P5-42: Span
+    // masks with the shared DeadlineSourceScan.CodeMask (no lexer of its own; raw-string edge self-test: a comment in a
+    // raw-string hole, a longer quote run); the RawChild comment and the contract's P5-40 sentence are checked here.
     static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
@@ -434,13 +436,16 @@ internal static class TwiceReadToolTests
             // section 14's identical Manifest cannot stand in for section 16's. ShallowPinned is the P5-36 pin (header +
             // next line anywhere in the file), kept only to prove the grown Manifest mutant below passed it.
             // P5-40: Span finds the method by brace matching: on the source with comments and string and char literals
-            // blanked (Blank; line breaks kept), the one `static void <method>(` and the '}' closing the first '{' after it;
+            // blanked (line breaks kept), the one `static void <method>(` and the '}' closing the first '{' after it;
             // Section is the source lines from the declaration through that closing brace's line (reformat self-test below,
-            // with the P5-38 line scan, OldSection, as its mutant).
+            // with the P5-38 line scan, OldSection, as its mutant). P5-42: the blanking is the shared
+            // DeadlineSourceScan.CodeMask (one literal lexer; this file's own P5-40 Blank/Token copy is removed): comments
+            // and every literal are spaced out at their positions, the code inside an interpolation hole is kept, and a
+            // comment or a longer-quote raw string inside a raw-string hole is read as such (raw-string edge self-test).
             static (int Start, int End) Span(string source, string method)
             {
                 var text = source.ReplaceLineEndings("\n");
-                var code = Blank(text);
+                var code = DeadlineSourceScan.CodeMask(text);
                 var declarations = System.Text.RegularExpressions.Regex.Matches(code, @"\bstatic\s+void\s+" + System.Text.RegularExpressions.Regex.Escape(method) + @"\s*\(",
                     System.Text.RegularExpressions.RegexOptions.CultureInvariant);
                 if (declarations.Count != 1) return (-1, -1);
@@ -453,78 +458,6 @@ internal static class TwiceReadToolTests
                         return (text.Take(declarations[0].Index).Count(c => c == '\n'), text.Take(at).Count(c => c == '\n'));
                 }
                 return (-1, -1);
-            }
-            // The text with every comment and string or char literal (regular, verbatim, interpolated with its holes, raw)
-            // replaced by spaces, line breaks kept, so offsets and line numbers are the source's.
-            static string Blank(string text)
-            {
-                var output = text.ToCharArray();
-                for (var index = 0; index < text.Length;)
-                {
-                    var end = Token(text, index);
-                    if (end <= index) { index++; continue; }
-                    for (var at = index; at < end; at++) if (output[at] != '\n') output[at] = ' ';
-                    index = end;
-                }
-                return new string(output);
-            }
-            // The end of the comment or literal starting at index (index itself when none starts there).
-            static int Token(string text, int index)
-            {
-                char At(int at) => at < text.Length ? text[at] : '\0';
-                if (At(index) == '/' && At(index + 1) == '/') { var newline = text.IndexOf('\n', index); return newline < 0 ? text.Length : newline; }
-                if (At(index) == '/' && At(index + 1) == '*') { var close = text.IndexOf("*/", index + 2, StringComparison.Ordinal); return close < 0 ? text.Length : close + 2; }
-                if (At(index) == '\'')
-                {
-                    var at = index + 1;
-                    while (at < text.Length && text[at] != '\'' && text[at] != '\n') at += text[at] == '\\' ? 2 : 1;
-                    return Math.Min(text.Length, at + 1);
-                }
-                var quote = index;
-                var dollars = 0;
-                var verbatim = false;
-                while (At(quote) is '$' or '@') { if (At(quote) == '$') dollars++; else verbatim = true; quote++; }
-                if (At(quote) != '"') return index;
-                var quotes = 0;
-                while (At(quote + quotes) == '"') quotes++;
-                if (!verbatim && quotes >= 3)
-                {
-                    var close = text.IndexOf(new string('"', quotes), quote + quotes, StringComparison.Ordinal);
-                    return close < 0 ? text.Length : close + quotes;
-                }
-                var depth = 0;
-                for (var at = quote + 1; at < text.Length;)
-                {
-                    var c = text[at];
-                    if (depth > 0)
-                    {
-                        var nested = Token(text, at);
-                        if (nested > at) { at = nested; continue; }
-                        if (c == '{') depth++;
-                        else if (c == '}') depth--;
-                        at++;
-                        continue;
-                    }
-                    if (dollars > 0 && (c == '{' || c == '}'))
-                    {
-                        if (At(at + 1) == c) { at += 2; continue; }
-                        if (c == '{') depth = 1;
-                        at++;
-                        continue;
-                    }
-                    if (verbatim)
-                    {
-                        if (c == '"' && At(at + 1) == '"') { at += 2; continue; }
-                        if (c == '"') return at + 1;
-                        at++;
-                        continue;
-                    }
-                    if (c == '\\') { at += 2; continue; }
-                    if (c == '"') return at + 1;
-                    if (c == '\n') return at;
-                    at++;
-                }
-                return text.Length;
             }
             static string[] Section(string source, string method)
             {

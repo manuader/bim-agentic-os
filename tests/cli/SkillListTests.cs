@@ -112,7 +112,8 @@ using Bim.Core;
 //      lock (drift before validation); the escaped '+' (\u002B, JsonSerializer's default encoder) of the two-drift line is
 //      pinned as the current encoder behaviour. P5-40: a raw stdout byte scan of real processes (selection and code
 //      selection over the two drifted packs) finds the pinned line's ASCII bytes with \u002B and no '+' byte; the
-//      provenance addendum below the paragraph names the P5-38 runs (pinned equal in both files by tests/mcp).
+//      provenance addendum below the paragraph names the P5-38 runs (pinned equal in both files by tests/mcp). P5-42:
+//      the raw scan runs twice (same bytes) and RawChild awaits its stdout copy after a timeout kill (zero-timeout case).
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1458,8 +1459,9 @@ internal static class SkillListTests
             "P5-38: the two-drift detail holds a raw '+' and JsonSerializer's default encoder prints it as \\u002B (the pinned line has no '+')",
             twoDrifted.Refusal?.ToString() ?? "<no refusal>");
         // P5-40: a raw stdout scan of real processes (bytes, no decoding): for the selection and the code selection over the
-        // two drifted packs, stdout is exactly the pinned line and the newline as ASCII bytes, holds the six bytes +
-        // and no '+' byte (0x2B), exit 1, stderr empty.
+        // two drifted packs, stdout is exactly the pinned line and the newline as ASCII bytes, holds the six bytes of the
+        // escape \u002B (backslash, u, 0, 0, 2, B) and no plus byte (0x2B), exit 1, stderr empty. P5-42: twice, and after
+        // a timeout kill RawChild waits for the child and its stdout copy before the buffer is disposed.
         (int Exit, byte[] Out, string Err, bool Awaited) RawChild(string[] arguments, int timeoutMilliseconds)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
@@ -1469,7 +1471,15 @@ internal static class SkillListTests
             using var buffer = new MemoryStream();
             var stdout = process.StandardOutput.BaseStream.CopyToAsync(buffer);
             var stderr = process.StandardError.ReadToEndAsync();
-            if (!process.WaitForExit(timeoutMilliseconds)) { process.Kill(true); return (-1, Array.Empty<byte>(), "<timed out>", false); }
+            if (!process.WaitForExit(timeoutMilliseconds))
+            {
+                try { process.Kill(true); } catch (InvalidOperationException) { }
+                process.WaitForExit();
+                bool copied;
+                try { copied = stdout.Wait(30000); } catch (AggregateException) { copied = stdout.IsCompleted; }
+                try { stderr.Wait(30000); } catch (AggregateException) { }
+                return (-1, buffer.ToArray(), "<timed out>", copied);
+            }
             process.WaitForExit();
             stdout.Wait();
             return (process.ExitCode, buffer.ToArray(), stderr.Result, true);
