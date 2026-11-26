@@ -9,7 +9,7 @@ using System.Text.RegularExpressions;
 // parameters as C# does. RevitCommandDeadlineTests (sections 2g, 2i, 3a) and the tests/mcp RevitCallAll pin call it.
 // P1-45: CodeMask (comments and literals blanked at their positions) and MemberBody(raw: true), for a pin that reads
 // the source as written instead of StripCode output. P1-47: the raw path skips a signature with any character (not only
-// the first) in a comment or literal.
+// the first) in a comment or literal. P1-49: read from the mask marks (CodeMarks), so a masked space or newline counts.
 internal static class DeadlineSourceScan
 {
     // P1-39: the one comment and literal strip of the static pins (2g, 2h, 2i; it replaces P1-36's StripComments and
@@ -172,6 +172,16 @@ internal static class DeadlineSourceScan
         }
     }
 
+    // P1-49: the positions CodeMask blanks (every comment and literal character, newlines included), for MemberBody's
+    // raw path to tell a masked space or newline of a signature from code.
+    static bool[] CodeMarks(string source)
+    {
+        var marks = new bool[source.Length];
+        var i = 0;
+        StripCodeInto(source, ref i, new StringBuilder(source.Length), 0, marks, marks);
+        return marks;
+    }
+
     // P1-39: the body of the first member whose code (StripCode output) starts with signature, from the signature through
     // its matching closing brace (brace depth, not indentation); null if absent or unclosed. P1-41: null too when a ';' or
     // '=>' comes before the first '{' (an abstract or expression-bodied member has no block of its own).
@@ -187,8 +197,11 @@ internal static class DeadlineSourceScan
     {
         var scan = raw ? CodeMask(code) : code;
         var start = code.IndexOf(signature, StringComparison.Ordinal);
-        // P1-47: every character of the signature must be code (unmasked), not only the first.
-        while (raw && start >= 0 && string.CompareOrdinal(scan, start, code, start, signature.Length) != 0) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
+        // P1-47: every character of the signature must be code (unmasked), not only the first. P1-49: read from the mask
+        // marks, not the blanked text, where a masked space or newline is the same character as the code's.
+        var marks = raw ? CodeMarks(code) : null;
+        bool Masked(int from) { for (var k = from; k < from + signature.Length; k++) if (marks![k]) return true; return false; }
+        while (raw && start >= 0 && Masked(start)) start = code.IndexOf(signature, start + 1, StringComparison.Ordinal);
         if (start < 0) return null;
         var nested = 0;
         for (var k = start; k < scan.Length; k++)

@@ -38,6 +38,9 @@ using Bim.Core;
 //   P1-47: the step summary print sits inside the last finally block; the cap's '; +N more' count is pinned; FailSummary
 //      is CliInputsSummary.Line under its own title (shared escape and cap); MemberBody(raw: true) skips a signature with
 //      any character in a comment or literal, and agrees with the stripped path on interpolated literals.
+//   P1-49: MemberBody(raw: true) reads a signature's masked characters from the mask marks (a comment's or literal's
+//      spaces and newlines are not code); Retitled throws a named problem for a line without the 'cli-inputs step'
+//      prefix, VisibilitySelfTest reds a changed CliInputsSummary prefix by name first, and FailSummary never throws.
 //   3. A stalled add-in pipe under --all --deadline-seconds 2 ends with query_all_deadline_exceeded in the listing shape
 //      (pages 0, no elements) after about 2 s, also under --read-timeout-seconds 120, sent once; a read timeout below
 //      the deadline stays pipe_read_timeout. A paging add-in that answers each page after 250 ms ends a 2 s deadline
@@ -886,7 +889,14 @@ internal static class RevitCommandDeadlineTests
     const string SummaryTitle = "cli-inputs P1-21..P1-43 deadline tests";
 
     // P1-47: CliInputsSummary.Line (tests/cli/Program.cs) under this title: one escape (% CR LF) and one cap, '; +N more'.
-    static string FailSummary(IReadOnlyList<string> failed) => Retitled(CliInputsSummary.Line(failed), SummaryTitle);
+    // P1-49: a line Retitled cannot read (no 'cli-inputs step' prefix) gives a ::warning:: naming the problem with the FAIL
+    // count instead of throwing, so Run's finally block still prints a summary; the problem itself reds by name in
+    // VisibilitySelfTest.
+    static string FailSummary(IReadOnlyList<string> failed)
+    {
+        var line = CliInputsSummary.Line(failed);
+        return RetitleProblem(line) is { } problem ? "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL, not listed: " + SummaryEscape(problem) : Retitled(line, SummaryTitle);
+    }
 
     // The check the steps call: records each FAIL name (in order) and passes every call on unchanged.
     static Action<bool, string, string> Collecting(Action<bool, string, string> check, List<string> failed) => (condition, name, detail) =>
@@ -910,12 +920,19 @@ internal static class RevitCommandDeadlineTests
                 + " (the D2/B pins still apply; if they fail, re-measure and update the declaration)";
 
     // P1-47: a CliInputsSummary.Line under another title (its prefix only; the names after it are left as they are).
+    // P1-49: the prefix is the literal 'cli-inputs step' (not CliInputsSummary.Title, so a changed title is caught), and
+    // a line without it throws a named problem instead of being passed on unchanged.
+    const string RetitledPrefix = "cli-inputs step";
+    static string? RetitleProblem(string line) =>
+        line.StartsWith("::warning::" + RetitledPrefix + ": ", StringComparison.Ordinal) || line.StartsWith(RetitledPrefix + ": ", StringComparison.Ordinal) ? null
+            : "Retitled: the line does not start with the 'cli-inputs step' prefix ('::warning::cli-inputs step: ' or 'cli-inputs step: '): "
+                + (line.Length > 80 ? line[..80] + "..." : line);
+
     static string Retitled(string line, string title)
     {
-        var warning = "::warning::" + CliInputsSummary.Title + ": ";
-        if (line.StartsWith(warning, StringComparison.Ordinal)) return "::warning::" + title + ": " + line[warning.Length..];
-        var plain = CliInputsSummary.Title + ": ";
-        return line.StartsWith(plain, StringComparison.Ordinal) ? title + ": " + line[plain.Length..] : line;
+        if (RetitleProblem(line) is { } problem) throw new InvalidOperationException(problem);
+        var warning = "::warning::" + RetitledPrefix + ": ";
+        return line.StartsWith(warning, StringComparison.Ordinal) ? "::warning::" + title + ": " + line[warning.Length..] : title + ": " + line[(RetitledPrefix.Length + 2)..];
     }
 
     // P1-49: what Retitled does with a line under SummaryTitle: "returned <line>" or "threw <message>", for the self-tests.
@@ -1116,7 +1133,7 @@ internal static class RevitCommandDeadlineTests
 
         // P1-49: Retitled throws a named problem for a line without the 'cli-inputs step' prefix (a changed title, another
         // annotation level, another case) instead of passing it on unchanged under the wrong title.
-        var retitleMutants = new[] { "::warning::cli-inputs steps: 1 FAIL: #1 a", "cli-inputs stage: 0 FAIL", "::notice::cli-inputs step: 1 FAIL: #1 a", "::warning::CLI-inputs step: 1 FAIL: #1 a", "" };
+        var retitleMutants = new[] { "::warning::cli-inputs steps: 1 FAIL: #1 a", "cli-inputs stage: 0 FAIL", "::error::cli-inputs step: 1 FAIL: #1 a", "::warning::CLI-inputs step: 1 FAIL: #1 a", "" };
         var retitleOutcomes = retitleMutants.Select(RetitleOutcome).ToArray();
         check(retitleOutcomes.All(outcome => outcome.StartsWith("threw ", StringComparison.Ordinal) && outcome.Contains("'cli-inputs step' prefix", StringComparison.Ordinal)),
             "P1-49 Retitled self-test: a line without the 'cli-inputs step' prefix (changed title, other level, other case, empty) throws a named problem, not passed on unchanged",
@@ -1506,19 +1523,21 @@ internal static class RevitCommandDeadlineTests
 
         // P1-49: CodeMask blanks a comment's or literal's spaces to spaces and keeps its newlines, so a signature whose
         // masked characters are only spaces or newlines read the same in the mask and in the code. The raw path compares
-        // the signature against the mask marks instead: the trailing spaces of a line comment, or a tab inside a string
-        // literal, are not code. Control: the newline that ends a line comment is code, so a signature starting there reads.
+        // the signature against the mask marks instead: the trailing spaces of a line comment, or the spaces inside a string
+        // literal, are not code (CodeMask blanks any other masked character to a space, so only spaces and newlines
+        // matched). Control: the newline that ends a line comment is code, so a signature starting there reads.
         const string HMember = "static void H() { }";
         var afterLineComment = "class T\n{\n    int x; // note  \n    " + HMember + "\n}\n";
         var afterLineCommentPlain = "class T\n{\n    int x; // note\n    " + HMember + "\n}\n";
-        var tabInLiteral = "class T\n{\n    [Note(\"\t\")] static void P() { }\n}\n";
+        var spacesInLiteral = "class T\n{\n[Note(\"  \")] static void P() { }\n}\n";
         check(MemberBody(afterLineComment, "  \n    static void H(", true) is null && MemberBody(afterLineComment, " \n    static void H(", true) is null
             && MemberBody(afterLineCommentPlain, "\n    static void H(", true) == "\n    " + HMember && MemberBody(afterLineComment, "static void H(", true) == HMember,
             "P1-49 MemberBody self-test: raw text skips a signature whose characters in a line comment are only spaces (compared against the mask marks), and a signature from the comment's ending newline on still reads",
             (MemberBody(afterLineComment, "  \n    static void H(", true) ?? "null") + " ; " + (MemberBody(afterLineCommentPlain, "\n    static void H(", true) ?? "null"));
-        check(MemberBody(tabInLiteral, "\t", true) is null,
-            "P1-49 MemberBody self-test: raw text skips a signature whose only character is a tab inside a string literal (whitespace masked the same as itself)",
-            MemberBody(tabInLiteral, "\t", true) ?? "null");
+        var newlineInBlock = "class T\n{\n/* a \n b */ static void Q() { }\n}\n";
+        check(MemberBody(spacesInLiteral, "  ", true) is null && MemberBody(newlineInBlock, " \n ", true) is null,
+            "P1-49 MemberBody self-test: raw text skips a signature of spaces inside a string literal, or of spaces and a newline inside a block comment (masked, though blanked to themselves)",
+            (MemberBody(spacesInLiteral, "  ", true) ?? "null") + " ; " + (MemberBody(newlineInBlock, " \n ", true) ?? "null"));
 
         // P1-47: on members with interpolated literals the raw path and the stripped path read the same member:
         // StripCode(MemberBody(raw)) == MemberBody(StripCode(source)). (The paths stay two: CodeMask cannot run on
