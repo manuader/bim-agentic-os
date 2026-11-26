@@ -1220,11 +1220,11 @@ internal static class DeletedCwdPathTests
         Check(unused != source && RestoreWiringProblem47(unused) is not null, Label("a mutant whose restore check ignores the aggregate is refused"), unused == source ? "not planted" : RestoreWiringProblem47(unused) ?? "accepted");
         // P10-51: the declaration reader skips parentheses inside string and char parameter defaults (the name is split so
         // this file's text holds no second declaration).
-        var name = "LockVerbs" + "Unsearchable41(";
-        var literals = "static void " + name + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
-        Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + name + "string a = \"(\" {"),
+        var declared = "LockVerbs" + "Unsearchable41(";
+        var literals = "static void " + declared + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
+        Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + declared + "string a = \"(\" {"),
             "P10-51 lock verbs restore wiring: LockVerbs47 skips parentheses inside string and char parameter defaults", literals);
-        var defaults = source.Replace("static void " + name + "string root,", "static void " + name + "string note = \")\", char open = '(', string root,", StringComparison.Ordinal);
+        var defaults = source.Replace("static void " + declared + "string root,", "static void " + declared + "string note = \")\", char open = '(', string root,", StringComparison.Ordinal);
         Check(defaults != source && RestoreWiringProblem47(defaults) is null,
             "P10-51 lock verbs restore wiring: the pin accepts a LockVerbsUnsearchable41 declaration whose string and char defaults hold parentheses",
             defaults == source ? "not planted" : RestoreWiringProblem47(defaults) ?? "");
