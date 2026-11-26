@@ -46,6 +46,8 @@
 # -LiteralPath/-Path argument (a -Filter mutant reads work 0); the stand-in checks it got -LiteralPath with the probe path.
 # P7-49: the header pin reads every P7 line from P7-39 on; $work as an element of an array path argument counts, a splatted
 # Remove-Item or one with binding errors does not; -Lit/-PSPath are self-tested; one stand-in; the contract paragraph is pinned.
+# P7-51: ($work) and nested @(@($work)) path arguments count; the -LP case guards its PowerShell 7 alias; one header id
+# constant; the contract paragraph is pinned whole (sha256); failing cleanup pin checks are named in one summary annotation.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1137,6 +1139,20 @@ try {
     # P7-49: header = every '# P7-<n>: ' line with n >= 39 of the leading comment block (the P4 lines belong to another pin);
     # $work may also be an element of an array path argument (literal or @() of one); a splatted Remove-Item or one with any
     # static binding error (unknown or ambiguous parameter, extra positional) does not count.
+    # P7-51: the P7 header ids this script must list (from P7-39 on); the one expected value of both own-script header
+    # asserts (P7-41 and P7-43 blocks). A new '# P7-<n>: ' header line updates this constant and the contract paragraph.
+    $p751HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49,P7-51'
+    # P7-51: one line naming every failure added by the P7-39/P7-41/P7-43 self-test blocks (mutant names, otherwise the
+    # first 60 characters), so all of them reach one CI annotation even when the detailed failures exceed the annotation
+    # cap; $null with no failure. Complete cuts each failure line at 900 characters, which bounds how many names show.
+    function Get-P751FailureSummary([string[]]$Messages) {
+        $names = @($Messages | Where-Object { $_ } | ForEach-Object {
+                $one = ($_ -replace '[\r\n]+', ' ')
+                if ($one -cmatch "mutant '([^']+)'") { "mutant $($Matches[1])" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
+            })
+        if (!$names.Count) { return $null }
+        return "P7-51: $($names.Count) cleanup pin check(s) failed: $($names -join '; ')"
+    }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
         $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$parseErrors)
@@ -1864,7 +1880,9 @@ try {
                 # P7-39 self-test: the cleanup report is silent with no warning and prints one line per leftover; a warning
                 # collected before an early throw is still reported by the finally that calls it (the outer finally does the
                 # same for the whole run); the tool loop's messages name the case label; P7-33 has one cleanup path; the
-                # pack_rules status regex is gone (the exact stdout members cover it).
+                # pack_rules status regex is gone (the exact stdout members cover it). P7-51: failures from here to the end
+                # of the P7-43 block are also named in one summary failure, inserted before them (see the P7-43 finally).
+                $p751Start = $failures.Count
                 try {
                     $p739None = @(Write-PackageCleanupWarnings -Warnings ([string[]]@()) 6>&1 | ForEach-Object { "$_" })
                     Assert ($p739None.Count -eq 0) "P7-39 self-test: the cleanup report prints nothing with no warning; got $($p739None.Count) line(s): $($p739None -join ' | ')"
@@ -1953,6 +1971,29 @@ try {
                             @('abbreviated -Pa', '    Remove-Item -Pa $work', $p749Work1))) {
                         $p741Mutants += @{ Name = "P7-49 $($p749Case[0])"; Pairs = @(, @('    Remove-Item -LiteralPath $work', $p749Case[1])); Want = $p749Case[2] }
                     }
+                    # P7-51: -LP is a LiteralPath alias only from PowerShell 6 on (Windows PowerShell 5.1 has -PSPath alone). The
+                    # script #Requires -Version 7.2; both that requirement and the alias are asserted here, and the -LP case
+                    # above expects work 1 only because of them (without the alias the binder reports an unknown parameter).
+                    $p751Lp = @((Get-Command Remove-Item -CommandType Cmdlet).Parameters['LiteralPath'].Aliases) -ccontains 'LP'
+                    $p751Requires = ([Management.Automation.Language.Parser]::ParseInput([IO.File]::ReadAllText($PSCommandPath), [ref]$null, [ref]$null)).ScriptRequirements
+                    Assert ($p751Lp -and $null -ne $p751Requires -and $null -ne $p751Requires.RequiredPSVersion -and $p751Requires.RequiredPSVersion.Major -ge 7) "P7-51: the '-LP' alias case depends on PowerShell 7: Remove-Item -LiteralPath has alias LP ($p751Lp, PowerShell $($PSVersionTable.PSVersion)) and this script #Requires -Version 7 or later ($(if ($p751Requires) { $p751Requires.RequiredPSVersion } else { 'none' }))"
+                    # P7-51: a path argument in parentheses or nested @() of one plain expression counts; an array element
+                    # wrapped on its own ($other, ($work)) is a named limit and does not.
+                    foreach ($p751Case in @(
+                            @('-LiteralPath ($work)', '    Remove-Item -LiteralPath ($work)', $p749Work1),
+                            @('positional ($work)', '    Remove-Item ($work) -Recurse', $p749Work1),
+                            @('nested @(@($work))', '    Remove-Item -LiteralPath @(@($work))', $p749Work1),
+                            @('(@($work, $other)) in a void cast', '    [void](Remove-Item -LiteralPath (@($work, $other)))', $p749Work1),
+                            @('-Path ((($work)))', '    Remove-Item -Path ((($work)))', $p749Work1),
+                            @('($other)', '    Remove-Item -LiteralPath ($other)', $p749Work0),
+                            @('nested @(@($other))', '    Remove-Item -LiteralPath @(@($other))', $p749Work0),
+                            @('($work) given to -Exclude', '    Remove-Item -Exclude ($work) -LiteralPath $other', $p749Work0),
+                            @('($work = $x) assignment in parentheses', '    Remove-Item -LiteralPath ($work = $x)', $p749Work0),
+                            @('(& { $work }) scriptblock in parentheses', '    Remove-Item -LiteralPath (& { $work })', $p749Work0),
+                            @('named limit: element ($work) in an array', '    Remove-Item -LiteralPath $other, ($work)', $p749Work0),
+                            @('named limit: element @($work) in an array', '    Remove-Item -LiteralPath $other, @($work)', $p749Work0))) {
+                        $p741Mutants += @{ Name = "P7-51 $($p751Case[0])"; Pairs = @(, @('    Remove-Item -LiteralPath $work', $p751Case[1])); Want = $p751Case[2] }
+                    }
                     $p741Mutants += @{ Name = 'P7-49 header lines from P7-39 on only'; Pairs = @(, @('# P7-41: AST pins', "# P7-41: AST pins`n# P7-38: below the range`n# P4-31: another task`n# P7-45: read`n# P7-41: repeated`n# P7-49: read")); Want = 'header P7-39,P7-41,P7-45,P7-49 outer 1 work 1 loop 1 asserts 2 unlabelled 0 casefinally 1 wrapper 0' }
                     $p741Mutants += @{ Name = 'P7-49 header line after code is not read'; Pairs = @(, @('param([string]$Dotnet)', "param([string]`$Dotnet)`n# P7-45: after code")); Want = $p749Work1 }
                     foreach ($mutant in $p741Mutants) {
@@ -1966,9 +2007,15 @@ try {
                         Assert ($got.Summary -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
                     }
                     $p741Own = [IO.File]::ReadAllText($PSCommandPath)
-                    $p749HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49'
                     $p741OwnPin = Get-P741CleanupPin $p741Own
-                    Assert ($p741OwnPin.Header -ceq $p749HeaderIds -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly $p749HeaderIds (P7-49: every P7 line from P7-39 on, the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    Assert ($p741OwnPin.Header -ceq $p751HeaderIds -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly $p751HeaderIds (P7-49: every P7 line from P7-39 on, the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    # P7-51: the expected id list is spelled in one string only ($p751HeaderIds) and both own-script header
+                    # asserts (here and in the P7-43 block) compare against that variable.
+                    $p751Ast = [Management.Automation.Language.Parser]::ParseInput($p741Own, [ref]$null, [ref]$null)
+                    $p751Needle = @('P7-39', 'P7-41', 'P7-43', 'P7-45') -join ','
+                    $p751Spelled = @($p751Ast.FindAll({ param($n) ($n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and $n.Value.Contains($p751Needle) }, $true)).Count
+                    $p751Users = @($p751Ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Assert' -and $n.CommandElements.Count -ge 2 -and @($n.CommandElements[1].FindAll({ param($v) $v -is [Management.Automation.Language.VariableExpressionAst] -and $v.VariablePath.UserPath -eq 'p751HeaderIds' }, $true)).Count -gt 0 }, $true)).Count
+                    Assert ($p751Spelled -eq 1 -and $p751Users -eq 2) "P7-51: the header id list is one constant (strings spelling it: $p751Spelled, want 1) used by both own-script header asserts (asserts comparing `$p751HeaderIds: $p751Users, want 2)"
                     # P7-43: the call is located by its CommandAst extent (not its exact text), so reformatting it does not
                     # break the mutation.
                     if (@($p741OwnPin.WorkReports).Count -ne 1) { $failures.Add("P7-41 self-test: the outer finally report CommandAst could not be found to remove from a copy: $($p741OwnPin.Summary)") }
@@ -1992,7 +2039,7 @@ try {
                     $p743Own = [IO.File]::ReadAllText($PSCommandPath)
                     $p743Pin = Get-P741CleanupPin $p743Own
                     Assert ($p743Pin -is [Management.Automation.PSCustomObject] -and $null -eq $p743Pin.Error) "P7-43: Get-P741CleanupPin returns an object (no parse error): $p743Pin"
-                    Assert ($p743Pin.Header -ceq 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49' -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists P7-39 to P7-49 and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header P7-39,P7-41,P7-43,P7-45,P7-47,P7-49 outer 1 work 1)"
+                    Assert ($p743Pin.Header -ceq $p751HeaderIds -and $p743Pin.Outer -eq 1 -and $p743Pin.Work -eq 1 -and @($p743Pin.WorkReports).Count -eq 1) "P7-43: this script's header lists exactly the P7 ids from P7-39 on and its one report call is in the finally of the top-level try that removes `$work: $($p743Pin.Summary) (want header $p751HeaderIds outer 1 work 1)"
                     $p743Text = @('# P7-39: a', '# P7-41: b', '# P7-43: c', 'try {', '    $x = 1', '} finally {', '    Remove-Item -LiteralPath $work -Recurse',
                         '    Write-PackageCleanupWarnings `', '        -Warnings   $packageCleanupWarnings', '}') -join "`n"
                     $p743Synthetic = Get-P741CleanupPin $p743Text
@@ -2037,14 +2084,28 @@ try {
                     # P7-49: the three stand-in calls share one stand-in definition (one function Remove-Item in this script).
                     $p749StandIns = @(([Management.Automation.Language.Parser]::ParseInput($p743Own, [ref]$null, [ref]$null)).FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Remove-Item' }, $true)).Count
                     Assert ($p749StandIns -eq 1) "P7-49: this script defines the stand-in Remove-Item once (found $p749StandIns definitions)"
-                    # P7-49: the contract paragraph for these pins exists once and cites the P7-47 green run.
-                    $p749Paragraphs = @([IO.File]::ReadAllLines((Join-Path $root 'docs/contracts/module-contracts.md')) | Where-Object { $_.StartsWith('P7-39..P7-', [StringComparison]::Ordinal) })
-                    Assert ($p749Paragraphs.Count -eq 1 -and $p749Paragraphs[0].StartsWith('P7-39..P7-49 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p749Paragraphs[0].Contains('green 45585297443') -and $p749Paragraphs[0].Contains('splat') -and $p749Paragraphs[0].Contains('binding error')) "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph citing green 45585297443 and the splat and binding error rules (found $($p749Paragraphs.Count): $(($p749Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / '))"
+                    # P7-51: the contract paragraph for these pins exists once and is pinned whole (sha256 and UTF-8 length of
+                    # its one line, so every word is checked, not chosen substrings); a wording change updates this pin.
+                    $p751ParagraphSha = '80AC02F8A8AB2163B51B3279D3DDAD2868BA6B2C1C3BAFC7B0CDF06CD135F110'; $p751ParagraphLength = 2906
+                    $p751Paragraphs = @([IO.File]::ReadAllLines((Join-Path $root 'docs/contracts/module-contracts.md')) | Where-Object { $_.StartsWith('P7-39..P7-', [StringComparison]::Ordinal) })
+                    $p751Bytes = if ($p751Paragraphs.Count -eq 1) { [Text.Encoding]::UTF8.GetBytes($p751Paragraphs[0]) } else { [byte[]]@() }
+                    $p751Sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$p751Bytes))
+                    Assert ($p751Paragraphs.Count -eq 1 -and $p751Paragraphs[0].StartsWith('P7-39..P7-51 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p751Sha -ceq $p751ParagraphSha -and $p751Bytes.Length -eq $p751ParagraphLength) "P7-51: docs/contracts/module-contracts.md has one P7-39..P7-51 cleanup pin paragraph, pinned whole: observed sha256 $p751Sha, $($p751Bytes.Length) bytes (pinned $p751ParagraphSha, $p751ParagraphLength); found $($p751Paragraphs.Count): $(($p751Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / ')"
+                    # P7-51 self-test: the failure summary names mutants by name and other failures by their first 60
+                    # characters, in order, in one line; no failure gives no line.
+                    $p751Synthetic = Get-P751FailureSummary ([string[]]@("P7-41 self-test: mutant 'P7-51 one': header x (want y)", '', "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph`nciting"))
+                    $p751SummaryWant = 'P7-51: 2 cleanup pin check(s) failed: mutant P7-51 one; P7-49: docs/contracts/module-contracts.md has one P7-39..P7-'
+                    Assert ($p751Synthetic -ceq $p751SummaryWant -and $null -eq (Get-P751FailureSummary ([string[]]@()))) "P7-51 self-test: the failure summary reads '$p751Synthetic' (want '$p751SummaryWant') and nothing with no failure"
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
                 finally {
                     # P7-43: this block's own leftover goes to its own list and is reported here, not in the run-wide report.
                     [void](Remove-PackageCaseDirectory 'P7-43' $p743Probe -Into $p743Leftovers)
                     Write-PackageCleanupWarnings -Warnings $p743Leftovers
+                    # P7-51: one summary failure naming every failure of the P7-39/P7-41/P7-43 blocks, placed before them.
+                    if ($null -ne $p751Start -and $failures.Count -gt $p751Start) {
+                        $p751Summary = Get-P751FailureSummary ([string[]]@($failures.GetRange($p751Start, $failures.Count - $p751Start)))
+                        if ($null -ne $p751Summary) { $failures.Insert($p751Start, $p751Summary) }
+                    }
                 }
 
                 # (1) Infeasible document: packaged CLI sha256 pinned; batch and waiting MCP handshakes agree and return it.
