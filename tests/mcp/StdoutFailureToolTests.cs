@@ -172,7 +172,9 @@ internal static class StdoutFailureToolTests
     //      with ReplaceLineEndings(" "); a Message that is null prints as empty instead of losing the line to a
     //      NullReferenceException. The source statement is pinned and the formula is self-tested on a replica, with the
     //      unfolded formula as the mutant (it makes more than one line for the same messages). A Message getter that
-    //      throws is pinned as measured: the guarded write drops the line and exit 1 stands.
+    //      throws makes this P5-39 formula throw (pinned as measured on the replica). Program.cs no longer runs it: since
+    //      P5-41 this section reads Program.cs with ProgramDeltaP541 reversed, and RunP5_41 pins the fallback that prints
+    //      the getter's exception type instead.
     static void RunP5_39(string root, Action<bool, string> check)
     {
         var failures = new List<string>();
@@ -300,7 +302,7 @@ internal static class StdoutFailureToolTests
             try { Line(new MessageGetterThrowsException()); }
             catch (Exception error) { threw = error.GetType().FullName ?? ""; }
             Check(threw == "System.InvalidOperationException",
-                "PINNED AS MEASURED: a write exception whose Message getter throws makes the formula throw, so Program.cs's guarded write drops the line and exit 1 stands alone | " + (threw.Length == 0 ? "did not throw" : threw));
+                "PINNED AS MEASURED: a write exception whose Message getter throws makes the P5-39 formula throw (Program.cs replaced it in P5-41; RunP5_41 pins the type fallback) | " + (threw.Length == 0 ? "did not throw" : threw));
         }
 
         check(failures.Count == 0, "P5-39 mcp stdout edges: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
@@ -318,7 +320,14 @@ internal static class StdoutFailureToolTests
     //   c. Real Release Bim.Mcp.dll (Linux; SKIP elsewhere: /bin/sh and /dev/full): an oversized first line (longer than
     //      MaxLineChars + 1, answered by Run's request_too_large reply) with stdout >/dev/full or 1</dev/null: exit 1,
     //      stdout empty, stderr exactly one line "mcp stdout failed: <type>: ..." (IOException / UnauthorizedAccessException
-    //      as P5-37 measured), no unhandled exception.
+    //      as P5-37 measured), no unhandled exception. Its reach, stated: a real IOException has a readable Message, so the
+    //      real run never reaches the throwing-getter fallback: only the replica (b) covers it (no probe in Program.cs can
+    //      plant such an exception in a real process). The run overlaps P5-37 b and P5-39 section a: P5-37 b runs the same
+    //      redirects and one-line stderr through a regular first reply, and P5-39 section a the same request_too_large
+    //      reply in process; this is that reply through the real process, kept separate, not folded into P5-39 section a,
+    //      because that section runs in process on every OS.
+    //   d. P5-43: the wording of these headers, P5-39 section c's measured check and tests/cli/SkillListTests.cs header
+    //      (width, oracle 19 wrapper sentence) is pinned on the sources.
     static void RunP5_41(string root, string dotnet, string mcpDll, Action<bool, string> check)
     {
         var failures = new List<string>();
