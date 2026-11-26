@@ -1015,9 +1015,7 @@ internal static class InternalErrorDelegationTests
 
     static bool MethodBody(string header)
     {
-        header = LeadingAttributes.Replace(header, "[] ");
-        header = InnerAttributes.Replace(header, "[]");
-        header = InitializerArguments.Replace(header, ") : $1()");
+        header = ReducedHeader(header);
         var constraint = Constraint.Match(header);
         var head = constraint.Success ? header[..constraint.Index] : header;
         if (TypeKeyword.IsMatch(head)) return false;
