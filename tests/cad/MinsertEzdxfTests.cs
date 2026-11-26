@@ -1975,6 +1975,48 @@ internal static class MinsertEzdxfTests
             c(axesAbsent.Count == 0,
                 "justified: generator: P6-50 an Axes row is named by its normal (axes normal (x, y, z)) in the differing rows, checked by the planted Axes self-test",
                 "missing " + string.Join(" | ", axesAbsent));
+
+            // P6-52: the P6-50 paragraphs of the header and the docstring are compared whole (comment markers, line breaks
+            // and the lead-in parenthetical before the first "): " aside), not token by token; the paragraph states that
+            // the offline fonttools matches CI's.
+            static string ParagraphBody(string prose)
+            {
+                var lead = prose.IndexOf("): ", StringComparison.Ordinal);
+                return lead < 0 ? "" : prose[(lead + 3)..];
+            }
+            var headerP650 = header.IndexOf("// P6-50 (", StringComparison.Ordinal);
+            var headerParagraph = headerP650 < 0 ? "" : ParagraphBody(Prose(header[headerP650..].Split('\n')));
+            var docText = docEnd > 0 ? generator[3..docEnd] : "";
+            var docP650 = docText.IndexOf("\nP6-50 (", StringComparison.Ordinal);
+            var docP650End = docP650 < 0 ? -1 : docText.IndexOf("\n\n", docP650 + 1, StringComparison.Ordinal);
+            var docParagraph = docP650 < 0 || docP650End < 0 ? "" : ParagraphBody(Prose(docText[(docP650 + 1)..docP650End].Split('\n')));
+            c(headerParagraph.Length > 0 && headerParagraph == docParagraph && headerParagraph.Contains("P6-52: offline fonttools 4.69.1 matches CI", StringComparison.Ordinal)
+                && headerParagraph.Contains("compared whole by RunJustified", StringComparison.Ordinal),
+                "justified: generator: P6-52 the header and docstring P6-50 paragraphs are equal whole (not a token compare) and state that the offline fonttools 4.69.1 matches CI",
+                "header paragraph [" + headerParagraph + "] docstring paragraph [" + docParagraph + "]");
+            // P6-52: the notice prints the CPU model from /proc/cpuinfo and the exact Python version (all of sys.version).
+            string[] noticeNeeded = { "grep -m1 '^model name' /proc/cpuinfo", "'python', ' '.join(sys.version.split())" };
+            var noticeAbsent = noticeNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
+            c(noticeAbsent.Count == 0 && !stepText.Contains("sys.version.split()[0]", StringComparison.Ordinal),
+                "justified: generator: P6-52 the ezdxf-check notice prints the CPU model (/proc/cpuinfo) and the exact Python version (sys.version)",
+                "missing " + string.Join(" | ", noticeAbsent) + " short version left " + stepText.Contains("sys.version.split()[0]", StringComparison.Ordinal));
+            // P6-52: under the C extensions the structural failures are kept beside the drift failures, check_main's
+            // C-extension path is self-tested on planted files, and a pinned row that stops drifting is named and turned
+            // into a warning annotation by the step.
+            string[] cextNeeded =
+            {
+                "def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True):", "def _c_ext_failures(failures, names):",
+                "\"kept under the C extensions: \"", "\"pinned C-extension drift rows no longer drifting: \"",
+                "check_main(cs_path, c_ext=True, source=", "(\"a missing table under the C extensions\", ", "(\"an extra row under the C extensions\", ",
+                "(\"an unused row committed under the C extensions\", ", "(\"a new drift row under the C extensions\", ",
+                "(\"a pinned row that stops drifting under the C extensions\", ",
+            };
+            var cextAbsent = cextNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            string[] staleNeeded = { "grep '^pinned C-extension drift rows no longer drifting: '", "::warning title=ezdxf-check-c-ext-stale::" };
+            var staleAbsent = staleNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
+            c(cextAbsent.Count == 0 && staleAbsent.Count == 0 && !generator.Contains("failures = _drift_failures(differing)", StringComparison.Ordinal),
+                "justified: generator: P6-52 under the C extensions structural failures are kept beside the drift failures, check_main's C-extension path is self-tested, and a pinned row that stops drifting is a warning annotation",
+                "generator missing " + string.Join(" | ", cextAbsent) + "; step missing " + string.Join(" | ", staleAbsent) + "; structural dropped " + generator.Contains("failures = _drift_failures(differing)", StringComparison.Ordinal));
         }
         catch (Exception error)
         {
