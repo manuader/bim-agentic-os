@@ -77,6 +77,8 @@
 # initialiser, raw content runs of n or more } and opening runs of 2n or more { are refused by name; one own-header assert.
 # P4-42: literals in a CleanupFailed property's braces (nested accessor bodies) or initialiser are refused by name; the
 # next-token wording names a whole token; the header pin reads P4-40..P4-42; the cost notice prints the measured headroom.
+# P4-43: an unclosed CleanupFailed property brace and every literal of a =>, += or ??= expression are refused by name; the
+# next-token wording names three-character operators (>>=, <<=, >>>, >>>=) whole; the cost comment cites both OSes' headroom.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -3019,8 +3021,8 @@ try {
         try {
             $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
             # P4-41: the one own-header assert (P4-40 asserted the same list again; that copy is gone). P4-42: the header
-            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31).
-            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42') "P4-36..P4-42: this script's header lists P4-31..P4-42: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42)"
+            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31); P4-43 adds its line.
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43') "P4-36..P4-43: this script's header lists P4-31..P4-43: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43)"
             $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
             Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
             $p436Misplaced = [ordered]@{
@@ -3296,6 +3298,40 @@ try {
             $p442Ratio = @((Get-P442Headroom 2500 115), (Get-P442Headroom 500 0)) -join '|'
             Assert ($p442Ratio -ceq '21.7x|more than 500x') "P4-42 self-test: Get-P442Headroom formats the measured ratio (2500 ms bound / 115 ms, 500 / 0): $p442Ratio (want 21.7x|more than 500x)"
         } catch { $failures.Add("P4-42 property/next-token/preprocessor/header/headroom self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-43 self-test: an unclosed CleanupFailed property brace is refused by name (its literals as accessor literals);
+        # every literal of a CleanupFailed =>, += or ??= expression (new("x"), F("x"), a lambda) is refused by name up to the
+        # ; or a closing bracket at depth 0 (a later declaration stays clean); the next-token wording names >>=, <<=, >>>
+        # and >>>= whole and keeps >> as two characters.
+        try {
+            $p443Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p443Into 'P4-43' '/p4-43/left' { param($l, $p) 'W' }
+            $p443Prefix = if ($p443Into.Count -eq 1 -and $p443Into[0].EndsWith('W')) { $p443Into[0].Substring(0, $p443Into[0].Length - 1) } else { '<none>' }
+            $p443Decl = 'const string CleanupFailed = "' + $p443Prefix + '";'
+            $p443Quoted = '"' + $p443Prefix + '"'
+            $p443Accessor = 'CleanupFailed property accessor literal refused '
+            $p443Arrow = 'CleanupFailed expression-bodied member (=>) refused '
+            $p443NextA = "CleanupFailed declaration literal followed by '"
+            $p443NextB = "' (not one declaration) $p443Quoted"
+            $p443Open = $p443Decl + ' static string CleanupFailed { get { return "x";'
+            $p443Bare = $p443Decl + ' string CleanupFailed { get;'
+            $p443Cases = @(
+                @{ Label = 'unclosed property brace with a literal'; Text = $p443Open; Want = "CleanupFailed property brace at offset $($p443Open.IndexOf('{')) is never closed (unclosed {, refused)|" + $p443Accessor + '"x"' }
+                @{ Label = 'unclosed property brace without a literal'; Text = $p443Bare; Want = "CleanupFailed property brace at offset $($p443Bare.IndexOf('{')) is never closed (unclosed {, refused)" }
+                @{ Label = 'expression-bodied member => new("x")'; Text = 'static string CleanupFailed => new("x");'; Want = $p443Arrow + '"x"' }
+                @{ Label = 'expression-bodied lambda, every literal, later declaration clean'; Text = $p443Decl + ' static Lazy<string> CleanupFailed => new(() => "a" + "b"); const string Y = "c";'; Want = $p443Arrow + '"a"|' + $p443Arrow + '"b"' }
+                @{ Label = 'compound += with a call'; Text = $p443Decl + ' void M() { CleanupFailed += F("x"); } string Z = "z";'; Want = 'CleanupFailed compound assignment (+=) refused "x"' }
+                @{ Label = 'compound ??= with a call'; Text = $p443Decl + ' void M() { CleanupFailed ??= G(1, "y") ?? "z"; }'; Want = 'CleanupFailed compound assignment (??=) refused "y"|CleanupFailed compound assignment (??=) refused "z"' }
+                @{ Label = '>>= after the declaration literal'; Text = 'const string CleanupFailed = ' + $p443Quoted + ' >>= x;'; Want = $p443NextA + '>>=' + $p443NextB }
+                @{ Label = '<<= after the declaration literal'; Text = 'const string CleanupFailed = ' + $p443Quoted + ' <<= x;'; Want = $p443NextA + '<<=' + $p443NextB }
+                @{ Label = '>>> after the declaration literal'; Text = 'const string CleanupFailed = ' + $p443Quoted + ' >>> 1;'; Want = $p443NextA + '>>>' + $p443NextB }
+                @{ Label = '>>>= after the declaration literal'; Text = 'const string CleanupFailed = ' + $p443Quoted + ' >>>= 1;'; Want = $p443NextA + '>>>=' + $p443NextB }
+                @{ Label = 'control: >> stays two characters'; Text = 'const string CleanupFailed = ' + $p443Quoted + ' >> 1;'; Want = $p443NextA + '>>' + $p443NextB }
+            )
+            foreach ($p443Case in $p443Cases) {
+                $p443Found = Get-P435PrefixMismatch $p443Case.Text $p443Prefix
+                Assert (($p443Found -join '|') -ceq $p443Case.Want) "P4-43 self-test: $($p443Case.Label): $(Format-P431List $p443Found) (want [$($p443Case.Want)])"
+            }
+        } catch { $failures.Add("P4-43 unclosed property/expression/operator self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
