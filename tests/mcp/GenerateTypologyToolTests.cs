@@ -1109,7 +1109,8 @@ internal static class GenerateTypologyToolTests
                 var groupDepth = 0;
                 // P3-52: the YAML-level lines are blanked first (ShellOnly), and a quote or `${` Mask leaves open at the end
                 // marks the last logical line open.
-                foreach (var masked in Mask(ShellOnly(text.Replace("\r\n", "\n", StringComparison.Ordinal)), out var quoteOpen).Split('\n'))
+                var maskedText = Mask(ShellOnly(text.Replace("\r\n", "\n", StringComparison.Ordinal)), out var quoteOpen);
+                foreach (var masked in maskedText.Split('\n'))
                 {
                     var trimmed = masked.TrimEnd();
                     foreach (var c in trimmed)
