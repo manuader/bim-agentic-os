@@ -4141,6 +4141,12 @@ internal static class GeneratePrototypesTests
     //       element access in a branch or before ?? (c ? a?[0] : test, a?[0] ?? test); a lambda's parameter and a Notifier
     //       parameter passed on as (test)! ?? d, (test) ?? d or after a collection branch are unresolved naming that;
     //   ad. an exponent literal's sign (1e-5, 2.5E+3, 1_0e-5) splits no value; a hex 0x1e-5 is a subtraction.
+    //   P7-56:
+    //   ae. Values: a ?[ collection branch inside a conditional's branch (c ? b ?[x] : test : d) is a nested conditional,
+    //       while an element access there (c ? a?[0] : test) is not; (test)!(x) is a cast of !(x), as C# reads it (test is
+    //       no value); a suffixed exponent 1e5f - test and 1e-5f, a separated hex 0x_1e-5, a leading-dot .5e-3 and a member
+    //       access on an integer 1.E - test have self-tests; a lambda's parameter passed on after a nested collection branch
+    //       is unresolved naming that.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -4605,6 +4611,52 @@ internal static class GeneratePrototypesTests
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-54 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-56 (ae): Values reads a ?[ whose ] is followed by : inside a conditional's branch as a nested conditional with a
+        // collection branch (c ? b ?[x] : test : d), and an element access there as before (c ? a?[0] : test); (test)!(x) is
+        // a cast of !(x) (the token after ) is !, followed by an operand), as C# reads it, so test is no value.
+        var nestedValueTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("a nested collection branch c ? b ?[x] : test : d", "c ? b ?[x] : test : d", new[] { "c ? b ?[x] : test : d", "b ?[x] : test", "[x]", "test", "d" }),
+            ("a nested spaced collection branch c ? b ? [x] : test : d", "c ? b ? [x] : test : d", new[] { "c ? b ? [x] : test : d", "b ? [x] : test", "[x]", "test", "d" }),
+            ("an element access in a branch before a nested conditional c ? a?[0] : b ?[x] : test", "c ? a?[0] : b ?[x] : test", new[] { "c ? a?[0] : b ?[x] : test", "a?[0]", "b ?[x] : test", "[x]", "test" }),
+            ("an element access in a branch c ? a?[0] : test", "c ? a?[0] : test", new[] { "c ? a?[0] : test", "a?[0]", "test" }),
+            ("a cast of a parenthesised logical not (test)!(x), as C# reads it", "(test)!(x)", new[] { "(test)!(x)", "!(x)" }),
+        };
+        foreach (var (label, text, expected) in nestedValueTexts)
+        {
+            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
+            Check(values.SequenceEqual(expected), "P7-56 value self-test: " + label,
+                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
+        }
+        // A literal's suffix ends no exponent (1e5f - test is a subtraction, 1e-5f is one value); a hex with a separator
+        // (0x_1e-5) is a subtraction; a leading-dot real .5e-3 is one value; 1.E is a member access on 1, not an exponent.
+        var suffixExponentTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("a suffixed exponent literal 1e5f - test is a subtraction", "1e5f - test", new[] { "1e5f - test", "1e5f" }),
+            ("a suffixed signed exponent literal 1e-5f is one value", "1e-5f", new[] { "1e-5f" }),
+            ("a separated hex literal 0x_1e-5 is a subtraction", "0x_1e-5", new[] { "0x_1e-5", "0x_1e" }),
+            ("a leading-dot exponent literal .5e-3 is one value", ".5e-3", new[] { ".5e-3" }),
+            ("a member access on an integer 1.E - test is a subtraction", "1.E - test", new[] { "1.E - test", "1.E" }),
+        };
+        foreach (var (label, text, expected) in suffixExponentTexts)
+        {
+            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
+            Check(values.SequenceEqual(expected), "P7-56 exponent self-test: " + label,
+                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
+        }
+        var nestedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
+        {
+            ("(ae) a lambda's parameter passed on after a nested collection branch", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => Probe(path.Length > 0 ? path.Length > 1 ?[null] : test : null); run(() => 0); }" + ProbeTail) }, PassedOnLambda),
+        };
+        foreach (var (label, edits, reason) in nestedMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-56 reach self-test: " + label + " is rejected for " + reason,
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
