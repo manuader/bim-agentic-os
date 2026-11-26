@@ -468,11 +468,10 @@ internal static class MinsertEzdxfTests
                 cap = factors.Aggregate(1L, (product, f) => product * long.Parse(f, CultureInfo.InvariantCulture));
         }
         // P6-47: assignments only; a MaxInputBytes == comparison reads the cap and is not counted. P6-49: nor is an
-        // expression-bodied MaxInputBytes => or another identifier ending in MaxInputBytes (identifier boundary).
-        const string assignment = "MaxInputBytes=";
-        var assigned = 0;
-        for (var at = CodePins.IndexOf(code, assignment); at >= 0; at = CodePins.IndexOf(code, assignment, at + 1))
-            if (at + assignment.Length >= code.Length || code[at + assignment.Length] is not ('=' or '>')) assigned++;
+        // expression-bodied MaxInputBytes => or another identifier ending in MaxInputBytes (identifier boundary). P6-51:
+        // counted by CodePins.Assignments, so a compound assignment (+=, -=, ??= ...) counts too and a comparison
+        // (!=, <=, >=) does not.
+        var assigned = CodePins.Assignments(code, "MaxInputBytes");
         if (assigned != 1 || cap is null)
             problems.Add("MaxInputBytes assigned x" + assigned.ToString(CultureInfo.InvariantCulture) + ", declared x" + capCount.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one declaration, one integer product)");
         // P6-45: replaces the always-true CliDxfReadOptions == new DxfReadOptions(CliMaxInputBytes); this one compares the
@@ -502,6 +501,10 @@ internal static class MinsertEzdxfTests
                 ("p6-43", "a changed cap", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "16 * 1024 * 1024;", StringComparison.Ordinal), "in-process copy DxfReadOptions { MaxBytes = 33554432 } != CadCommand's DxfReadOptions(MaxInputBytes) with MaxInputBytes as 16777216"),
                 // P6-47: the == exclusion of the MaxInputBytes= count does not drop a second assignment.
                 ("p6-47", "a second MaxInputBytes assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes = 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                // P6-51: a compound assignment (+=, -=, ??=) changes the cap too and counts as an assignment.
+                ("p6-51", "a MaxInputBytes += compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes += 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                ("p6-51", "a MaxInputBytes -= compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes -= 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
+                ("p6-51", "a MaxInputBytes ??= compound assignment in code", cadCommand.Replace(CliDxfRead, "MaxInputBytes ??= 1024; " + CliDxfRead, StringComparison.Ordinal), "MaxInputBytes assigned x2"),
             })
                 c(cadCommand.Length > 0 && drifted != cadCommand && ReaderOptionsProblems(drifted) is { } caught && caught.Contains(expect, StringComparison.Ordinal),
                     tag + " reader options self-test: " + label + " in CadCommand.cs is caught",
@@ -519,6 +522,8 @@ internal static class MinsertEzdxfTests
                 ("p6-49", "an OtherMaxInputBytes = assignment in code", cadCommand.Replace(CliDxfRead, "var OtherMaxInputBytes = 5; " + CliDxfRead, StringComparison.Ordinal)),
                 // P6-49: an expression-bodied MaxInputBytes => (here a property of another type) is not an assignment.
                 ("p6-49", "an expression-bodied MaxInputBytes => in code", cadCommand.Replace(CliCapPrefix + "32 * 1024 * 1024;", CliCapPrefix + "32 * 1024 * 1024;\n    private sealed class Limits { public int MaxInputBytes => CadCommand.MaxInputBytes; }", StringComparison.Ordinal)),
+                // P6-51: the compound-assignment count does not take a comparison (>=, <=, !=) for an assignment.
+                ("p6-51", "MaxInputBytes >=, <= and != comparisons in code", cadCommand.Replace(CliDxfRead, "var bounds = MaxInputBytes >= bytes.Length && MaxInputBytes <= int.MaxValue && MaxInputBytes != 0; " + CliDxfRead, StringComparison.Ordinal)),
             })
                 c(cadCommand.Length > 0 && tolerated != cadCommand && ReaderOptionsProblems(tolerated) is null,
                     tag + " reader options self-test: " + label + " in CadCommand.cs does not fail the pin",

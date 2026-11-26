@@ -5,7 +5,10 @@ using System.Text;
 // StripCommentsAndLiterals keeps code only; Squeeze removes whitespace except one space between two identifier
 // characters, so a reformatted line matches its pin while "public const int" stays three tokens; Count and IndexOf
 // match a squeezed token only at identifier boundaries, so xpdf=... does not count as pdf=... and
-// OtherMaxInputBytes= does not count as MaxInputBytes=.
+// OtherMaxInputBytes= does not count as MaxInputBytes=. P6-51: CountAnywhere is the plain substring count the zero-count
+// (banned-name) pins use, so a longer identifier such as BriefSerializerX still holds the banned BriefSerializer; and
+// Assignments counts simple and compound assignments (=, +=, -=, ??= and the other compound operators) to an identifier,
+// not comparisons (==, !=, <=, >=) or an expression body (=>).
 internal static class CodePins
 {
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
@@ -136,6 +139,36 @@ internal static class CodePins
     {
         var count = 0;
         for (var at = IndexOf(squeezed, token); at >= 0; at = IndexOf(squeezed, token, at + token.Length)) count++;
+        return count;
+    }
+
+    // P6-51: non-overlapping occurrences of token anywhere (no identifier boundary), for pins whose count is 0.
+    internal static int CountAnywhere(string squeezed, string token)
+    {
+        if (token.Length == 0) return 0;
+        var count = 0;
+        for (var at = squeezed.IndexOf(token, StringComparison.Ordinal); at >= 0; at = squeezed.IndexOf(token, at + token.Length, StringComparison.Ordinal)) count++;
+        return count;
+    }
+
+    // Longest first, so >>= is not read as >= and ??= is not read as a bare =.
+    private static readonly string[] AssignmentOperators = { ">>>=", "<<=", ">>=", "??=", "+=", "-=", "*=", "/=", "%=", "&=", "|=", "^=", "=" };
+
+    // P6-51: occurrences of identifier (at identifier boundaries) directly followed by an assignment operator in the
+    // squeezed code: = (not == or =>) and the compound operators. A comparison (==, !=, <=, >=) or an expression body
+    // (=>) is not an assignment. ++ and -- are not counted (squeezed, x - -1 reads as x--1).
+    internal static int Assignments(string squeezed, string identifier)
+    {
+        var count = 0;
+        for (var at = IndexOf(squeezed, identifier); at >= 0; at = IndexOf(squeezed, identifier, at + identifier.Length))
+        {
+            var after = at + identifier.Length;
+            var op = AssignmentOperators.FirstOrDefault(o => squeezed.AsSpan(after).StartsWith(o, StringComparison.Ordinal));
+            if (op is null) continue;
+            var next = after + op.Length < squeezed.Length ? squeezed[after + op.Length] : '\0';
+            if (op == "=" && next is '=' or '>') continue; // == compares, => is an expression body
+            count++;
+        }
         return count;
     }
 }

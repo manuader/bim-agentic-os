@@ -265,7 +265,7 @@ internal static class PdfType3GlyphListTests
             // and the glyph-list filter is applied in exactly one place. P6-31: the sources are read through
             // StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
-            static string Code(string path) => StripCommentsAndLiterals(File.ReadAllText(path));
+            static string Code(string path) => CodePins.StripCommentsAndLiterals(File.ReadAllText(path));
             var content = Code(Path.Combine(adapter, "PdfContent.cs"));
             var encoding = Code(Path.Combine(adapter, "PdfEncoding.cs"));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
@@ -359,15 +359,15 @@ internal static class PdfType3GlyphListTests
             const string crafted = "var a = 1; // IsGlyphListName\nvar b = \"Is\\\"GlyphListName\";\nvar c = @\"x \"\" IsGlyphListName\";\nvar d = '\"'; var e = $\"{x} IsGlyphListName\";\n"
                 + "var f = \"\"\"\nIsGlyphListName \"\" \n\"\"\"; /* IsGlyphListName */ var g = '\\''; IsGlyphListName(\"{\"); var @h = \"\";"
                 + "\nvar p = '/'; var q = \"http://x\"; /* \" */ var r = @\"a\\\";\nvar v = @\"\"\"\"; IsGlyphListName(7);";
-            var stripped = StripCommentsAndLiterals(crafted);
+            var stripped = CodePins.StripCommentsAndLiterals(crafted);
             C(stripped == "var a = 1; \nvar b = \"\";\nvar c = \"\";\nvar d = ''; var e = \"\";\nvar f = \"\";   var g = ''; IsGlyphListName(\"\"); var @h = \"\";"
                 + "\nvar p = ''; var q = \"\";   var r = \"\";\nvar v = \"\"; IsGlyphListName(7);",
                 "the static check strips trailing // comments, block comments and string and char literals (P6-27)", Escape(stripped));
 
             // The P6-25 static check, re-run on the sources with comments and literals stripped.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
-            var content = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
-            var encoding = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfEncoding.cs")));
+            var content = CodePins.StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
+            var encoding = CodePins.StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfEncoding.cs")));
             static int Count(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
             // Swallow guard (P6-27 review, one shared helper since P6-33): each stripped source keeps balanced braces, ends
             // with '}' and holds every member anchor once and in order, so a literal or comment that ran to EOF or swallowed
@@ -577,20 +577,20 @@ internal static class PdfType3GlyphListTests
             // opens a block comment that runs to the "*/" in Spacer, swallowing a balanced stretch.
             const string sample = "class S\n{\n    void First() { var s = $\"{F(\"/*\")}\"; }\n    void Middle() { if (x) { y(); } }\n    void Spacer() { /* */ }\n    void Last() { }\n}\n";
             string[] sampleAnchors = { "void First()", "void Middle()", "void Spacer()", "void Last()" };
-            var overStripped = StripCommentsAndLiterals(sample);
+            var overStripped = CodePins.StripCommentsAndLiterals(sample);
             C(overStripped == "class S\n{\n    void First() { var s = \"\"  }\n    void Last() { }\n}\n",
                 "self-test premise: a block comment opened inside an interpolation hole swallows a balanced mid-file stretch (P6-33)", Escape(overStripped));
             C(OldGuard(overStripped, "void First()", "void Last()") && SwallowGuard(overStripped, sampleAnchors) == "void Middle() x0; void Spacer() x0",
                 "the shared swallow guard catches a balanced mid-file over-strip that the old first/last guard let through (P6-33)",
                 OldGuard(overStripped, "void First()", "void Last()") + " " + (SwallowGuard(overStripped, sampleAnchors) ?? "passed"));
             var intact = sample.Replace("$\"{F(\"/*\")}\"", "1", StringComparison.Ordinal);
-            C(SwallowGuard(StripCommentsAndLiterals(intact), sampleAnchors) is null && SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) == "void Spacer() out of order; void Middle() out of order; void First() out of order",
+            C(SwallowGuard(CodePins.StripCommentsAndLiterals(intact), sampleAnchors) is null && SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) == "void Spacer() out of order; void Middle() out of order; void First() out of order",
                 "the shared swallow guard passes an intact sample and reports anchors out of order (P6-33)",
-                (SwallowGuard(StripCommentsAndLiterals(intact), sampleAnchors) ?? "passed") + " / " + (SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) ?? "passed"));
+                (SwallowGuard(CodePins.StripCommentsAndLiterals(intact), sampleAnchors) ?? "passed") + " / " + (SwallowGuard(intact, Enumerable.Reverse(sampleAnchors).ToArray()) ?? "passed"));
             // The same on the real stripped PdfContent.cs: cutting the balanced HasCurrent member out passes the old guard
             // but not the shared one.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
-            var content = StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
+            var content = CodePins.StripCommentsAndLiterals(File.ReadAllText(Path.Combine(adapter, "PdfContent.cs")));
             var cutStart = content.IndexOf("    private bool HasCurrent(", StringComparison.Ordinal);
             var cutEnd = content.IndexOf("    private void AddLine(", StringComparison.Ordinal);
             var cut = cutStart >= 0 && cutEnd > cutStart ? content.Remove(cutStart, cutEnd - cutStart) : content;
@@ -706,7 +706,10 @@ internal static class PdfType3GlyphListTests
             static string? PinProblems(string source, IEnumerable<(string Line, int Count)> pins)
             {
                 var squeezed = CodePins.Squeeze(source);
-                return string.Join("; ", pins.Where(pin => CodePins.Count(squeezed, CodePins.Squeeze(pin.Line)) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(CodePins.Count(squeezed, CodePins.Squeeze(pin.Line))) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
+                // P6-51: a count-0 pin bans a name, so it is counted as a plain substring (CodePins.CountAnywhere): a longer
+                // identifier such as BriefSerializerX still holds BriefSerializer and is caught.
+                int Found((string Line, int Count) pin) => pin.Count == 0 ? CodePins.CountAnywhere(squeezed, CodePins.Squeeze(pin.Line)) : CodePins.Count(squeezed, CodePins.Squeeze(pin.Line));
+                return string.Join("; ", pins.Where(pin => Found(pin) != pin.Count).Select(pin => "'" + pin.Line + "' x" + I(Found(pin)) + " (want " + I(pin.Count) + ")")) is { Length: > 0 } problems ? problems : null;
             }
             // The CLI's one input hash sits between the cad-draft branch's start and the brief factories (stripped code;
             // P6-49: matched squeezed, so a reformatted hash line or if (draft) keeps its place).
@@ -718,7 +721,7 @@ internal static class PdfType3GlyphListTests
             }
             static string? CodeProblems(string source, IEnumerable<(string Line, int Count)> pins, IReadOnlyList<string> anchors)
             {
-                var stripped = StripCommentsAndLiterals(source);
+                var stripped = CodePins.StripCommentsAndLiterals(source);
                 var problems = string.Join("; ", new[] { SwallowGuard(stripped, anchors), PinProblems(stripped, pins), HashPlace(stripped) }.Where(p => p is not null));
                 return problems.Length > 0 ? problems : null;
             }
@@ -754,16 +757,41 @@ internal static class PdfType3GlyphListTests
             C(cadCommand.Length > 0 && respaced != cadCommand && Occurrences(respaced, inputHash) == 0 && CodeProblems(respaced, cadCommandPins, cadCommandAnchors) is null,
                 "p6-49 hash self-test: the input hash and the cad-draft branch reformatted in CadCommand.cs still pass the hash-place check (whitespace-free)",
                 respaced == cadCommand ? "self-test anchor not found" : CodeProblems(respaced, cadCommandPins, cadCommandAnchors) ?? "tolerated");
-            // P6-49 one stripper: StripCommentsAndLiterals has one block-bodied definition among the tests/cad sources, in
-            // CodePins.cs, and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class).
+            // P6-51 zero-count self-tests: a pin with count 0 is a ban, so it is counted as a plain substring of the squeezed
+            // code (no identifier boundary): a longer identifier such as BriefSerializerX or CadBriefDocument.CreateDraft
+            // still holds the banned name and is caught; pins with a count above 0 keep the P6-49 boundaries.
+            foreach (var (label, inserted, expect) in new[]
+            {
+                ("BriefSerializerX.Serialize(...)", "var serialized = BriefSerializerX.Serialize(null!);", "'BriefSerializer' x1 (want 0)"),
+                ("CadBriefDocument.CreateDraft(...)", "var created = CadBriefDocument.CreateDraft(null!);", "'CadBriefDocument.Create' x1 (want 0)"),
+                ("XBriefExtract.FromDxf(...)", "var extracted = XBriefExtract.FromDxf(null!);", "'BriefExtract.' x1 (want 0)"),
+            })
+            {
+                var banned = cadCommand.Replace(optionsLine, optionsLine + "\n                " + inserted, StringComparison.Ordinal);
+                C(cadCommand.Length > 0 && banned != cadCommand && CodeProblems(banned, cadCommandPins, cadCommandAnchors) is { } bannedCaught && bannedCaught.Contains(expect, StringComparison.Ordinal),
+                    "p6-51 zero-count self-test: " + label + " in CadCommand.cs is caught by the zero-count pin (substring, no identifier boundary)",
+                    banned == cadCommand ? "self-test anchor not found" : CodeProblems(banned, cadCommandPins, cadCommandAnchors) ?? "not caught");
+            }
+            // P6-49 one stripper: StripCommentsAndLiterals has one definition among the tests/cad sources, in CodePins.cs,
+            // and the DXF reader-option pin calls CodePins.StripCommentsAndLiterals (no reflection on this class). P6-51: a
+            // definition is block-bodied ({) or expression-bodied (=>), so a one-line forwarder counts as a second home
+            // (self-test below); the P6-49 forwarder in this file is gone and its callers call CodePins directly.
+            static bool DefinesStripper(string code) => System.Text.RegularExpressions.Regex.IsMatch(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
             var cadTestsDir = Path.Combine(root, "tests", "cad");
             var stripperHomes = string.Join(",", Directory.GetFiles(cadTestsDir, "*.cs")
-                .Where(f => System.Text.RegularExpressions.Regex.IsMatch(StripCommentsAndLiterals(File.ReadAllText(f)), @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*\{"))
+                .Where(f => DefinesStripper(CodePins.StripCommentsAndLiterals(File.ReadAllText(f))))
                 .Select(f => Path.GetFileName(f)).Order(StringComparer.Ordinal));
+            var forwarder = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n");
+            var forwarderSplit = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source)\n        => CodePins.StripCommentsAndLiterals(source);\n");
+            var blockBodied = CodePins.StripCommentsAndLiterals("    internal static string StripCommentsAndLiterals(string source)\n    {\n        return source;\n    }\n");
+            var callOnly = CodePins.StripCommentsAndLiterals("        var code = CodePins.StripCommentsAndLiterals(File.ReadAllText(path)); // static string StripCommentsAndLiterals(string s) => x\n");
+            C(DefinesStripper(forwarder) && DefinesStripper(forwarderSplit) && DefinesStripper(blockBodied) && !DefinesStripper(callOnly),
+                "p6-51 one stripper self-test: an expression-bodied StripCommentsAndLiterals forwarder (one line or split before =>) counts as a definition like a block-bodied one; a call or a commented definition does not",
+                "forwarder " + DefinesStripper(forwarder) + " split " + DefinesStripper(forwarderSplit) + " block " + DefinesStripper(blockBodied) + " call " + DefinesStripper(callOnly));
             var minsertPath = Path.Combine(cadTestsDir, "MinsertEzdxfTests.cs");
-            var minsertCode = File.Exists(minsertPath) ? StripCommentsAndLiterals(File.ReadAllText(minsertPath)) : "";
+            var minsertCode = File.Exists(minsertPath) ? CodePins.StripCommentsAndLiterals(File.ReadAllText(minsertPath)) : "";
             C(stripperHomes == "CodePins.cs" && Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(") >= 1 && Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)") == 0,
-                "p6-49 one stripper: StripCommentsAndLiterals is defined once, in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
+                "p6-49 one stripper: StripCommentsAndLiterals is defined once (block- or expression-bodied, P6-51), in tests/cad/CodePins.cs, and the DXF reader-option pin calls it without reflection",
                 "defined in [" + stripperHomes + "], MinsertEzdxfTests calls CodePins x" + I(Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(")) + ", typeof(PdfType3GlyphListTests) x" + I(Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)")));
             // P6-39 self-tests: the builder call replaced by one with other options while the original stays in a // or a
             // /* */ comment. On the raw text the original line is still there once (the P6-37 hole); the stripped code
@@ -788,7 +816,7 @@ internal static class PdfType3GlyphListTests
             // P6-41 builder: one input hash and one BriefExtract call per factory in adapters/cad/Bim.Cad/CadBriefDocument.cs
             // (stripped code), and the public surface is the two factories, Result and ToUtf8Bytes (Create and Scale gone).
             var builderPath = Path.Combine(root, "adapters", "cad", "Bim.Cad", "CadBriefDocument.cs");
-            var builderSource = File.Exists(builderPath) ? StripCommentsAndLiterals(File.ReadAllText(builderPath).Replace("\r\n", "\n", StringComparison.Ordinal)) : "";
+            var builderSource = File.Exists(builderPath) ? CodePins.StripCommentsAndLiterals(File.ReadAllText(builderPath).Replace("\r\n", "\n", StringComparison.Ordinal)) : "";
             var builderPins = new (string Line, int Count)[] { ("SHA256.HashData(", 1), ("SHA256.HashData(bytes)", 1), ("BriefExtract.FromDxf(drawing, options)", 1), ("BriefExtract.FromPdf(pdf, page, calibration, options)", 1), ("BriefExtract.", 2) };
             var builderAnchors = new[] { "public sealed class CadBriefDocument", "public static CadBriefDocument FromDxf(", "public static CadBriefDocument FromPdf(", "static CadBriefDocument Build(", "public byte[] ToUtf8Bytes()" };
             var builderProblems = builderSource.Length == 0 ? "missing " + builderPath
@@ -1034,8 +1062,6 @@ internal static class PdfType3GlyphListTests
         return problems.Count == 0 ? null : string.Join("; ", problems);
     }
 
-    // P6-27 stripper, moved to tests/cad/CodePins.cs in P6-49 (one definition shared with the DXF reader-option pin).
-    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);
 
     // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
     // block body up to its matching '}'; (-1, -1) when the signature is absent.
