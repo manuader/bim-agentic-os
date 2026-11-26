@@ -263,7 +263,7 @@ internal static class PdfType3GlyphListTests
 
             // Static check: the font decoder reads affected names through PdfSimpleEncoding.UnsupportedGlyphListName(code)
             // and the glyph-list filter is applied in exactly one place. P6-31: the sources are read through
-            // StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
+            // CodePins.StripCommentsAndLiterals (comments and literals removed, P6-27) under the same swallow guard.
             var adapter = Path.Combine(fixtures, "..", "..", "..", "adapters", "cad", "Bim.Cad");
             static string Code(string path) => CodePins.StripCommentsAndLiterals(File.ReadAllText(path));
             var content = Code(Path.Combine(adapter, "PdfContent.cs"));
@@ -727,7 +727,7 @@ internal static class PdfType3GlyphListTests
             }
             var cadCommandPath = Path.Combine(root, "interfaces", "cli", "CadCommand.cs");
             var cadCommand = File.Exists(cadCommandPath) ? File.ReadAllText(cadCommandPath).Replace("\r\n", "\n", StringComparison.Ordinal) : "";
-            const string entryLabel = "p6-41 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only, makes the one FromDxf/FromPdf call with one options line, writes its ToUtf8Bytes and hashes the input only for cad-draft";
+            const string entryLabel = "p6-41 cli entry point: CadCommand.cs code (comments and literals stripped) reads the PDF with MaxBytes 32 MiB only, makes the one FromDxf/FromPdf call with one options line, writes its ToUtf8Bytes and hashes the input only for cad-draft; zero-count (banned-name) pins are counted as substrings of the squeezed code, no identifier boundary (P6-51)";
             C(cadCommand.Length > 0 && CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) is null,
                 entryLabel,
                 cadCommandPath + " " + (CodeProblems(cadCommand, cadCommandPins, cadCommandAnchors) ?? "pins hold"));
@@ -1084,9 +1084,9 @@ internal static class PdfType3GlyphListTests
 
     private static int Occurrences(string text, string token) => (text.Length - text.Replace(token, "", StringComparison.Ordinal).Length) / token.Length;
 
-    // P6-33: the one swallow guard for a source read through StripCommentsAndLiterals (it replaces the P6-25 and P6-27
-    // copies): balanced braces, a final '}', and every anchor exactly once and in the given order. Null when the stripped
-    // text passes, otherwise what failed.
+    // P6-33: the one swallow guard for a source read through CodePins.StripCommentsAndLiterals (it replaces the P6-25 and
+    // P6-27 copies): balanced braces, a final '}', and every anchor exactly once and in the given order. Null when the
+    // stripped text passes, otherwise what failed.
     private static string? SwallowGuard(string stripped, IReadOnlyList<string> anchors)
     {
         var problems = new List<string>();
@@ -1106,7 +1106,6 @@ internal static class PdfType3GlyphListTests
         }
         return problems.Count == 0 ? null : string.Join("; ", problems);
     }
-
 
     // The [start, end) span of the member body after the signature at index: an expression body up to its ';', or a
     // block body up to its matching '}'; (-1, -1) when the signature is absent.
