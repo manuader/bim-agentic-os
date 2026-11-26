@@ -468,11 +468,10 @@ internal static class MinsertEzdxfTests
                 cap = factors.Aggregate(1L, (product, f) => product * long.Parse(f, CultureInfo.InvariantCulture));
         }
         // P6-47: assignments only; a MaxInputBytes == comparison reads the cap and is not counted. P6-49: nor is an
-        // expression-bodied MaxInputBytes => or another identifier ending in MaxInputBytes (identifier boundary).
-        const string assignment = "MaxInputBytes=";
-        var assigned = 0;
-        for (var at = CodePins.IndexOf(code, assignment); at >= 0; at = CodePins.IndexOf(code, assignment, at + 1))
-            if (at + assignment.Length >= code.Length || code[at + assignment.Length] is not ('=' or '>')) assigned++;
+        // expression-bodied MaxInputBytes => or another identifier ending in MaxInputBytes (identifier boundary). P6-51:
+        // counted by CodePins.Assignments, so a compound assignment (+=, -=, ??= ...) counts too and a comparison
+        // (!=, <=, >=) does not.
+        var assigned = CodePins.Assignments(code, "MaxInputBytes");
         if (assigned != 1 || cap is null)
             problems.Add("MaxInputBytes assigned x" + assigned.ToString(CultureInfo.InvariantCulture) + ", declared x" + capCount.ToString(CultureInfo.InvariantCulture) + " as " + (cap?.ToString(CultureInfo.InvariantCulture) ?? "unparsed") + " (want one declaration, one integer product)");
         // P6-45: replaces the always-true CliDxfReadOptions == new DxfReadOptions(CliMaxInputBytes); this one compares the
