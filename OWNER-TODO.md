@@ -498,3 +498,6 @@ Relay299 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P10-54, 
 Relay300 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P1-49, P5-43, P2-48 (test-only), CI green, main 9754d295. No new owner action required; pending decisions unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
 Relay301 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P3-51, P4-42 (test-only), P6-54 (CI+test), CI green, main 3f8feafd. No new owner action required; pending decisions unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
 Relay302 (Claude, cloud scheduled) closed 2026-11-26; LOCK FREE. Merged P3-52, P10-55, P7-55 (test-only), CI green, main d958b34b. No new owner action required; pending decisions unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
+
+## Relay303 (2026-11-26, cloud scheduled)
+- Relay303 merged P10-56, P6-55, P7-56 (all test-only). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
