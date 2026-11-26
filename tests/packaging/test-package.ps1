@@ -50,6 +50,8 @@
 # constant; the contract paragraph is pinned whole (sha256); failing cleanup pin checks are named in one summary annotation.
 # P7-53: a planted failure runs the P7-43 finally (taken from this script's AST) and finds the summary at the block start; the
 # spelled-once check reads every run of four header ids; $p751Requires reuses the parsed AST; the paragraph cites the P7-51 runs.
+# P7-55: the failure summary names mutants only from messages starting with the P7-41 mutant prefix; the four-id run length is
+# pinned with its reason; the planted-finally self-test asserts the variables the finally reads; the paragraph cites P7-53 runs.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1149,7 +1151,12 @@ try {
     # static binding error (unknown or ambiguous parameter, extra positional) does not count.
     # P7-51: the P7 header ids this script must list (from P7-39 on); the one expected value of both own-script header
     # asserts (P7-41 and P7-43 blocks). A new '# P7-<n>: ' header line updates this constant and the contract paragraph.
-    $p751HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49,P7-51,P7-53'
+    $p751HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49,P7-51,P7-53,P7-55'
+    # P7-55: the run length Get-P753SpelledCount looks for. Pinned, not derived from this script (a value derived from the
+    # longest run found would grow with a second copy and hide it). Reason: the longest run of consecutive header ids in any
+    # other string of this script is three (the P7-43 self-test summaries 'header' + three ids + ' outer ...'), so four is
+    # the shortest run no self-test text spells; the P7-41 block asserts that longest run is $p755RunLength - 1.
+    $p755RunLength = 4
     # P7-51: one line naming every failure added by the P7-39/P7-41/P7-43 self-test blocks (mutant names, otherwise the
     # first 60 characters), so all of them reach one CI annotation even when the detailed failures exceed the annotation
     # cap; $null with no failure. Complete cuts each failure line at 900 characters, which bounds how many names show.
@@ -1170,6 +1177,16 @@ try {
         $list = @($Ids -split ',')
         $runs = @(for ($i = 0; $i + 4 -le $list.Count; $i++) { $list[$i..($i + 3)] -join ',' })
         return @($Ast.FindAll({ param($n) ($n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst]) -and @($runs | Where-Object { $n.Value.Contains($_) }).Count -gt 0 }, $true)).Count
+    }
+    # P7-55: the longest run of consecutive ids of $List (starting at any id, joined by commas) that $Text contains; 0 when
+    # it contains none.
+    function Get-P755LongestRun([string]$Text, [string[]]$List) {
+        return 0
+    }
+    # P7-55: the variables a block reads, by name, sorted ordinally and once each: every variable the block names except
+    # those it assigns itself and $null/$true/$false (a variable assigned in the block is not read from outside it).
+    function Get-P755FinallyReads([Management.Automation.Language.Ast]$Block) {
+        return [string[]]@()
     }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
@@ -2038,7 +2055,7 @@ try {
                     # P7-51: the expected id list is spelled in one string only ($p751HeaderIds) and both own-script header
                     # asserts (here and in the P7-43 block) compare against that variable.
                     # P7-53: the count reads every run of four ids of the list (Get-P753SpelledCount), not only its first four.
-                    $p751Spelled = Get-P753SpelledCount $p751Ast $p751HeaderIds
+                    $p751Spelled = Get-P753SpelledCount $p751Ast $p751HeaderIds $p755RunLength
                     $p751Users = @($p751Ast.FindAll({ param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Assert' -and $n.CommandElements.Count -ge 2 -and @($n.CommandElements[1].FindAll({ param($v) $v -is [Management.Automation.Language.VariableExpressionAst] -and $v.VariablePath.UserPath -eq 'p751HeaderIds' }, $true)).Count -gt 0 }, $true)).Count
                     Assert ($p751Spelled -eq 1 -and $p751Users -eq 2) "P7-51: the header id list is one constant (strings spelling it: $p751Spelled, want 1) used by both own-script header asserts (asserts comparing `$p751HeaderIds: $p751Users, want 2)"
                     # P7-53 self-test: a second copy of the id list is caught wherever it starts (P7-39, P7-41 or a tail of
@@ -2054,8 +2071,33 @@ try {
                         @('a run of three ids', @("header $($p753Ids[0..2] -join ',') outer 1"), 1))
                     foreach ($p753Case in $p753Cases) {
                         $p753Lines = @("`$ids = '$p751HeaderIds'") + @($p753Case[1] | ForEach-Object { "`$copy = `"$_`"" })
-                        $p753Count = Get-P753SpelledCount ([Management.Automation.Language.Parser]::ParseInput(($p753Lines -join "`n"), [ref]$null, [ref]$null)) $p751HeaderIds
+                        $p753Count = Get-P753SpelledCount ([Management.Automation.Language.Parser]::ParseInput(($p753Lines -join "`n"), [ref]$null, [ref]$null)) $p751HeaderIds $p755RunLength
                         Assert ($p753Count -eq $p753Case[2]) "P7-53 self-test: spelled-once check on $($p753Case[0]): $p753Count string(s) spell the id list (want $($p753Case[2]))"
+                    }
+                    # P7-55: the run length is pinned ($p755RunLength, reason at its definition): the longest run of consecutive
+                    # header ids in any string of this script other than the constant is one id shorter, so no self-test text
+                    # is counted as a copy and a text that grows to the pinned length fails here by name.
+                    $p755Longest = 0; $p755LongestText = ''
+                    foreach ($p755String in $p751Ast.FindAll({ param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }, $true)) {
+                        if ($p755String.Value -ceq $p751HeaderIds) { continue }
+                        $p755Run = Get-P755LongestRun $p755String.Value $p753Ids
+                        if ($p755Run -gt $p755Longest) { $p755Longest = $p755Run; $p755LongestText = $p755String.Value }
+                    }
+                    Assert ($p755RunLength -ge 2 -and $p755RunLength -le $p753Ids.Count -and $p755Longest -eq $p755RunLength - 1) "P7-55: the spelled-once run length is pinned at $p755RunLength ids (of $($p753Ids.Count)) because the longest run of consecutive header ids in any other string of this script is one shorter; longest found: $p755Longest in '$($p755LongestText.Substring(0, [Math]::Min(80, $p755LongestText.Length)))'"
+                    # P7-55 self-test: the run length is a parameter of the count (a run one id shorter than the pin counts
+                    # when asked for), and the longest run reads consecutive ids only, starting at any id.
+                    $p755Text = "`$ids = '$p751HeaderIds'`n`$copy = `"header $($p753Ids[1..($p755RunLength - 1)] -join ',') outer`""
+                    $p755Short = Get-P753SpelledCount ([Management.Automation.Language.Parser]::ParseInput($p755Text, [ref]$null, [ref]$null)) $p751HeaderIds ($p755RunLength - 1)
+                    $p755Pinned = Get-P753SpelledCount ([Management.Automation.Language.Parser]::ParseInput($p755Text, [ref]$null, [ref]$null)) $p751HeaderIds $p755RunLength
+                    Assert ($p755Short -eq 2 -and $p755Pinned -eq 1) "P7-55 self-test: a run of $($p755RunLength - 1) ids is counted with run length $($p755RunLength - 1) ($p755Short, want 2) and not with $p755RunLength ($p755Pinned, want 1)"
+                    $p755Runs = @(
+                        @('three consecutive ids from the second', "x $($p753Ids[1..3] -join ',') y $($p753Ids[0])", 3),
+                        @('ids that skip one', "$($p753Ids[0]),$($p753Ids[2]),$($p753Ids[4])", 1),
+                        @('the whole list', $p751HeaderIds, $p753Ids.Count),
+                        @('no id', 'outer 1 work 1', 0))
+                    foreach ($p755Case in $p755Runs) {
+                        $p755Got = Get-P755LongestRun $p755Case[1] $p753Ids
+                        Assert ($p755Got -eq $p755Case[2]) "P7-55 self-test: the longest id run of $($p755Case[0]) is $p755Got (want $($p755Case[2]))"
                     }
                     # P7-53: the -LP guard reads #Requires from the AST parsed above ($p751Requires = $p751Ast.ScriptRequirements),
                     # not from a second parse of this script.
@@ -2134,16 +2176,24 @@ try {
                     Assert ($p749StandIns -eq 1) "P7-49: this script defines the stand-in Remove-Item once (found $p749StandIns definitions)"
                     # P7-51: the contract paragraph for these pins exists once and is pinned whole (sha256 and UTF-8 length of
                     # its one line, so every word is checked, not chosen substrings); a wording change updates this pin.
-                    $p751ParagraphSha = '7A698D7EA3D8CA51CEF8A2B2847009C5A28DCB38887136459086B1A2B41DC826'; $p751ParagraphLength = 3927
+                    $p751ParagraphSha = '2B7905AF257906896D8B74A2E4B33A65BD3891E98FD1286A634CD6401CC6E132'; $p751ParagraphLength = 4955
                     $p751Paragraphs = @([IO.File]::ReadAllLines((Join-Path $root 'docs/contracts/module-contracts.md')) | Where-Object { $_.StartsWith('P7-39..P7-', [StringComparison]::Ordinal) })
                     $p751Bytes = if ($p751Paragraphs.Count -eq 1) { [Text.Encoding]::UTF8.GetBytes($p751Paragraphs[0]) } else { [byte[]]@() }
                     $p751Sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$p751Bytes))
-                    Assert ($p751Paragraphs.Count -eq 1 -and $p751Paragraphs[0].StartsWith('P7-39..P7-53 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p751Sha -ceq $p751ParagraphSha -and $p751Bytes.Length -eq $p751ParagraphLength) "P7-51: docs/contracts/module-contracts.md has one P7-39..P7-53 cleanup pin paragraph, pinned whole (P7-53: renamed, cites the P7-51 runs): observed sha256 $p751Sha, $($p751Bytes.Length) bytes (pinned $p751ParagraphSha, $p751ParagraphLength); found $($p751Paragraphs.Count): $(($p751Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / ')"
+                    Assert ($p751Paragraphs.Count -eq 1 -and $p751Paragraphs[0].StartsWith('P7-39..P7-55 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p751Sha -ceq $p751ParagraphSha -and $p751Bytes.Length -eq $p751ParagraphLength) "P7-51: docs/contracts/module-contracts.md has one P7-39..P7-55 cleanup pin paragraph, pinned whole (P7-55: renamed, cites the P7-53 runs): observed sha256 $p751Sha, $($p751Bytes.Length) bytes (pinned $p751ParagraphSha, $p751ParagraphLength); found $($p751Paragraphs.Count): $(($p751Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / ')"
                     # P7-51 self-test: the failure summary names mutants by name and other failures by their first 60
                     # characters, in order, in one line; no failure gives no line.
                     $p751Synthetic = Get-P751FailureSummary ([string[]]@("P7-41 self-test: mutant 'P7-51 one': header x (want y)", '', "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph`nciting"))
                     $p751SummaryWant = 'P7-51: 2 cleanup pin check(s) failed, detailed in the 2 line(s) after this one: mutant P7-51 one; P7-49: docs/contracts/module-contracts.md has one P7-39..P7-'
                     Assert ($p751Synthetic -ceq $p751SummaryWant -and $null -eq (Get-P751FailureSummary ([string[]]@()))) "P7-51 self-test: the failure summary reads '$p751Synthetic' (want '$p751SummaryWant') and nothing with no failure"
+                    # P7-55 self-test: a mutant is named only from a message that starts with the P7-41 mutant prefix; a P7-53
+                    # message quoting a planted mutant failure (as the P7-53 asserts print the list they got) and an indented
+                    # copy of the prefix are cut at 60 characters like any other failure.
+                    $p755Quoting = "P7-53 self-test: the P7-43 finally inserts the summary (got 1: P7-41 self-test: mutant 'P7-53 planted': header x)"
+                    $p755Indented = " P7-41 self-test: mutant 'P7-55 indented': x"
+                    $p755Summary = Get-P751FailureSummary ([string[]]@("P7-41 self-test: mutant 'P7-55 named': header x (want y)", $p755Quoting, $p755Indented))
+                    $p755SummaryWant = "P7-51: 3 cleanup pin check(s) failed, detailed in the 3 line(s) after this one: mutant P7-55 named; $($p755Quoting.Substring(0, 60)); $p755Indented"
+                    Assert ($p755Summary -ceq $p755SummaryWant) "P7-55 self-test: the failure summary names a mutant only from a message starting with the P7-41 mutant prefix: '$p755Summary' (want '$p755SummaryWant')"
                     # P7-53 self-test: the P7-43 finally (the one finally of this script that reads $p751Start, taken from its
                     # AST) runs on a planted failure list: with one earlier failure and two planted ones it inserts the summary
                     # at $p751Start (after the earlier failure, before the planted details); with none planted it adds nothing.
@@ -2151,6 +2201,17 @@ try {
                     if ($p753Finallies.Count -ne 1) { $failures.Add("P7-53 self-test: one finally reads `$p751Start (found $($p753Finallies.Count))") }
                     else {
                         $p753Text = $p753Finallies[0].Finally.Extent.Text
+                        # P7-55: before the run, the finally must read exactly the variables Invoke-P753Finally provides (it
+                        # assigns each), so renaming one in the finally (or here) fails with this message, not an error from
+                        # the run. The planted rename below shows the read list follows the finally's text.
+                        $p755Provides = 'failures,p743Leftovers,p743Probe,p751Start'
+                        $p755Reads = @(Get-P755FinallyReads $p753Finallies[0].Finally) -join ','
+                        $p755Invoke = @($p743Ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-P753Finally' }, $true))
+                        $p755Assigned = if ($p755Invoke.Count -eq 1) { @($p755Invoke[0].Body.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath }) } else { @() }
+                        $p755Missing = @($p755Provides -split ',' | Where-Object { $p755Assigned -cnotcontains $_ })
+                        Assert ($p755Reads -ceq $p755Provides -and $p755Invoke.Count -eq 1 -and $p755Missing.Count -eq 0) "P7-55: the P7-43 finally reads exactly $p755Provides, each assigned by the one Invoke-P753Finally before it runs the finally; the finally reads '$p755Reads' and Invoke-P753Finally ($($p755Invoke.Count) found) does not assign '$($p755Missing -join ',')': a variable renamed in the finally must be renamed in Invoke-P753Finally and here"
+                        $p755Renamed = @(Get-P755FinallyReads ([Management.Automation.Language.Parser]::ParseInput($p753Text.Replace('$p743Leftovers', '$p743Renamed'), [ref]$null, [ref]$null))) -join ','
+                        Assert ($p755Renamed -ceq 'failures,p743Probe,p743Renamed,p751Start') "P7-55 self-test: the finally with `$p743Leftovers planted as `$p743Renamed reads '$p755Renamed' (want failures,p743Probe,p743Renamed,p751Start), so the check above names the rename"
                         $p753Block = [scriptblock]::Create($p753Text.Substring(1, $p753Text.Length - 2))
                         # Runs the finally with its own $failures, $p751Start, probe and leftovers (dynamic scope), so the
                         # run-wide list is untouched; the probe path does not exist, so the cleanup call returns at once.
