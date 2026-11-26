@@ -114,6 +114,9 @@ using Bim.Core;
 //      selection over the two drifted packs) finds the pinned line's ASCII bytes with \u002B and no '+' byte; the
 //      provenance addendum below the paragraph names the P5-38 runs (pinned equal in both files by tests/mcp). P5-42:
 //      the raw scan runs twice (same bytes) and RawChild awaits its stdout copy after a timeout kill (zero-timeout case).
+//      P5-44: the timeout path reads its buffer through Drain (pipe self-test: an early-return mutant misses bytes and
+//      its copy faults on the disposed buffer); the zero-timeout case checks the buffer read after the wait and names a
+//      child that exited first; the P5-38 encoder comment names the plus sign without the character.
 //  17. P5-35 a throwing stdout in jurisdiction-resolve: with a Console.Out whose every write throws (IOException,
 //      ObjectDisposedException, InvalidOperationException; the shared RejectingWriter), the success, jurisdiction_unknown
 //      and usage refusals and the internal error (WorkProbe) end with exit 1, nothing escaping Run, one stdout attempt,
@@ -1452,10 +1455,11 @@ internal static class SkillListTests
             (twoDrifted.Refusal is { } shownTwoDrift ? Failed(shownTwoDrift) : "<no refusal>") + " | pinned " + TwoDriftLine);
         Case("two drifted packs: selection", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }, 1, TwoDriftLine);
         Case("two drifted packs: code selection", new[] { "--code", DuplicateCode }, 1, TwoDriftLine);
-        // P5-38: the escaped '+' is the current encoder behaviour, pinned (no encoder change without a product task): the
-        // detail holds a raw '+' and the verb serializes the envelope with JsonSerializer defaults (JavaScriptEncoder.Default
-        // escapes '+' as \u002B), so the printed line (pinned above, in process and as a real process, twice each) carries
-        // the six characters \u002B and no '+'.
+        // P5-38: the escaped plus sign is the current encoder behaviour, pinned (no encoder change without a product task):
+        // the detail holds a raw plus sign (byte 0x2B) and the verb serializes the envelope with JsonSerializer defaults
+        // (JavaScriptEncoder.Default escapes the sign as \u002B), so the printed line (pinned above, in process and as a
+        // real process, twice each) carries the six characters \u002B and no plus sign. P5-44: this comment names the
+        // sign without the character itself (checked by tests/mcp).
         const string Suffix = " (+1 more lock issue(s))";
         Check(twoDrifted.Refusal is { } rawTwoDrift && rawTwoDrift.Detail.EndsWith(Suffix, StringComparison.Ordinal)
             && JsonSerializer.Serialize(Suffix) == "\" (\\u002B1 more lock issue(s))\"" && JsonSerializer.Serialize("+") == "\"\\u002B\""
@@ -1465,8 +1469,9 @@ internal static class SkillListTests
         // P5-40: a raw stdout scan of real processes (bytes, no decoding): for the selection and the code selection over the
         // two drifted packs, stdout is exactly the pinned line and the newline as ASCII bytes, holds the six bytes of the
         // escape \u002B (backslash, u, 0, 0, 2, B) and no plus byte (0x2B), exit 1, stderr empty. P5-42: twice, and after
-        // a timeout kill RawChild waits for the child and its stdout copy before the buffer is disposed.
-        (int Exit, byte[] Out, string Err, bool Awaited) RawChild(string[] arguments, int timeoutMilliseconds)
+        // a timeout kill RawChild waits for the child and its stdout copy before the buffer is disposed. P5-44: that
+        // path reads the buffer through Drain (after the copy's wait) and RawChild returns the copy task too.
+        (int Exit, byte[] Out, string Err, bool Awaited, Task Copy) RawChild(string[] arguments, int timeoutMilliseconds)
         {
             var start = new ProcessStartInfo(dotnet) { RedirectStandardOutput = true, RedirectStandardError = true, UseShellExecute = false };
             start.ArgumentList.Add(packageDll);
@@ -1479,15 +1484,23 @@ internal static class SkillListTests
             {
                 try { process.Kill(true); } catch (InvalidOperationException) { }
                 process.WaitForExit();
-                bool copied;
-                try { copied = stdout.Wait(30000); } catch (AggregateException) { copied = stdout.IsCompleted; }
+                var drained = Drain(stdout, buffer, 30000);
                 try { stderr.Wait(30000); } catch (AggregateException) { }
-                return (-1, buffer.ToArray(), "<timed out>", copied);
+                return (-1, drained.Out, "<timed out>", drained.Copied, stdout);
             }
             process.WaitForExit();
             stdout.Wait();
-            return (process.ExitCode, buffer.ToArray(), stderr.Result, true);
+            return (process.ExitCode, buffer.ToArray(), stderr.Result, true, stdout);
         }
+        // P5-44: the buffer after the copy's wait (at most milliseconds; Copied: the copy finished), and its mutant that
+        // returns at once (no wait before the buffer is read and its owner disposes it).
+        static (byte[] Out, bool Copied) Drain(Task copy, MemoryStream buffer, int milliseconds)
+        {
+            bool copied;
+            try { copied = copy.Wait(milliseconds); } catch (AggregateException) { copied = copy.IsCompleted; }
+            return (buffer.ToArray(), copied);
+        }
+        static (byte[] Out, bool Copied) EarlyDrain(Task copy, MemoryStream buffer, int milliseconds) => (buffer.ToArray(), copy.IsCompleted);
         var rawExpected = Encoding.ASCII.GetBytes(TwoDriftLine + Environment.NewLine);
         var rawEscape = Encoding.ASCII.GetBytes("(\\u002B1 more");
         foreach (var (label, selection) in new[] { ("selection", new[] { "--country", "Fixture Country", "--municipality", "Fixture Town" }), ("code selection", new[] { "--code", DuplicateCode }) })
@@ -1507,10 +1520,60 @@ internal static class SkillListTests
         }
         // P5-42: RawChild after a timeout kill awaits its stdout copy before returning (its buffer is disposed on return): a
         // zero timeout kills the child at once and RawChild reports the copy finished.
+        // P5-44: a child that exited before the zero wait is not killed; RawChild then takes the normal path (exit 1, the
+        // whole pinned line), and the checks below name that outcome instead of failing on it.
         var killed = RawChild(new[] { "jurisdiction-resolve", "--code", DuplicateCode, "--lock", lockPath }, 0);
-        Check(killed.Exit == -1 && killed.Err == "<timed out>" && killed.Awaited,
+        var exitedFirst = killed.Exit != -1;
+        var outcome = exitedFirst ? "outcome: the child exited first (no kill)" : "outcome: the child was killed at the zero wait";
+        var killedDetail = outcome + "; exit " + killed.Exit.ToString(CultureInfo.InvariantCulture) + " awaited " + killed.Awaited.ToString(CultureInfo.InvariantCulture)
+            + " copy " + killed.Copy.Status.ToString() + " " + killed.Out.Length.ToString(CultureInfo.InvariantCulture) + " bytes " + Convert.ToHexString(killed.Out.AsSpan(0, Math.Min(killed.Out.Length, 300))) + " stderr " + killed.Err;
+        Check(exitedFirst ? killed.Exit == 1 && killed.Err.Length == 0 && killed.Awaited : killed.Exit == -1 && killed.Err == "<timed out>" && killed.Awaited,
             "P5-42: RawChild awaits its stdout copy after a timeout kill",
-            "exit " + killed.Exit.ToString(CultureInfo.InvariantCulture) + " awaited " + killed.Awaited.ToString(CultureInfo.InvariantCulture) + " stderr " + killed.Err);
+            killedDetail);
+        // P5-44: checked on the copy task and the buffer RawChild returned, not only its Awaited flag: the copy has
+        // finished, and the bytes read after that wait are a prefix of the pinned line (the whole line if the child
+        // exited first; what a killed child wrote before the kill, often nothing, otherwise).
+        Check(killed.Copy.IsCompleted && rawExpected.AsSpan().StartsWith(killed.Out) && (!exitedFirst || killed.Out.AsSpan().SequenceEqual(rawExpected)),
+            "P5-44: after RawChild returns from the zero-timeout case its stdout copy has finished and the buffer read after that wait is a prefix of the pinned line",
+            killedDetail);
+        // P5-44: Drain's early-return mutant self-test over an in-process anonymous pipe, the same fixture for both: a
+        // writer sends a first chunk, a second one 300 ms later and closes; the copy runs on the pool into a buffer that
+        // is disposed right after the drain returns (as RawChild's using does). Drain returns both chunks and the copy
+        // finished first; the mutant returns before the second chunk and the copy then faults on the disposed buffer.
+        var pipeFirst = Encoding.ASCII.GetBytes("P5-44 first chunk;");
+        var pipeSecond = Encoding.ASCII.GetBytes("P5-44 second chunk.");
+        (byte[] Out, bool Copied, bool Faulted) PipeProbe(Func<Task, MemoryStream, int, (byte[] Out, bool Copied)> drain)
+        {
+            using var server = new System.IO.Pipes.AnonymousPipeServerStream(System.IO.Pipes.PipeDirection.Out);
+            using var client = new System.IO.Pipes.AnonymousPipeClientStream(System.IO.Pipes.PipeDirection.In, server.ClientSafePipeHandle);
+            var sink = new MemoryStream();
+            var writer = Task.Run(() =>
+            {
+                server.Write(pipeFirst);
+                server.Flush();
+                Thread.Sleep(300);
+                server.Write(pipeSecond);
+                server.Dispose();
+            });
+            var copy = Task.Run(() => client.CopyTo(sink));
+            var drained = drain(copy, sink, 30000);
+            sink.Dispose();
+            var faulted = false;
+            try { copy.Wait(30000); } catch (AggregateException) { faulted = true; }
+            try { writer.Wait(30000); } catch (AggregateException) { }
+            return (drained.Out, drained.Copied, faulted);
+        }
+        var whole = pipeFirst.Concat(pipeSecond).ToArray();
+        var drainedReal = PipeProbe(Drain);
+        var drainedEarly = PipeProbe(EarlyDrain);
+        string Shown((byte[] Out, bool Copied, bool Faulted) probe) =>
+            Encoding.ASCII.GetString(probe.Out) + " | copied " + probe.Copied.ToString(CultureInfo.InvariantCulture) + " faulted " + probe.Faulted.ToString(CultureInfo.InvariantCulture);
+        Check(drainedReal.Out.AsSpan().SequenceEqual(whole) && drainedReal.Copied && !drainedReal.Faulted,
+            "P5-44: Drain returns the whole copied buffer after the copy's wait (pipe self-test: both chunks, the copy finished before the buffer is disposed)",
+            Shown(drainedReal));
+        Check(drainedEarly.Out.Length < whole.Length && whole.AsSpan().StartsWith(drainedEarly.Out) && !drainedEarly.Copied && drainedEarly.Faulted,
+            "P5-44: an early-return Drain mutant (no wait before the buffer is read and disposed) misses the second chunk and its copy faults on the disposed buffer",
+            Shown(drainedEarly));
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
