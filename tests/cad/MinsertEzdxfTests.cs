@@ -89,15 +89,15 @@ using Point2 = Bim.Cad.Point2;
 // Self-tests: an extra reader argument, a commented-out copy beside a changed read and a changed cap are each caught.
 // The options are pinned rather than shared because CadCommand reads the input once for cad-draft and cad-brief (the
 // reason recorded for the PDF reader options in the cad-brief contract).
-// P6-45 (one pin style): the pin reads CadCommand.cs through PdfType3GlyphListTests.StripCommentsAndLiterals, the same
-// stripping as the PDF reader-option pin (called by reflection, so there is one stripper and no copy), so the counts are
-// of code only and a comment naming DxfReadOptions or DxfReader. does not fail it; the read is matched as one statement
+// P6-45 (one pin style): the pin reads CadCommand.cs through the same comment/literal stripper as the PDF reader-option
+// pin (one stripper, no copy; since P6-49 CodePins.StripCommentsAndLiterals (tests/cad/CodePins.cs), called directly by
+// both pins), so the counts are of code only and a comment naming DxfReadOptions or DxfReader. does not fail it; the read is matched as one statement
 // with all whitespace removed (a reformatted statement passes; the "dxf" literal is stripped, as the PDF pin strips
 // "pdf"); and the always-true self-comparison is replaced by the in-process copy against new DxfReadOptions(cap) with
 // the cap parsed from CadCommand.cs, which fails when either side changes. Self-tests: // and /* */ comments naming both
 // tokens and the read over several lines pass; a second DxfReader. call in code is caught.
-// P6-47 (pin tidy): the stripper stays PdfType3GlyphListTests.StripCommentsAndLiterals reached by reflection, and the
-// pin label says so (a shared helper would move code outside this pin's scope); the MaxInputBytes= count skips a
+// P6-47 (pin tidy): the pin label named the stripper it used (P6-49 then moved it to the shared helper
+// CodePins.StripCommentsAndLiterals (tests/cad/CodePins.cs), and the label names that); the MaxInputBytes= count skips a
 // MaxInputBytes == comparison (self-tests: a comparison in code passes, a second assignment is caught); the PDF
 // reader-option pin in PdfType3GlyphListTests matches stripped code with all whitespace removed, as this pin does.
 //
@@ -110,6 +110,18 @@ using Point2 = Bim.Cad.Point2;
 // constant rows the generator prints with this file both ways (a row matches by its names and its full number list,
 // exact doubles) and exits 1 on any difference or on a planted self-test it does not catch. Offline, the same check:
 //     PYTHONPATH=<ezdxf v1.4.2 checkout, commit 8240df57>/src python3 tests/cad/tools/minsert_ezdxf_centres.py --check
+// P6-50 (generation environment, pinned by RunJustified and stated the same way in the generator's docstring): the
+// constants are the pure-Python ezdxf 1.4.2 values with numpy 2.5.3. Evidence for that generation version: the offline
+// environment the generator is run in (re-measured in relay293: Python 3.13.18, numpy 2.5.3, pyparsing 3.3.3,
+// typing_extensions 4.16.0, fonttools 4.67.0) reproduces every row, and CI run 45718082997 (main 36398c0, Python 3.12.16,
+// pip's numpy==2.5.3, EZDXF_DISABLE_C_EXT=1) reproduced all 164 rows exactly (0 failures). The CI step installs
+// ezdxf==1.4.2 numpy==2.5.3 pyparsing==3.3.3 typing_extensions==4.16.0 fonttools==4.69.1 (the other dependencies at the
+// versions pip resolved in CI run 45725166224, printed by the step with numpy's; fonttools 4.67.0 offline and 4.69.1
+// in CI give the same rows). Of the pure-Python run's output, every output line but the caught self-tests is annotated,
+// 20 lines an annotation, at most 9 annotations, then one line with the count of the lines left over (errors when the run
+// fails, notices otherwise). With the wheel's C extensions four rows differ in the last bits: C1>NB, X1>XF, Z1>ZA, W1>CL.
+// They are pinned (C_EXT_DRIFT in the generator): under the C extensions a differing row outside them fails that run and
+// the step, named after "new C-extension drift rows: "; a pinned row that stops differing is named as no longer drifting.
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
