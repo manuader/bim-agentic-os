@@ -987,10 +987,17 @@ internal static class GenerateTypologyToolTests
             // P3-50: Mask runs over the whole step, so quoting is followed across lines: a newline inside a quoted string is
             // masked (the string stays one word on one logical line), and a backslash-newline is masked inside double
             // quotes but kept outside them (the line join below drops it).
-            static string Mask(string line)
+            // P3-52: a ${ ... } expansion (quoted or not) is masked whole, its braces included, so a `#` (no comment there),
+            // `)`, `(` or `}` inside it does not change the group count, also when a backslash-newline splits it; a `$(`
+            // or a double-quoted string inside it is followed as elsewhere. A heredoc (`<<` or `<<-` and a bare or quoted
+            // word; not `<<<`) has its body masked from the end of its line up to the line holding only that word (or
+            // the end of the text). Open is set when a single or double quote or a `${` is still open at the end.
+            static string Mask(string line, out bool open)
             {
                 var masked = line.ToCharArray();
                 var frames = new Stack<char>();
+                var heredocs = new List<string>();
+                open = false;
                 for (var i = 0; i < line.Length; i++)
                 {
                     var c = line[i];
@@ -998,19 +1005,56 @@ internal static class GenerateTypologyToolTests
                     var quoted = frames.Count > 0 && frames.Peek() == '"';
                     if (c == '\\' && next == '\n' && !quoted) { i++; continue; }
                     if (c == '\\' && i + 1 < line.Length) { masked[i] = masked[i + 1] = '_'; i++; continue; }
+                    if (c == '\n' && !quoted && heredocs.Count > 0)
+                    {
+                        var start = i + 1;
+                        foreach (var delimiter in heredocs)
+                        {
+                            while (start < line.Length)
+                            {
+                                var end = line.IndexOf('\n', start);
+                                if (end < 0) end = line.Length;
+                                var terminator = line[start..end].Trim() == delimiter;
+                                for (var j = start; j < end; j++) masked[j] = '_';
+                                start = end + 1;
+                                if (terminator) break;
+                            }
+                        }
+                        heredocs.Clear();
+                        i = start - 1;
+                        continue;
+                    }
                     if (quoted)
                     {
                         if (c == '"') frames.Pop();
                         else if (c == '$' && next == '(') { frames.Push('('); i++; }
+                        else if (c == '$' && next == '{') { frames.Push('{'); masked[i + 1] = '_'; i++; }
                         else masked[i] = '_';
                         continue;
                     }
                     if (c == '\'')
                     {
                         var close = line.IndexOf('\'', i + 1);
-                        if (close < 0) close = line.Length;
+                        if (close < 0) { close = line.Length; open = true; }
                         for (var j = i + 1; j < close; j++) masked[j] = '_';
                         i = close;
+                        continue;
+                    }
+                    if (c == '$' && next == '{') { frames.Push('{'); masked[i + 1] = '_'; i++; continue; }
+                    if (frames.Count > 0 && frames.Peek() == '{')
+                    {
+                        if (c == '}') { frames.Pop(); masked[i] = '_'; }
+                        else if (c == '"') frames.Push('"');
+                        else if (c == '$' && next == '(') { frames.Push('('); i++; }
+                        else masked[i] = '_';
+                        continue;
+                    }
+                    if (c == '<' && next == '<' && (i + 2 >= line.Length || line[i + 2] != '<') && (i == 0 || line[i - 1] != '<'))
+                    {
+                        var word = Regex.Match(line[i..], @"^<<-?[ \t]*([^\s;|&<>()]+)").Groups[1].Value.Replace("'", "", StringComparison.Ordinal)
+                            .Replace("\"", "", StringComparison.Ordinal).Replace("\\", "", StringComparison.Ordinal);
+                        if (Regex.IsMatch(word, @"^[A-Za-z_]\w*$")) heredocs.Add(word);
+                        i++;
                         continue;
                     }
                     if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
@@ -1025,7 +1069,29 @@ internal static class GenerateTypologyToolTests
                     else if (c == '(') frames.Push('(');
                     else if (c == ')' && frames.Count > 0) frames.Pop();
                 }
+                if (frames.Contains('"') || frames.Contains('{')) open = true;
                 return new string(masked);
+            }
+            // P3-52: only the lines of a YAML `run: |` block are shell: when the text holds such a header, every other line
+            // (the `name`, `if`, `id` and later YAML keys) is blanked before masking, so an apostrophe there cannot mask
+            // the run lines. The block runs from its header to the first non-blank line indented no deeper than the `run`
+            // key. A text without a header (the self-tests) is shell throughout; a single-line `run:` is not recognized.
+            static string ShellOnly(string text)
+            {
+                var lines = text.Split('\n');
+                const string Header = @"^\s*(?:-\s+)?run:\s*\|$";
+                if (!lines.Any(l => Regex.IsMatch(l.TrimEnd(), Header))) return text;
+                var inBlock = false;
+                var keyIndent = 0;
+                for (var k = 0; k < lines.Length; k++)
+                {
+                    var indent = lines[k].Length - lines[k].TrimStart().Length;
+                    if (inBlock && lines[k].Trim().Length > 0 && indent <= keyIndent) inBlock = false;
+                    if (inBlock) continue;
+                    if (Regex.IsMatch(lines[k].TrimEnd(), Header)) { inBlock = true; keyIndent = lines[k].IndexOf("run:", StringComparison.Ordinal); continue; }
+                    lines[k] = "";
+                }
+                return string.Join('\n', lines);
             }
             static int BareGrepPipes(string text)
             {
@@ -1041,7 +1107,9 @@ internal static class GenerateTypologyToolTests
                 var logical = new List<(string Line, bool Open)>();
                 var pending = "";
                 var groupDepth = 0;
-                foreach (var masked in Mask(text.Replace("\r\n", "\n", StringComparison.Ordinal)).Split('\n'))
+                // P3-52: the YAML-level lines are blanked first (ShellOnly), and a quote or `${` Mask leaves open at the end
+                // marks the last logical line open.
+                foreach (var masked in Mask(ShellOnly(text.Replace("\r\n", "\n", StringComparison.Ordinal)), out var quoteOpen).Split('\n'))
                 {
                     var trimmed = masked.TrimEnd();
                     foreach (var c in trimmed)
@@ -1064,6 +1132,7 @@ internal static class GenerateTypologyToolTests
                     pending = "";
                 }
                 if (pending.Length > 0) logical.Add((pending, true));
+                if (quoteOpen && logical.Count > 0) logical[^1] = (logical[^1].Line, true);
                 foreach (var (line, open) in logical)
                 {
                     foreach (Match grep in Regex.Matches(line, @"(?<=^|[\s;|&({])grep\s"))
