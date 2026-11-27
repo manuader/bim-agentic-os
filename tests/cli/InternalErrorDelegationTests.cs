@@ -772,37 +772,73 @@ internal static class InternalErrorDelegationTests
                 Check(ReducedHeader(header) == collapsed, "P3-29 seam hygiene self-test: ReducedHeader (MethodBody's replace order) reduces [" + header + "] to [" + collapsed + "]", ReducedHeader(header));
                 selfTests++;
             }
+            // P3-53: the swapped orders below are built from ReducedHeader's own replacement pieces, read from its source
+            // (each `<Field>.Replace(header, "<replacement>")` in source order) and applied through the same static Regex
+            // fields, so a changed replacement string or field in ReducedHeader changes the swapped chains with it. The tie
+            // pin checks that those pieces, applied in source order, reduce every pin header exactly as ReducedHeader does;
+            // its self-test reads the pieces from a copy of the source with LeadingAttributes' "[] " changed to "[]" and
+            // shows the tie then fails on a pin header.
+            var helpers = File.ReadAllText(Path.Combine(root, "tests", "cli", "InternalErrorDelegationTests.cs"));
+            var reducerFrom = helpers.LastIndexOf("static string ReducedHeader(string header)", StringComparison.Ordinal);
+            var reducerTo = reducerFrom < 0 ? -1 : helpers.IndexOf("\n    }", reducerFrom, StringComparison.Ordinal);
+            var reducer = reducerTo < 0 ? "" : helpers[reducerFrom..reducerTo];
+            static (string Field, string Replacement)[] ReplacePieces(string source) =>
+                System.Text.RegularExpressions.Regex.Matches(source, @"(\w+)\s*\.\s*Replace\s*\(\s*header\s*,\s*""([^""\\]*)""\s*\)")
+                    .Select(m => (m.Groups[1].Value, m.Groups[2].Value)).ToArray();
+            static string Chain(IEnumerable<(string Field, string Replacement)> order, string header) =>
+                order.Aggregate(header, (h, piece) => typeof(InternalErrorDelegationTests).GetField(piece.Field, Any)?.GetValue(null) is System.Text.RegularExpressions.Regex pattern
+                    ? pattern.Replace(h, piece.Replacement) : "<no Regex field " + piece.Field + ">");
+            var pieces = ReplacePieces(reducer);
+            IEnumerable<(string Field, string Replacement)> Ordered((string Field, string Replacement)[] all, params string[] fields) =>
+                fields.SelectMany(f => all.Where(p => p.Field == f));
             // P3-51: order-sensitive pins. Each header reduces differently when InitializerArguments runs before the other
             // replace (the swapped composition is computed and must differ): a bracket run holding ')' inside the
             // initializer arguments balances them only after InnerAttributes, and an initializer-like run inside an unclosed
             // leading section is cut by LeadingAttributes first. Synthetic (not valid C#): they pin the order, nothing more.
+            // P3-53: each swap is the field order its pieces are applied in.
             var orderPins = new[]
             {
-                ("C(int n) : base(F(, [1)]))", "C(int n) : base()", "InitializerArguments before InnerAttributes", "C(int n) : base(F(, []))"),
-                ("[A(x) : base(] y)", "[] y)", "InitializerArguments before LeadingAttributes", "[A(x) : base()"),
+                ("C(int n) : base(F(, [1)]))", "C(int n) : base()", "InitializerArguments before InnerAttributes", new[] { "LeadingAttributes", "InitializerArguments", "InnerAttributes" }, "C(int n) : base(F(, []))"),
+                ("[A(x) : base(] y)", "[] y)", "InitializerArguments before LeadingAttributes", new[] { "InitializerArguments", "InnerAttributes", "LeadingAttributes" }, "[A(x) : base()"),
             };
-            foreach (var (header, reduced, swap, swapped) in orderPins)
+            var pinHeaders = reducedPins.Select(p => p.Item1).Concat(orderPins.Select(p => p.Item1)).ToArray();
+            string Untied((string Field, string Replacement)[] tried) => string.Join(" | ", pinHeaders.Where(h => Chain(tried, h) != ReducedHeader(h)).Select(h => h + " -> " + Chain(tried, h)));
+            Check(pieces.Select(p => p.Field).SequenceEqual(new[] { "LeadingAttributes", "InnerAttributes", "InitializerArguments" }, StringComparer.Ordinal) && Untied(pieces).Length == 0,
+                "P3-29 seam hygiene self-test: ReducedHeader's replacement pieces read from its source (" + string.Join(", ", pieces.Select(p => p.Field + " -> [" + p.Replacement + "]"))
+                    + ") applied in source order reduce all " + pinHeaders.Length.ToString(CultureInfo.InvariantCulture) + " pin headers as ReducedHeader does", Untied(pieces));
+            selfTests++;
+            var changedReducer = reducer.Replace("LeadingAttributes.Replace(header, \"[] \")", "LeadingAttributes.Replace(header, \"[]\")", StringComparison.Ordinal);
+            var changedPieces = ReplacePieces(changedReducer);
+            Check(changedReducer != reducer && changedPieces.Length == 3 && changedPieces[0] == ("LeadingAttributes", "[]") && Untied(changedPieces).Length > 0,
+                "P3-29 seam hygiene self-test: the replacement-piece tie fails on a copy of ReducedHeader's source with LeadingAttributes' \"[] \" changed to \"[]\"",
+                "pieces " + string.Join(", ", changedPieces.Select(p => p.Field + " -> [" + p.Replacement + "]")) + " untied [" + Untied(changedPieces) + "]");
+            selfTests++;
+            foreach (var (header, reduced, swap, order, swapped) in orderPins)
             {
-                var other = swap == "InitializerArguments before InnerAttributes"
-                    ? InnerAttributes.Replace(InitializerArguments.Replace(LeadingAttributes.Replace(header, "[] "), ") : $1()"), "[]")
-                    : LeadingAttributes.Replace(InnerAttributes.Replace(InitializerArguments.Replace(header, ") : $1()"), "[]"), "[] ");
+                var other = Chain(Ordered(pieces, order), header);
                 Check(ReducedHeader(header) == reduced && other == swapped && swapped != reduced,
                     "P3-29 seam hygiene self-test: ReducedHeader reduces [" + header + "] to [" + reduced + "], and to [" + swapped + "] with " + swap, ReducedHeader(header) + " / swapped " + other);
                 selfTests++;
             }
-            // P3-51: named limit LeadingInnerCommute: LeadingAttributes and InnerAttributes commute (LeadingAttributes is
-            // anchored at the start, InnerAttributes never matches there and only rewrites a bracket-balanced run inside or
-            // after the leading sections), so no output pin can catch their swap; on every pin header above the swapped
-            // order gives the same output. The source pin below (ReducedHeader's Replace calls in order) guards the swap.
-            var commuted = reducedPins.Select(p => p.Item1).Concat(orderPins.Select(p => p.Item1))
-                .Where(h => InitializerArguments.Replace(LeadingAttributes.Replace(InnerAttributes.Replace(h, "[]"), "[] "), ") : $1()") != ReducedHeader(h)).ToArray();
+            // P3-51: named limit LeadingInnerCommute: no output pin catches a swap of LeadingAttributes and InnerAttributes,
+            // because on the pinned headers (the 6 ReducedHeader pins and the 2 order pins above, 8 in all) they commute:
+            // the swapped order gives the same output on each of them. P3-53: the claim is scoped to those 8 headers, not
+            // proved for every header (LeadingAttributes is anchored at the start and InnerAttributes never matches there,
+            // which makes a difference unlikely but not impossible, e.g. on unbalanced brackets). The source pin below
+            // (ReducedHeader's Replace calls in order) guards the swap.
+            var commuted = pinHeaders.Where(h => Chain(Ordered(pieces, "InnerAttributes", "LeadingAttributes", "InitializerArguments"), h) != ReducedHeader(h)).ToArray();
             Check(commuted.Length == 0, "P3-29 seam hygiene self-test: named limit LeadingInnerCommute: InnerAttributes before LeadingAttributes reduces every ReducedHeader pin header the same way", string.Join(" | ", commuted));
             selfTests++;
             // P3-51: named limit StarOperand: MethodHeader reads a lone '*' as a pointer token, so a multiplication followed
-            // by a call (`x * F(y)`) reads as a method header returning a pointer. Harmless: no C# statement or member puts a
+            // by a call (`x * F(y)`) reads as a method header returning a pointer. P3-53: the part that admits it is the
+            // token class [\w<>,.?:*]+ in MethodHeader's lazy prefix run (?:(?>...|[\w<>,.?:*]+)\s*)*? before the name
+            // group (\w+): `x` and `*` are each read as a prefix (type) token, `F` as the name and `(y)` as the parameter
+            // list (pinned: the pattern holds that token class). Harmless: no C# statement or member puts a
             // multiplication directly before '{' (an object creation is refused by ObjectCreation, a keyword header by the
             // statement-keyword list), while a spaced pointer return (`unsafe int * Later(int n)`, pinned beside it) is a
             // real local function header that refusing a lone '*' would miss.
+            Check(MethodHeader.ToString().Contains(@"|[\w<>,.?:*]+)\s*)*?", StringComparison.Ordinal),
+                @"P3-29 seam hygiene: named limit StarOperand: MethodHeader's prefix run holds the token class [\w<>,.?:*]+ that admits a lone '*'", MethodHeader.ToString());
             foreach (var header in new[] { "x * F(y)", "unsafe int * Later(int n)" })
             {
                 Check(MethodBody(header), "P3-29 seam hygiene self-test: named limit StarOperand: MethodBody reads [" + header + "] as a method header", header);
@@ -823,7 +859,6 @@ internal static class InternalErrorDelegationTests
             Check(regexFields.Length == headerRegexes.Length && regexFields.All(f => headerRegexes.Contains(f.Name, StringComparer.Ordinal)
                     && f.GetValue(null) is System.Text.RegularExpressions.Regex timed && timed.MatchTimeout == TimeSpan.FromSeconds(1)),
                 "P3-29 seam hygiene: every static Regex field is a pinned header regex with a 1 s match timeout", string.Join(", ", regexFields.Select(f => f.Name)));
-            var helpers = File.ReadAllText(Path.Combine(root, "tests", "cli", "InternalErrorDelegationTests.cs"));
             var helpersFrom = helpers.LastIndexOf("static bool InBlockLambda(", StringComparison.Ordinal);
             var helpersTo = helpersFrom < 0 ? -1 : helpers.IndexOf("static (bool Clean, int Mentions, string Detail) LexerGuard(", helpersFrom, StringComparison.Ordinal);
             var inlineCalls = helpersTo < 0 ? -1 : System.Text.RegularExpressions.Regex.Matches(helpers[helpersFrom..helpersTo], @"\bRegex\s*\.\s*(?:IsMatch|Match|Matches|Replace|Split)\s*\(").Count;
@@ -837,9 +872,6 @@ internal static class InternalErrorDelegationTests
                 "P3-29 seam hygiene: the source from [static bool MethodBody(string header)] (last occurrence) to its closing brace reduces the header only through [header = ReducedHeader(header);] (no Replace call of its own)", methodBody.ReplaceLineEndings(" "));
             // P3-51: ReducedHeader's own source calls Replace exactly on LeadingAttributes, InnerAttributes and
             // InitializerArguments, in that order (the guard for the LeadingInnerCommute swap the output pins cannot see).
-            var reducerFrom = helpers.LastIndexOf("static string ReducedHeader(string header)", StringComparison.Ordinal);
-            var reducerTo = reducerFrom < 0 ? -1 : helpers.IndexOf("\n    }", reducerFrom, StringComparison.Ordinal);
-            var reducer = reducerTo < 0 ? "" : helpers[reducerFrom..reducerTo];
             var replaced = System.Text.RegularExpressions.Regex.Matches(reducer, @"(\w+)\s*\.\s*Replace\s*\(").Select(m => m.Groups[1].Value).ToArray();
             Check(replaced.SequenceEqual(new[] { "LeadingAttributes", "InnerAttributes", "InitializerArguments" }, StringComparer.Ordinal),
                 "P3-29 seam hygiene: the source from [static string ReducedHeader(string header)] (last occurrence) to its closing brace calls Replace on LeadingAttributes, InnerAttributes, InitializerArguments in that order and nothing else", string.Join(", ", replaced));
