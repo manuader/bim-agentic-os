@@ -518,3 +518,7 @@ Relay306 (cloud, 2026-11-27): merged P3-54, P10-57, P7-57 (test-only). No new ow
 - [ ] No new required action. `git pull` (main is now ad4a5dc2). Pending decisions unchanged: ADR0010 (P2-11) and ADR0011 (P9-03), ONE -Catalogue run (scripts/owner-native-session.ps1), N21 run 3.
 
 Relay310 (Claude, cloud scheduled) closed 2026-11-27; LOCK FREE. Merged P3-56, P10-59, P7-59 (test-only; review approve, 0 blockers). Progress 459/478 (96.0 %). main = 1f505768 (CI 45991019788 green). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21, git pull).
+
+## Relay311 (2026-11-27)
+
+Relay311 (Claude, cloud scheduled) closed 2026-11-27; LOCK FREE. Merged P10-60, P6-59, P7-60 (test-only; review approve, 0 blockers). Progress 462/481 (96.0 %). main = bd5bc425 (CI 46011283295 green). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21, git pull).
