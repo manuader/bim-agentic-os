@@ -441,11 +441,13 @@ internal static class InternalErrorDelegationTests
         // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
         // P3-51: the marks are pinned per row (plantedByRow below, asserted): each pinned label is a visible failure
         // annotation of its row's red run. Evidence runs, one line per row (below the cap note).
-        // P3-53: named limit AnnotationCap: GitHub shows at most 10 annotations per job (10 error annotations per step,
-        // and each test job reports its failed checks from one step), and a run's annotations are the only failure
-        // evidence (its logs cannot be downloaded). A caught case past the cap (its row's red run failed more than 10
-        // checks in a job and its label is not among the 10 shown) is not marked: it carries "(planted)" only once a red
-        // run with at most 10 failures shows it. Every row below fits the cap (at most 8 pinned labels, asserted <= 10).
+        // P3-55: named limit AnnotationCap: GitHub shows at most 10 error, 10 warning and 10 notice annotations per step (and 50 per job)
+        // (P3-53 said 10 per job; the 10 is the constant AnnotationCap below, checked against this line). Each ci.yml
+        // job runs tests/cli from one step (checked below), so a job shows at most AnnotationCap of its FAIL errors, and
+        // a run's annotations are the only failure evidence (its logs cannot be downloaded). A caught case past the cap
+        // (its row's red run failed more than AnnotationCap checks in that step and its label is not among those shown)
+        // is not marked: it carries "(planted)" only once a red run with at most AnnotationCap failures shows it. Every
+        // row below fits the cap (each at most AnnotationCap labels; the largest, P3-35, pins 8; both asserted).
         //   P3-29 red 44882607530: stored block lambda; nested in a block inside a stored block lambda; stored anonymous
         //         method; stored anonymous method with parameters (WorkProbe). "passed as an argument" is not among its
         //         visible failures, so its mark is dropped (P3-51).
