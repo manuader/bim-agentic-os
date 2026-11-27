@@ -308,5 +308,213 @@ internal static class DeadlineSourceScan
         return (map, "");
     }
 
+    // P1-52: the call-chain reader of the P1-50 tests/mirror-journal warning bound (SourceBlocks, ContextAt, CallRuns and
+    // their helpers), moved unchanged from tests/cli/RevitCommandDeadlineTests.cs and made internal so other pins can
+    // share it. It reads CodeMask output (comments and literals blanked in place). A brace block's header is the code
+    // since the previous '{', '}' or ';' outside parentheses ("if (x)", "static void M(int a)", "static class C").
+    // It is a heuristic reader, not a C# parser. Limits (what it does not see; a count can be wrong there, unnamed):
+    //   - delegates: a call through a delegate, an event, a Func/Action field or an interface is not followed; only a
+    //     method group written next to the member's own name is named a problem;
+    //   - goto: a goto and its label are not read, so a jump back over a call is not seen as a loop;
+    //   - partial types: a type is the name in its own block header; the members of a partial type declared in another
+    //     block or file are not joined, and a qualified call is matched on its last qualifier name only (no alias,
+    //     namespace or nested-type resolution); overloads of one name are one member;
+    //   - object initialisers: a '{' after `new T(..)`, `new[]`, `= ` or `switch` opens a block like any other, so a
+    //     call in an object or collection initialiser, an anonymous type or a switch expression arm reads as one in a
+    //     nested block (counted once, not a loop) whose header is the expression before it;
+    //   - also unread: yield iterators and async methods (a call there is counted as in a plain method).
+    internal readonly record struct SourceBlock(int Open, int Close, string Header);
+    internal readonly record struct SourceContext(string? Type, string? Member, SourceBlock? MemberBlock, List<SourceBlock> Inner, string Problem);
+    static readonly System.Text.RegularExpressions.Regex TypeHeader = new(@"^(?:\[[^\]]*\]\s*)*(?:(?:public|internal|private|protected|static|sealed|abstract|partial|readonly|file|unsafe|new|ref)\s+)*(?:class|struct|interface|record(?:\s+class|\s+struct)?)\s+(\w+)");
+    static readonly System.Text.RegularExpressions.Regex ControlHeader = new(@"^(?:else\s+)?(?:if|for|foreach|while|switch|catch|using|lock|fixed|do|try|finally|else|checked|unchecked|unsafe|get|set|init)\b");
+    static readonly System.Text.RegularExpressions.Regex LoopOrLambda = new(@"\b(?:for|foreach|while|do)\b|=>");
+    static readonly System.Text.RegularExpressions.Regex IfHeader = new(@"^(?:else\s+)?if\b|^else\b");
+
+    internal static string Collapsed(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
+
+    internal static List<SourceBlock> SourceBlocks(string mask)
+    {
+        var blocks = new List<SourceBlock>();
+        var open = new Stack<(int At, string Header, int Parens)>();
+        var last = -1;
+        var parens = 0;
+        for (var k = 0; k < mask.Length; k++)
+        {
+            var c = mask[k];
+            if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';') { if (parens == 0) last = k; }
+            else if (c == '{') { open.Push((k, Collapsed(mask[(last + 1)..k]), parens)); parens = 0; last = k; }
+            else if (c == '}')
+            {
+                if (open.Count > 0) { var (at, header, outer) = open.Pop(); blocks.Add(new SourceBlock(at, k, header)); parens = outer; }
+                if (parens == 0) last = k;
+            }
+        }
+        blocks.Sort((a, b) => a.Open.CompareTo(b.Open));
+        return blocks;
+    }
+
+    // The name of a method or local function whose header this is (ends with its parameter list, no control keyword,
+    // no '=' before the list, no '=>'); null otherwise.
+    static string? FunctionName(string header)
+    {
+        if (header.Length == 0 || header[^1] != ')' || ControlHeader.IsMatch(header) || header.Contains("=>", StringComparison.Ordinal)) return null;
+        var depth = 0;
+        var k = header.Length - 1;
+        for (; k >= 0; k--)
+        {
+            if (header[k] == ')') depth++;
+            else if (header[k] == '(' && --depth == 0) break;
+        }
+        if (k <= 0) return null;
+        var head = header[..k].TrimEnd();
+        if (head.Contains('=')) return null;
+        var name = System.Text.RegularExpressions.Regex.Match(head, @"(\w+)\s*(?:<[^<>]*>)?$");
+        return name.Success ? name.Groups[1].Value : null;
+    }
+
+    // The statement text from the last '{', '}' or ';' (outside parentheses) after position from up to position at.
+    static string StatementBefore(string mask, int from, int at)
+    {
+        var last = from;
+        var depth = 0;
+        var parens = 0;
+        for (var k = from + 1; k < at; k++)
+        {
+            var c = mask[k];
+            if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0 && parens == 0) last = k; }
+            else if (depth > 0) continue;
+            else if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';' && parens == 0) last = k;
+        }
+        return Collapsed(mask[(last + 1)..at]);
+    }
+
+    // The last statement of the block open..close ("{block}" when a nested block ends it).
+    static string LastStatement(string mask, int open, int close)
+    {
+        var last = open;
+        var depth = 0;
+        var parens = 0;
+        var statement = "";
+        for (var k = open + 1; k < close; k++)
+        {
+            var c = mask[k];
+            if (c == '{') depth++;
+            else if (c == '}') { depth--; if (depth == 0 && parens == 0) { statement = "{block}"; last = k; } }
+            else if (depth > 0) continue;
+            else if (c == '(') parens++;
+            else if (c == ')') { if (parens > 0) parens--; }
+            else if (c == ';' && parens == 0) { statement = Collapsed(mask[(last + 1)..k]); last = k; }
+        }
+        var rest = Collapsed(mask[(last + 1)..close]);
+        return rest.Length > 0 ? rest : statement;
+    }
+
+    // The type and method a position sits in (no type: top-level statements) and the blocks inside that method.
+    internal static SourceContext ContextAt(List<SourceBlock> blocks, int at)
+    {
+        var enclosing = blocks.Where(b => b.Open < at && at < b.Close).ToList();
+        var typeIndex = enclosing.FindLastIndex(b => TypeHeader.IsMatch(b.Header));
+        if (typeIndex < 0) return new SourceContext(null, null, null, enclosing, "");
+        var type = TypeHeader.Match(enclosing[typeIndex].Header).Groups[1].Value;
+        if (typeIndex + 1 >= enclosing.Count) return new SourceContext(type, null, null, new List<SourceBlock>(), "outside a method body");
+        var member = enclosing[typeIndex + 1];
+        var name = FunctionName(member.Header);
+        if (name is null) return new SourceContext(type, null, null, new List<SourceBlock>(), "in a member that is not a method (" + member.Header + ")");
+        return new SourceContext(type, name, member, enclosing.Skip(typeIndex + 2).ToList(), "");
+    }
+
+    // "" when the position runs at most once per run of its method: no loop, lambda or local function around it there.
+    internal static string ChainProblem(string path, string mask, SourceContext context, int at, string what)
+    {
+        var where = what + " at " + path + ":" + N(mask[..at].Count(c => c == '\n') + 1);
+        if (context.Problem.Length > 0) return where + " is " + context.Problem;
+        foreach (var block in context.Inner)
+        {
+            if (FunctionName(block.Header) is not null) return where + " is inside a local function";
+            if (LoopOrLambda.IsMatch(block.Header)) return where + " is in a loop or lambda (" + block.Header + ")";
+        }
+        var from = context.Inner.Count > 0 ? context.Inner[^1].Open : context.MemberBlock?.Open ?? -1;
+        var statement = StatementBefore(mask, from, at);
+        return LoopOrLambda.IsMatch(statement) ? where + " is in a loop or lambda (" + statement + ")" : "";
+    }
+
+    // How many times type.member can run in one run: the sum over its callers (qualified type.member( anywhere, or an
+    // unqualified member( inside type that is no local function's) of the calls per run of the caller times the caller's
+    // own runs (top-level statements run once). Per caller run the calls are the most of: those outside a branch that
+    // ends with return, or for such a branch, those before its end that are not in an earlier such branch. A call in a
+    // loop, lambda or local function, a method group use and a recursive chain are problems.
+    internal static long CallRuns(Dictionary<string, (string Mask, List<SourceBlock> Blocks)> files, string type, string member, HashSet<string> visiting, List<string> problems)
+    {
+        var key = type + "." + member;
+        if (!visiting.Add(key)) { problems.Add("a recursive call chain through " + key); return 0; }
+        var callers = new Dictionary<(string Path, int Open), (string? Type, string? Member, List<(int At, List<SourceBlock> Returning)> Sites)>();
+        foreach (var file in files.OrderBy(entry => entry.Key, StringComparer.Ordinal))
+        {
+            var path = file.Key;
+            var (mask, blocks) = file.Value;
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(mask, @"\b" + member + @"\b"))
+            {
+                var at = match.Index;
+                var k = at - 1;
+                while (k >= 0 && char.IsWhiteSpace(mask[k])) k--;
+                var qualified = k >= 0 && mask[k] == '.';
+                if (qualified)
+                {
+                    var q = k - 1;
+                    while (q >= 0 && char.IsWhiteSpace(mask[q])) q--;
+                    var qualifier = System.Text.RegularExpressions.Regex.Match(mask[..(q + 1)], @"(\w+)$");
+                    if (!qualifier.Success || qualifier.Groups[1].Value != type) continue;
+                }
+                var context = ContextAt(blocks, at);
+                if (!qualified && context.Type != type) continue;
+                var line = N(mask[..at].Count(c => c == '\n') + 1);
+                var p = at + match.Length;
+                while (p < mask.Length && char.IsWhiteSpace(mask[p])) p++;
+                if (p >= mask.Length || mask[p] != '(')
+                {
+                    var before = k >= 0 ? mask[k] : '\0';
+                    if (p < mask.Length && (mask[p] is ';' or ',' or ')') && (qualified || before is '=' or '(' or ',' or '+' or '?' or ':' || System.Text.RegularExpressions.Regex.IsMatch(mask[..(k + 1)], @"\breturn$")))
+                        problems.Add(key + " is used without a call at " + path + ":" + line + " (a method group is not counted)");
+                    continue;
+                }
+                var depth = 0;
+                var close = p;
+                for (; close < mask.Length; close++)
+                {
+                    if (mask[close] == '(') depth++;
+                    else if (mask[close] == ')' && --depth == 0) break;
+                }
+                var r = close + 1;
+                while (r < mask.Length && char.IsWhiteSpace(mask[r])) r++;
+                if (r >= mask.Length || mask[r] == '{' || mask.AsSpan(r).StartsWith("=>", StringComparison.Ordinal) || mask.AsSpan(r).StartsWith("where", StringComparison.Ordinal)) continue; // a declaration
+                if (!qualified && context.MemberBlock is { } own && blocks.Any(b => own.Open < b.Open && b.Open < own.Close && FunctionName(b.Header) == member)) continue;
+                var problem = ChainProblem(path, mask, context, at, "a call of " + key);
+                if (problem.Length > 0) { problems.Add(problem); continue; }
+                var returning = context.Inner.Where(b => IfHeader.IsMatch(b.Header) && System.Text.RegularExpressions.Regex.IsMatch(LastStatement(mask, b.Open, b.Close), @"^return\b")).ToList();
+                var slot = (path, context.MemberBlock?.Open ?? -1);
+                if (!callers.TryGetValue(slot, out var caller)) callers[slot] = caller = (context.Type, context.Member, new List<(int At, List<SourceBlock> Returning)>());
+                caller.Sites.Add((at, returning));
+            }
+        }
+        long total = 0;
+        foreach (var caller in callers.Values)
+        {
+            var sites = caller.Sites;
+            var count = sites.Count(site => site.Returning.Count == 0);
+            foreach (var branch in sites.SelectMany(site => site.Returning).Distinct())
+                count = Math.Max(count, sites.Count(site => site.At < branch.Close && !site.Returning.Any(earlier => earlier.Close < branch.Open)));
+            var runs = caller.Type is null || caller.Member is null ? 1 : CallRuns(files, caller.Type, caller.Member, visiting, problems);
+            total += count * runs;
+        }
+        visiting.Remove(key);
+        return total;
+    }
+
+
     static string N(int value) => value.ToString(CultureInfo.InvariantCulture);
 }
