@@ -998,12 +998,17 @@ internal static class GenerateTypologyToolTests
                 var frames = new Stack<char>();
                 var heredocs = new List<string>();
                 open = false;
+                var wordJoin = false;
                 for (var i = 0; i < line.Length; i++)
                 {
                     var c = line[i];
                     var next = i + 1 < line.Length ? line[i + 1] : '\0';
                     var quoted = frames.Count > 0 && frames.Peek() == '"';
-                    if (c == '\\' && next == '\n' && !quoted) { i++; continue; }
+                    // P3-54: a backslash-newline right after a word joins the next line to that word, so a `#` first on
+                    // that line (after its indentation) is no comment.
+                    var joined = wordJoin;
+                    if (c is not (' ' or '\t')) wordJoin = false;
+                    if (c == '\\' && next == '\n' && !quoted) { wordJoin = i > 0 && !char.IsWhiteSpace(line[i - 1]); i++; continue; }
                     if (c == '\\' && i + 1 < line.Length) { masked[i] = masked[i + 1] = '_'; i++; continue; }
                     if (c == '\n' && !quoted && heredocs.Count > 0)
                     {
@@ -1027,6 +1032,7 @@ internal static class GenerateTypologyToolTests
                     if (quoted)
                     {
                         if (c == '"') frames.Pop();
+                        else if (c == '$' && next == '(' && i + 2 < line.Length && line[i + 2] == '(') { frames.Push('a'); i += 2; }
                         else if (c == '$' && next == '(') { frames.Push('('); i++; }
                         else if (c == '$' && next == '{') { frames.Push('{'); masked[i + 1] = '_'; i++; }
                         else masked[i] = '_';
@@ -1045,11 +1051,13 @@ internal static class GenerateTypologyToolTests
                     {
                         if (c == '}') { frames.Pop(); masked[i] = '_'; }
                         else if (c == '"') frames.Push('"');
+                        else if (c == '$' && next == '(' && i + 2 < line.Length && line[i + 2] == '(') { frames.Push('a'); i += 2; }
                         else if (c == '$' && next == '(') { frames.Push('('); i++; }
                         else masked[i] = '_';
                         continue;
                     }
-                    if (c == '<' && next == '<' && (i + 2 >= line.Length || line[i + 2] != '<') && (i == 0 || line[i - 1] != '<'))
+                    if (c == '<' && next == '<' && (i + 2 >= line.Length || line[i + 2] != '<') && (i == 0 || line[i - 1] != '<')
+                        && !frames.Contains('a'))
                     {
                         var word = Regex.Match(line[i..], @"^<<-?[ \t]*([^\s;|&<>()]+)").Groups[1].Value.Replace("'", "", StringComparison.Ordinal)
                             .Replace("\"", "", StringComparison.Ordinal).Replace("\\", "", StringComparison.Ordinal);
@@ -1057,7 +1065,7 @@ internal static class GenerateTypologyToolTests
                         i++;
                         continue;
                     }
-                    if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                    if (c == '#' && !joined && (i == 0 || char.IsWhiteSpace(line[i - 1])))
                     {
                         var end = line.IndexOf('\n', i);
                         if (end < 0) end = line.Length;
@@ -1066,6 +1074,9 @@ internal static class GenerateTypologyToolTests
                         continue;
                     }
                     if (c == '"') frames.Push('"');
+                    // P3-54: `((` (also `$((`) opens an arithmetic frame up to its `))`; a `<<` inside it is a shift.
+                    else if (c == '(' && next == '(') { frames.Push('a'); i++; }
+                    else if (c == ')' && next == ')' && frames.Count > 0 && frames.Peek() == 'a') { frames.Pop(); i++; }
                     else if (c == '(') frames.Push('(');
                     else if (c == ')' && frames.Count > 0) frames.Pop();
                 }
@@ -1075,12 +1086,16 @@ internal static class GenerateTypologyToolTests
             // P3-52: only the lines of a YAML `run: |` block are shell: when the text holds such a header, every other line
             // (the `name`, `if`, `id` and later YAML keys) is blanked before masking, so an apostrophe there cannot mask
             // the run lines. The block runs from its header to the first non-blank line indented no deeper than the `run`
-            // key. A text without a header (the self-tests) is shell throughout; a single-line `run:` is not recognized.
+            // key. A text without a header (the self-tests) is shell throughout.
+            // P3-54: a `run: |`, `|-`, `|+` or `>` line opens a block (a folded `>` block is read line by line, not
+            // folded), and a single-line `run:` value is kept as shell with its key blanked (a quoted or multi-line plain
+            // value is not unquoted or folded).
             static string ShellOnly(string text)
             {
                 var lines = text.Split('\n');
-                const string Header = @"^\s*(?:-\s+)?run:\s*\|$";
-                if (!lines.Any(l => Regex.IsMatch(l.TrimEnd(), Header))) return text;
+                const string Header = @"^\s*(?:-\s+)?run:\s*[|>][-+]?$";
+                const string SingleLine = @"^\s*(?:-\s+)?run:[ \t]+(?=[^\s|>])";
+                if (!lines.Any(l => Regex.IsMatch(l.TrimEnd(), Header) || Regex.IsMatch(l, SingleLine))) return text;
                 var inBlock = false;
                 var keyIndent = 0;
                 for (var k = 0; k < lines.Length; k++)
@@ -1089,6 +1104,8 @@ internal static class GenerateTypologyToolTests
                     if (inBlock && lines[k].Trim().Length > 0 && indent <= keyIndent) inBlock = false;
                     if (inBlock) continue;
                     if (Regex.IsMatch(lines[k].TrimEnd(), Header)) { inBlock = true; keyIndent = lines[k].IndexOf("run:", StringComparison.Ordinal); continue; }
+                    var single = Regex.Match(lines[k], SingleLine);
+                    if (single.Success) { lines[k] = new string(' ', single.Length) + lines[k][single.Length..]; continue; }
                     lines[k] = "";
                 }
                 return string.Join('\n', lines);
@@ -1099,9 +1116,9 @@ internal static class GenerateTypologyToolTests
                 // P3-48: masked lines are joined into logical lines first: a trailing backslash (dropped) or a trailing
                 // `|`, `|&` or `&&` (bare pipe, or-list, and-list; `||` included) continues onto the next line, except a
                 // YAML block scalar header (`run: |`). A continuation left open at the end of the text is marked open.
-                // P3-50: the text is masked whole (quoting across lines); only a YAML `run: |` line is a block header (the
-                // workflow uses no `|-` or `|+` chomping, so none is matched); and a line that leaves a `{`, `(` or `$(` group
-                // open is joined up to the group's closing line, each newline inside it read as `;` (none after a line
+                // P3-50: the text is masked whole (quoting across lines); only a YAML `run: |` line is excluded from the
+                // join (P3-54: the `|-`, `|+` and `>` headers ShellOnly recognises do not end in `|`); and a line that
+                // leaves a `{`, `(` or `$(` group open is joined up to the group's closing line, each newline inside it read as `;` (none after a line
                 // already ending in `;`, `{` or `(`), so a pipe or guard on the closing line counts. A `case` pattern's `)`
                 // is not parsed (the step has none).
                 var logical = new List<(string Line, bool Open)>();
@@ -1140,22 +1157,32 @@ internal static class GenerateTypologyToolTests
                     {
                         var before = line[..grep.Index];
                         var groups = new Stack<bool>();
+                        // P3-54: enclosing counts the groups still open around the grep.
+                        var enclosing = 0;
                         for (var i = 0; i < before.Length; i++)
                         {
                             if (before[i] == '(') groups.Push(i > 0 && before[i - 1] == '$');
                             else if (before[i] == ')' && groups.Count > 0) groups.Pop();
+                            if (before[i] is '(' or '{') enclosing++;
+                            else if (before[i] is ')' or '}' && enclosing > 0) enclosing--;
                         }
                         var substituted = groups.Contains(true);
                         var piped = Regex.IsMatch(before, @"(?<!\|)\|&?\s*(?:(?<!\$)\(\s*|\{\s*)*$");
                         var guarded = false;
                         var depth = 0;
+                        var skipping = false;
                         for (var i = grep.Index + 4; i < line.Length; i++)
                         {
                             var c = line[i];
                             var next = i + 1 < line.Length ? line[i + 1] : '\0';
                             if (c is '(' or '{') { depth++; continue; }
-                            if (c is ')' or '}') { if (depth > 0) depth--; continue; }
-                            if (depth > 0) continue;
+                            if (c is ')' or '}')
+                            {
+                                if (depth > 0) depth--;
+                                else { if (enclosing > 0) enclosing--; skipping = false; }
+                                continue;
+                            }
+                            if (depth > 0 || skipping) continue;
                             // P3-48: `|| :` guards as `|| true` does; any other or-list does not.
                             if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*(?:true(?![\w-])|:(?![^\s;)}&|]))"); break; }
                             if (c == '|') { piped = true; if (next == '&') i++; continue; }
@@ -1164,7 +1191,10 @@ internal static class GenerateTypologyToolTests
                             if (c == '&' && next == '>') continue;
                             if (c == '&') break;
                             // P3-50: `;` before a group's closing `)` continues as before a `}` (a joined multi-line group).
-                            if (c == ';') { var rest = line[(i + 1)..].TrimStart(); if (rest.StartsWith('}') || rest.StartsWith(')')) continue; break; }
+                            // P3-54: a `;` inside an enclosing group skips the group's later commands up to its closing
+                            // `)` or `}` and walks on from there: under bash -e and pipefail the group stops at the failing
+                            // grep, so its pipe or guard is the grep's; outside any group a `;` ends the command.
+                            if (c == ';') { if (enclosing > 0) { skipping = true; continue; } break; }
                         }
                         if (open) guarded = false;
                         if (!guarded && (piped || substituted || open)) bare++;
@@ -1251,7 +1281,8 @@ internal static class GenerateTypologyToolTests
                 (Pad + "grep \"a\\\n" + Pad + "b\" \"$out\" | cut -c1-9", 1),
                 // P3-50: only a YAML run: | line is a block header; any other line ending in a colon and a pipe is joined.
                 (Pad + "echo a: |\n" + Pad + "  grep PASS", 1),
-                (Pad + "- run: |\n" + Pad + "  grep -q PASS \"$out\"", 0),
+                // P3-54: the run lines sit deeper than the `run` key, so the block holds them and the header join is what is tested.
+                (Pad + "- run: |\n" + Pad + "    grep -q PASS \"$out\"", 0),
                 // P3-52: a ${ ... } expansion is masked whole: a # or ) inside it, also after a backslash-newline that splits
                 // it, does not leave a group open.
                 (Pad + "v=${x:-a\\\n" + Pad + "#b}\n" + Pad + "tail -n 5 \"$out\" | grep PASS || true", 0),
@@ -1276,10 +1307,39 @@ internal static class GenerateTypologyToolTests
                 (Pad + "- name: Bob's step\n" + Pad + "  run: |\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- name: x\n" + Pad + "  if: runner.os == 'macOS' || it's\n" + Pad + "  run: |\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- run: |\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
-                // P3-52 limits, stated: a grep that is not the last command of a piped group is not counted (bash -e ends the
-                // step on it as on an unpiped grep); a piped grep in a group whose last command is another counts (safe side).
-                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9", 0),
-                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; } || true", 1),
+                // P3-54: a grep anywhere in a group piped onward counts (under bash -e and pipefail the group stops at the
+                // failing grep and its status fails the pipeline): a `;` inside the group walks on to the group's end, so
+                // only a guard after the whole pipeline or on the grep itself counts; an or-true after a group guards a
+                // piped grep inside it (bash ignores -e in a guarded list, so the group's status is its last command's).
+                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9", 1),
+                (Pad + "( grep PASS \"$out\"; echo ) | cut -c1-9", 1),
+                (Pad + "{ { grep PASS \"$out\"; echo; }; echo; } | cut -c1-9", 1),
+                (Pad + "{\n" + Pad + "  grep PASS \"$out\"\n" + Pad + "  echo\n" + Pad + "} | cut -c1-9", 1),
+                (Pad + "{ grep PASS \"$out\"; echo || true; } | cut -c1-9", 1),
+                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9 || true", 0),
+                (Pad + "{ grep PASS \"$out\" || true; echo; } | cut -c1-9", 0),
+                (Pad + "{ grep -q PASS \"$out\"; echo; }", 0),
+                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; } || true", 0),
+                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; }", 1),
+                // P3-54: a `#` that starts a backslash-continued line after a word (no blank before the backslash) is no
+                // comment (bash joins it to that word); after a blank it is one.
+                (Pad + "echo a\\\n" + Pad + "#b | grep PASS", 1),
+                (Pad + "echo a \\\n" + Pad + "#b | grep PASS", 0),
+                (Pad + "echo a\\\n" + Pad + "#b; tail -n 5 \"$out\" | grep PASS || true", 0),
+                // P3-54: a `<<` inside $(( )) or (( )) is an arithmetic shift, not a heredoc, quoted or not.
+                (Pad + "n=$(( 1 << x ))\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "(( n = x << y ))\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "echo \"$(( 1 << x ))\"\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "v=${n:-$(( 1 << x ))}\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "n=$(( (1 + 2) << x )); cat <<EOF\n" + Pad + "grep x | cut\n" + Pad + "EOF", 0),
+                // P3-54: ShellOnly recognises a single-line run: value and the |-, |+ and > block headers.
+                (Pad + "- name: Bob's step\n" + Pad + "  run: grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: grep PASS \"$out\" | cut -c1-9 || true", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: echo ok\n" + Pad + "  env: { P: grep x | cut }", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |-\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |+\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: >\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |-\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
             };
             var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim().Replace("\n", " <NL> ", StringComparison.Ordinal)).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
@@ -1308,16 +1368,29 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("a quote or `${` left open at the end of the step counts as an open continuation (every grep on its line unguarded)", StringComparison.Ordinal)
                 && paragraph.Contains("a heredoc body (after `<<` or `<<-` and a bare or quoted word, up to the line holding only that word or the end of the step) is masked, not scanned as commands", StringComparison.Ordinal)
                 && paragraph.Contains("only the lines of a YAML `run: |` block are scanned (the `name`, `if` and other YAML-level lines are blanked, so an apostrophe there cannot mask the run lines)", StringComparison.Ordinal)
-                && paragraph.Contains("a grep that is not the last command of a piped group (`{ grep x; echo; } | cut`) is not counted", StringComparison.Ordinal)
-                && paragraph.Contains("a piped grep in a group whose last command is another (`{ grep x | cut; echo; } || true`) counts as unguarded (safe side)", StringComparison.Ordinal)
                 && paragraph.Contains("P3-50 relay298 CI red 45796706106, green 45798472088", StringComparison.Ordinal),
-                "P3-52 docs/contracts P3-34 paragraph: ${ ... } masking, open quote at the end, heredoc body, run block only, piped-group limits, the P3-50 runs | " + Short(paragraph));
+                "P3-52 docs/contracts P3-34 paragraph: ${ ... } masking, open quote at the end, heredoc body, run block only, the P3-50 runs | " + Short(paragraph));
+            // P3-54: the contract states the piped-group rule (superseding the P3-52 limits, negatively pinned), the `#` after
+            // a word-joining backslash, the arithmetic shift, the run header forms, and cites the P3-52 runs.
+            Check(paragraph.Contains("a grep anywhere in a group piped onward (`{ grep x; echo; } | cut`) counts as unguarded unless it or the whole pipeline is guarded: under `bash -e` and pipefail the group stops at the failing grep and its status fails the pipeline", StringComparison.Ordinal)
+                && paragraph.Contains("a piped grep in a group guarded after it (`{ grep x | cut; echo; } || true`) counts as guarded (bash ignores `-e` inside a guarded list, so the group's status is its last command's)", StringComparison.Ordinal)
+                && paragraph.Contains("a `#` that starts a backslash-continued line after a word (no blank before the backslash) is scanned, not read as a comment, because bash joins it to that word; the YAML block indentation is kept, so such a `#` that bash reads as a comment (the continued line indented deeper than the block) is scanned too (safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("a `<<` inside `$(( ... ))` or `(( ... ))` is an arithmetic shift, not a heredoc", StringComparison.Ordinal)
+                && paragraph.Contains("a `run: |`, `run: |-`, `run: |+` or `run: >` line opens a block (a folded `>` block is scanned line by line, not folded) and a single-line `run:` value is scanned as shell (a quoted or multi-line plain value is not unquoted or folded; the step uses `run: |`)", StringComparison.Ordinal)
+                && paragraph.Contains("P3-52 relay302 CI red 45872291694, green 45875372305", StringComparison.Ordinal)
+                && !paragraph.Contains("is not counted: under `bash -e` it ends the step", StringComparison.Ordinal)
+                && !paragraph.Contains("counts as unguarded (safe side); a `#`", StringComparison.Ordinal)
+                && !paragraph.Contains("an arithmetic `<<` shift is read as one", StringComparison.Ordinal)
+                && !paragraph.Contains("a single-line `run:` is not recognized", StringComparison.Ordinal)
+                && !paragraph.Contains("is read as a comment (bash joins it to the previous word)", StringComparison.Ordinal),
+                "P3-54 docs/contracts P3-34 paragraph: piped groups, # after a continued word, arithmetic shift, run header forms, the P3-52 runs (P3-52 limits superseded) | " + Short(paragraph));
             // P3-50: the contract states the multi-line groups, the quoting across lines, the trailing-; rule and the run
             // block header, cites the P3-48 runs, and pins the number of checks this section runs (the last check is this
             // one; the macOS step's notice counts them as PASS lines).
             // P3-52: must equal the number in the contract's "section 9 runs N checks" sentence (docs/contracts/module-contracts.md,
             // P3-34 paragraph); a new section-9 check bumps both together.
-            const int SectionNineChecks = 43;
+            // P3-54: 43 → 44 (the P3-54 contract check).
+            const int SectionNineChecks = 44;
             Check(paragraph.Contains("quoting is followed across lines (a single- or double-quoted string, or a backslash-newline inside double quotes, spanning lines stays one masked word)", StringComparison.Ordinal)
                 && paragraph.Contains("a `{ ... }`, `( ... )` or `$( ... )` group left open at a line end is joined up to its closing line (each newline inside it read as `;`), so a pipe or guard on the closing line counts", StringComparison.Ordinal)
                 && paragraph.Contains("a line ending in `;` is joined inside a group and ends the command outside one", StringComparison.Ordinal)
