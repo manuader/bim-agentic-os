@@ -782,7 +782,7 @@ internal static class PdfType3GlyphListTests
             // P6-53: the aggregate is one function over (file name, source) pairs, so the planted self-test below runs it too.
             // P6-55: definitions are counted per file, so a file with two is listed as "name xN" (a second definition
             // inside CodePins.cs is red too); the scanned files are in ordinal name order.
-            static int StripperDefinitions(string code) => System.Text.RegularExpressions.Regex.Count(code, @"static\s+string\s+StripCommentsAndLiterals\s*\(\s*string\s+\w+\s*\)\s*(\{|=>)");
+            static int StripperDefinitions(string code) => System.Text.RegularExpressions.Regex.Count(code, @"\bstring\s*\??\s+StripCommentsAndLiterals\s*(<[^<>]*>)?\s*\([^()]*\)\s*(where\s[^{;=]*)?(\{|=>)");
             static string StripperHomes(IEnumerable<(string Name, string Source)> files) => string.Join(",", files
                 .Select(f => (f.Name, Count: StripperDefinitions(CodePins.StripCommentsAndLiterals(f.Source))))
                 .Where(f => f.Count > 0)
@@ -891,6 +891,7 @@ internal static class PdfType3GlyphListTests
             // lines (each a [...] on its own line) between the comment and the signature are skipped. Stated limits: a
             // comment split by a blank line gives only the part below it, a block comment holding a blank line gives
             // "code above", and an attribute on the signature line itself is code above.
+            static int LineStart(string text, int at) => at <= 0 ? 0 : text.LastIndexOf('\n', at - 1) + 1;
             static string? CommentAbove(string source, string signature, out string why)
             {
                 var code = new List<int>();
@@ -901,8 +902,26 @@ internal static class PdfType3GlyphListTests
                 var stripped = Occurrences(CodePins.StripCommentsAndLiterals(source), signature);
                 if (code.Count != 1) { why = "code x" + I(code.Count); return null; }
                 if (stripped != 1) { why = "stripped x" + I(stripped); return null; }
-                var blank = source.LastIndexOf("\n\n", code[0], StringComparison.Ordinal);
-                var comment = source[(blank < 0 ? 0 : blank + 2)..code[0]];
+                // Attribute lines directly above the signature line are skipped: the comment ends at the first one's text.
+                var end = code[0];
+                for (var line = LineStart(source, end); line > 0;)
+                {
+                    var above = LineStart(source, line - 1);
+                    var text = source[above..(line - 1)];
+                    var bare = CodePins.StripCommentsAndLiterals(text).Trim();
+                    if (!(bare.StartsWith('[') && bare.EndsWith(']'))) break;
+                    end = above + (text.Length - text.TrimStart().Length);
+                    line = above;
+                }
+                // The comment starts on the line after the nearest line above it that is empty or whitespace only.
+                var start = LineStart(source, end);
+                while (start > 0)
+                {
+                    var above = LineStart(source, start - 1);
+                    if (source[above..(start - 1)].Trim().Length == 0) break;
+                    start = above;
+                }
+                var comment = source[start..end];
                 if (CodePins.StripCommentsAndLiterals(comment).Trim().Length != 0) { why = "code above"; return null; }
                 why = "comment";
                 return comment;

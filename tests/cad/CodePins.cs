@@ -11,7 +11,9 @@ using System.Text;
 // not comparisons (==, !=, <=, >=) or an expression body (=>). P6-53: Assignments and CountAnywhere have direct self-tests
 // (and the one-stripper aggregate a planted-second-definition self-test) in the P6-39 block of PdfType3GlyphListTests.
 // P6-55: that aggregate counts StripCommentsAndLiterals definitions per file, so a second definition inside this file is
-// red too (self-test), and the planted self-test plants into the first scanned file other than this one.
+// red too (self-test). P6-57: the planted self-test plants into every scanned file other than this one, one at a time,
+// and a definition also counts when generic, returning string?, with a second parameter or as a non-static local
+// function (self-test; the forms not counted are stated there).
 internal static class CodePins
 {
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
