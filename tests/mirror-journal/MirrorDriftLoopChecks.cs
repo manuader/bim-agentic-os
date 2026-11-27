@@ -2230,6 +2230,16 @@ static class MirrorDriftLoopChecks
         RequestedLowered = lowered.Requested,
     };
 
+    // P2-50: the lowered seam run's gate fields (LoweredRun, LoweredQueued, LoweredHanded) as the live gate builds them
+    // from the second seam run's result, its write-progress reports and the fake's extra broken-after line. A lowered
+    // lever that never ran means that run never reached its lever (no result, no report, no line): the failed-lever pin in
+    // MacSelfTestPins replays that through this helper, so its hidden_drift line also lists these three fields.
+    static (bool Run, long Queued, long Handed) MacLoweredSeamFields(RevitCommandResult? seam, string cliLine, IReadOnlyList<(int Written, int Total, long Ms)> reports,
+        IReadOnlyList<string> extraLines, long wireBytes, Func<string, long> queued) =>
+        (seam is { IsError: true, Forwarded: true } && seam.Line == cliLine && reports.Count > 0 && reports[0].Written == 0 && reports.All(x => x.Total == wireBytes),
+         extraLines.Count == 1 ? queued(extraLines[0]) : long.MinValue,
+         reports.Count > 0 ? reports[reports.Count - 1].Written : -1);
+
     // P2-44/P2-45: what a pair of lever records breaks, read from the records themselves: for each lever (raised, then
     // lowered) 'calls=N' when it did not run exactly once and 'error' when it recorded one. The self-tests check it
     // against WithLevers' LeversOk and the labels of the planted lever records.
@@ -2453,8 +2463,8 @@ static class MirrorDriftLoopChecks
 
     // P2-47: the counts as check detail text (self-test outcomes, the recorded-count pin, the drift check): the counts
     // notice text plus the fields it does not print, instead of the record's ToString.
-    static string MacCountsDetail(MacSendBufferCounts c) => MacCountsText(c) + " levers_ok=" + (c.LeversOk ? "True" : "False") + " raised_default=" + MacNumber(c.RaisedDefault)
-        + " lowered_default=" + MacNumber(c.LoweredDefault) + " chunk=" + MacNumber(c.Chunk) + " lowered_run=" + (c.LoweredRun ? "True" : "False");
+    static string MacCountsDetail(MacSendBufferCounts c) => MacCountsText(c) + " levers_ok=" + MacBool(c.LeversOk) + " raised_default=" + MacNumber(c.RaisedDefault)
+        + " lowered_default=" + MacNumber(c.LoweredDefault) + " chunk=" + MacNumber(c.Chunk) + " lowered_run=" + MacBool(c.LoweredRun);
 
     // P2-47: a self-test outcome as detail text: the red and not-run names, then the counts (MacCountsDetail).
     static string MacOutcomeText(string[] red, string[] notRun, MacSendBufferCounts c) =>
@@ -2504,14 +2514,26 @@ static class MirrorDriftLoopChecks
         finally { CultureInfo.CurrentCulture = saved; }
     }
 
+    // P2-50: the '~' negative-sign culture of the macOS culture pins, built here only (MacSelfTestPins and
+    // MacRequestedTextCulture call it): a fresh writable clone of the invariant culture whose negative sign is '~'.
+    static CultureInfo MacTildeCulture()
+    {
+        var tilde = (CultureInfo)CultureInfo.InvariantCulture.Clone();
+        tilde.NumberFormat.NegativeSign = "~";
+        return tilde;
+    }
+
+    // P2-50: a boolean as macOS check detail text ('True' or 'False'), the one spelling of it in the macOS helpers.
+    static string MacBool(bool value) => value ? "True" : "False";
+
     // P2-46: the self-tests' expected texts, the counts notice and the live checks around the drift check, as pure data
     // on every OS: planted negative values under a culture whose negative sign is '~' give the same texts as written
     // with '-' (and as under the invariant culture); a failed lever is one red (the drift check is a not-run line); a
     // drifted recorded count is one red; the drift fields follow the record's positional constructor parameters.
     static void MacSelfTestPins(Action<bool, string, string> check)
     {
-        var exotic = (CultureInfo)CultureInfo.InvariantCulture.Clone();
-        exotic.NumberFormat.NegativeSign = "~";
+        // P2-50: the '~' culture from its one builder.
+        var exotic = MacTildeCulture();
         var planted = MacRecordedCounts with { Read = -4096, InBuffer = -1, Lowered = -6144, RequestedLowered = -6144, LoweredQueued = -6144, LoweredHanded = -1 };
         var (exoticTexts, exoticCounts) = UnderCulture(exotic, () => (MacSelfTestExpected(-8192, -6144, -4096, -1024), MacCountsText(planted)));
         var (invariantTexts, invariantCounts) = UnderCulture(CultureInfo.InvariantCulture, () => (MacSelfTestExpected(-8192, -6144, -4096, -1024), MacCountsText(planted)));
@@ -2642,8 +2664,35 @@ static class MirrorDriftLoopChecks
         var restoredOnReturn = ReferenceEquals(CultureInfo.CurrentCulture, before);
         check(threw && thrownSeen == "~1" && restoredOnThrow && built == "~1" && restoredOnReturn,
             "macos pin self-test (P2-49): UnderCulture builds under the given culture (-1 written '~1' under the '~' culture) and restores the caller's culture after a return and after a planted throw",
-            "threw=" + (threw ? "True" : "False") + " thrown_seen=" + thrownSeen + " restored_on_throw=" + (restoredOnThrow ? "True" : "False") + " sign_after_throw=" + signAfterThrow
-            + " built=" + built + " restored_on_return=" + (restoredOnReturn ? "True" : "False"));
+            "threw=" + MacBool(threw) + " thrown_seen=" + thrownSeen + " restored_on_throw=" + MacBool(restoredOnThrow) + " sign_after_throw=" + signAfterThrow
+            + " built=" + built + " restored_on_return=" + MacBool(restoredOnReturn));
+
+        // P2-50: the one '~' culture builder: each call gives a fresh writable invariant clone whose negative sign is '~'
+        // (-1 written '~1', -1.5 written '~1.5'); a boolean's detail text (MacBool) is the same under it.
+        var (tildeA, tildeB) = (MacTildeCulture(), MacTildeCulture());
+        var tildeSeen = (-1).ToString(tildeA) + " " + (-1.5).ToString(tildeA) + " " + UnderCulture(tildeA, () => MacBool(true) + "/" + MacBool(false));
+        check(tildeA.NumberFormat.NegativeSign == "~" && tildeA.Name == CultureInfo.InvariantCulture.Name && !tildeA.IsReadOnly && !ReferenceEquals(tildeA, tildeB)
+            && !ReferenceEquals(tildeA.NumberFormat, tildeB.NumberFormat) && tildeSeen == "~1 ~1.5 True/False",
+            "macos pin self-test (P2-50): MacTildeCulture builds a fresh writable invariant clone whose negative sign is '~' (-1 written '~1', -1.5 '~1.5'), and MacBool writes True/False under it",
+            "seen=" + tildeSeen + " name=[" + tildeA.Name + "] read_only=" + MacBool(tildeA.IsReadOnly) + " same_instance=" + MacBool(ReferenceEquals(tildeA, tildeB)));
+
+        // P2-50: a live lowered lever that never ran also changes the lowered seam run's fields: that run never reached its
+        // lever (no result, no write-progress report, no extra broken-after line), so MacLoweredSeamFields (the live gate's
+        // builder) gives LoweredRun False, LoweredQueued long.MinValue and LoweredHanded -1. Replayed through it, the
+        // failed-lever drift not-run line lists those three fields after the lever fields (InvariantCulture numbers, built
+        // under the '~' culture) and the drift check is still the last not-run line after one red, the lever setup check.
+        // (A lowered lever that ran with an error, or a raised lever that never ran, changes other seam fields: not replayed.)
+        var neverReached = MacLoweredSeamFields(null, "cli line", Array.Empty<(int Written, int Total, long Ms)>(), Array.Empty<string>(), MacRecordedCounts.WireBytes, _ => 0);
+        var seamNeverRan = WithLevers(MacRecordedCounts with { LoweredRun = neverReached.Run, LoweredQueued = neverReached.Queued, LoweredHanded = neverReached.Handed }, raisedOkLever, neverRanLever);
+        var seamNeverRanLine = UnderCulture(MacTildeCulture(), () => MacDriftNotRunNotice(seamNeverRan, MacRecordedCounts));
+        var seamNeverRanLive = Live(seamNeverRan);
+        check(neverReached == (false, long.MinValue, -1L)
+            && seamNeverRanLine == noticeWritten + " hidden_drift=[LeversOk: live=False recorded=True ; LoweredDefault: live=-1 recorded=8192 ; Lowered: live=-1 recorded=6144 ; RequestedLowered: live=-1 recorded=6144"
+                + " ; LoweredRun: live=False recorded=True ; LoweredQueued: live=-9223372036854775808 recorded=6144 ; LoweredHanded: live=-1 recorded=10240]"
+            && seamNeverRanLive.Red.SequenceEqual(new[] { leversWritten }, StringComparer.Ordinal) && seamNeverRanLive.NotRun.LastOrDefault() == driftWritten,
+            "macos pin self-test (P2-50): a lowered lever that never ran, with its seam run replayed through MacLoweredSeamFields (no result, report or line), gives one red (the lever setup check) and a drift not-run line listing LoweredRun, LoweredQueued and LoweredHanded after the lever fields",
+            "fields=(" + MacBool(neverReached.Run) + ", " + MacNumber(neverReached.Queued) + ", " + MacNumber(neverReached.Handed) + ") line=" + seamNeverRanLine
+            + " red=[" + string.Join(" ; ", seamNeverRanLive.Red) + "] not_run=[" + string.Join(" ; ", seamNeverRanLive.NotRun) + "]");
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
@@ -2674,13 +2723,14 @@ static class MirrorDriftLoopChecks
             && twoOff.SequenceEqual(new[] { "WireBytes: live=39758 recorded=39757", "LoweredRun: live=False recorded=True" }, StringComparer.Ordinal),
             "macos pin self-test (P2-45): the recorded-count drift lists nothing for equal counts and exactly each planted field with its live and recorded values",
             "same=[" + string.Join(" ; ", same) + "] one=[" + string.Join(" ; ", oneOff) + "] two=[" + string.Join(" ; ", twoOff) + "]");
-        // P2-45: LeverFailures is a named class-level helper (a local function compiles to a mangled name), and it names
-        // each lever's failures as text: a lever that never ran and one that ran twice with an error.
-        var helper = typeof(MirrorDriftLoopChecks).GetMethod("LeverFailures", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        // P2-45: LeverFailures is a named class-level helper, and it names each lever's failures as text: a lever that
+        // never ran and one that ran twice with an error. P2-50: called directly, no reflection lookup: this method and
+        // MacSendBufferSelfTests both call it (a local function is reachable from one method only), so it is class-level,
+        // and a renamed helper fails to compile.
         var named = LeverFailures(new LeverRecord { Calls = 0 }, new LeverRecord { Calls = 2, Default = 8192, Requested = 6144, Set = 6144, Error = "planted" });
-        check(helper is not null && named.SequenceEqual(new[] { "raised calls=0", "lowered calls=2", "lowered error" }, StringComparer.Ordinal),
-            "macos pin (P2-45): LeverFailures is a named class-level helper and lists 'raised calls=0', 'lowered calls=2', 'lowered error' for a raised lever that never ran and a lowered one that ran twice with an error",
-            "helper=" + (helper?.Name ?? "<none>") + " failures=[" + string.Join(" ; ", named) + "]");
+        check(named.SequenceEqual(new[] { "raised calls=0", "lowered calls=2", "lowered error" }, StringComparer.Ordinal),
+            "macos pin (P2-45): LeverFailures is a named class-level helper (P2-50: called directly, no reflection lookup) and lists 'raised calls=0', 'lowered calls=2', 'lowered error' for a raised lever that never ran and a lowered one that ran twice with an error",
+            "failures=[" + string.Join(" ; ", named) + "]");
     }
 
     // P2-45: the fields where the live macOS counts differ from the recorded ones, as 'Field: live=X recorded=Y' with
@@ -2691,7 +2741,7 @@ static class MirrorDriftLoopChecks
         {
             int i => MacNumber(i),
             long l => MacNumber(l),
-            bool b => b ? "True" : "False",
+            bool b => MacBool(b),
             _ => value?.ToString() ?? "<null>",
         };
         var drift = new List<string>();
@@ -2709,8 +2759,8 @@ static class MirrorDriftLoopChecks
     // only - the measured macOS counts are positive, where no culture changes an integer's text.
     static void MacRequestedTextCulture(Action<bool, string, string> check)
     {
-        var exotic = (CultureInfo)CultureInfo.InvariantCulture.Clone();
-        exotic.NumberFormat.NegativeSign = "~";
+        // P2-50: the '~' culture from its one builder.
+        var exotic = MacTildeCulture();
         var ratio = MacRecordedCounts with { LoweredDefault = -8192, RequestedLowered = -6144, Lowered = -6144 };
         var bare = MacRecordedCounts with { LoweredDefault = -8192, RequestedLowered = -7168, Lowered = -7168 };
         // P2-49: the culture swaps through UnderCulture (restored also on a throw).
@@ -2801,6 +2851,9 @@ static class MirrorDriftLoopChecks
         MacRequestedTextCulture((condition, name, detail) => Check(condition, name, detail));
         // P2-46: the self-tests' expected texts, the counts notice and the live drift check's gating, pure data too.
         MacSelfTestPins((condition, name, detail) => Check(condition, name, detail));
+        // P2-50: the macOS culture helpers pinned in this file's code (one '~' builder, direct LeverFailures, MacBool,
+        // MacLoweredSeamFields in the live gate) and the other files' de-DE swaps listed out of scope.
+        MacCultureHelpersPinned(root, (condition, name, detail) => Check(condition, name, detail));
         // P2-42: the macOS gate's planted self-tests are pure data; off macOS they run on the recorded macOS values.
         if (!OperatingSystem.IsMacOS()) MacSendBufferSelfTests(MacRecordedCounts, (condition, name, detail) => Check(condition, name, detail));
 
@@ -2942,13 +2995,11 @@ static class MirrorDriftLoopChecks
             // P2-39: the value the lever asked for (LoweredNumerator/LoweredDenominator of the client's default, the pair
             // SendBufferLever was given; P2-40); measured green P2-38: default 8192 -> requested and kept 6144.
             // P2-42: read from the gate, which takes it from the lowered lever's record (WithLevers).
-            var loweredHanded = loweredReports.Count > 0 ? loweredReports[^1].Written : -1;
-            var loweredQueued = extraLines.Length == 1 ? Queued(extraLines[0]) : long.MinValue;
+            // P2-50: LoweredRun, LoweredQueued and LoweredHanded through MacLoweredSeamFields (replayed by the failed-lever pin).
+            var lowered = MacLoweredSeamFields(loweredSeam, cli.Out, loweredReports, extraLines, wireBytes, Queued);
             var chunk = RevitCommandService.WriteProgressChunk;
             var gate = WithLevers(new MacSendBufferCounts(false, sendBuffer, -1, -1, -1, -1, -1, inBuffer, MidArgsBreakBytes, chunk,
-                wireBytes, seamQueued, handed, cliQueued,
-                loweredSeam is { IsError: true, Forwarded: true } && loweredSeam.Line == cli.Out && loweredReports.Count > 0 && loweredReports[0].Written == 0 && loweredReports.All(x => x.Total == wireBytes),
-                loweredQueued, loweredHanded), raisedLever, loweredLever);
+                wireBytes, seamQueued, handed, cliQueued, lowered.Run, lowered.Queued, lowered.Handed), raisedLever, loweredLever);
             // P2-46: the notice text is MacCountsText over the gate (raised and lowered are the levers' read-back values,
             // requested the lowered lever's request), pinned on every OS by MacSelfTestPins.
             var counts = MacCountsText(gate);
@@ -2972,6 +3023,64 @@ static class MirrorDriftLoopChecks
             MacSendBufferSelfTests(gate, (condition, name, detail) => Check(condition, name, detail));
         }
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
+    }
+
+    // P2-50: static pin of the macOS culture helpers in this file's code (comments stripped; the searched text is split
+    // in this method so it does not match itself; a method body is found by its signature at class indentation): the '~'
+    // culture is built once (MacTildeCulture) and called by both culture pins; LeverFailures is called directly from two
+    // methods, never looked up by reflection; True/False is spelled once (MacBool); the live gate builds the lowered seam
+    // fields through MacLoweredSeamFields. Out of scope, and listed here: the four other mirror-journal files each keep
+    // their own de-DE swap (their own try/finally, in classes that cannot reach the private UnderCulture), and this
+    // file's de-DE is the fake's PowerShell; in this file only UnderCulture and the P2-49 self-test's reset set the culture.
+    static void MacCultureHelpersPinned(string root, Action<bool, string, string> check)
+    {
+        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source.Replace("\r\n", "\n"), @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+        static int Count(string code, string text)
+        {
+            var n = 0;
+            for (var i = code.IndexOf(text, StringComparison.Ordinal); i >= 0; i = code.IndexOf(text, i + text.Length, StringComparison.Ordinal)) n++;
+            return n;
+        }
+        static string Body(string code, string signature)
+        {
+            var start = code.IndexOf("\n    " + signature, StringComparison.Ordinal);
+            if (start < 0) return "";
+            var end = code.IndexOf("\n    }\n", start, StringComparison.Ordinal);
+            return end < 0 ? code[start..] : code[start..end];
+        }
+        var directory = Path.Combine(root, "tests", "mirror-journal");
+        var loop = Code(File.ReadAllText(Path.Combine(directory, "MirrorDriftLoopChecks.cs")));
+        var tildeSign = "NegativeSign = " + "\"~\"";
+        var tildeCall = "MacTildeCulture" + "()";
+        var (tildeTotal, tildeInBuilder, tildeInPins, tildeInRequested) = (Count(loop, tildeSign), Count(Body(loop, "static CultureInfo MacTildeCulture()"), tildeSign),
+            Count(Body(loop, "static void MacSelfTestPins("), tildeCall), Count(Body(loop, "static void MacRequestedTextCulture("), tildeCall));
+        check(tildeTotal == 1 && tildeInBuilder == 1 && tildeInPins >= 1 && tildeInRequested >= 1,
+            "static pin (P2-50): the '~' culture is built once, in MacTildeCulture, and MacSelfTestPins and MacRequestedTextCulture call it",
+            "negative_sign_sets=" + tildeTotal + " in_builder=" + tildeInBuilder + " calls_in_self_test_pins=" + tildeInPins + " calls_in_requested_text_culture=" + tildeInRequested);
+        var lookup = "GetMethod(\"" + "LeverFailures\"";
+        var leverCall = "LeverFailures" + "(";
+        var (lookups, inSelfTests, inNamePins) = (Count(loop, lookup), Count(Body(loop, "static void MacSendBufferSelfTests("), leverCall), Count(Body(loop, "static void MacRecordedNamePins("), leverCall));
+        check(lookups == 0 && inSelfTests >= 1 && inNamePins >= 1,
+            "static pin (P2-50): LeverFailures is called directly from MacSendBufferSelfTests and MacRecordedNamePins (so it is class-level), with no reflection lookup of it",
+            "reflection_lookups=" + lookups + " calls_in_self_tests=" + inSelfTests + " calls_in_name_pins=" + inNamePins);
+        var spelled = "? \"True\" : " + "\"False\"";
+        var (spellings, inMacBool) = (Count(loop, spelled), Count(Body(loop, "static string MacBool("), spelled));
+        check(spellings == 1 && inMacBool == 1,
+            "static pin (P2-50): the macOS detail texts write booleans through MacBool only (True/False spelled once in this file, in MacBool), the UnderCulture self-test included",
+            "spellings=" + spellings + " in_mac_bool=" + inMacBool);
+        var live = Body(loop, "static void RunWriteProgressPerOsLoop(");
+        var (seamCalls, inlineHanded) = (Count(live, "MacLoweredSeamFields" + "("), Count(live, "loweredReports" + "[^1]"));
+        check(seamCalls == 1 && inlineHanded == 0,
+            "static pin (P2-50): the live macOS gate builds LoweredRun, LoweredQueued and LoweredHanded through MacLoweredSeamFields (the helper the failed-lever pin replays), not inline",
+            "calls=" + seamCalls + " inline_handed=" + inlineHanded);
+        var german = "CultureInfo(\"de-" + "DE\")";
+        var others = new[] { "MirrorDriftAdoptChecks.cs", "MirrorDriftChecks.cs", "MirrorDriftResolveChecks.cs", "MirrorDriftSelectChecks.cs" }
+            .Select(file => file + "=" + Count(Code(File.ReadAllText(Path.Combine(directory, file))), german)).ToArray();
+        var sets = System.Text.RegularExpressions.Regex.Matches(loop, @"CultureInfo\.CurrentCulture\s*=(?!=)").Count;
+        var inUnderCulture = System.Text.RegularExpressions.Regex.Matches(Body(loop, "static T UnderCulture<T>("), @"CultureInfo\.CurrentCulture\s*=(?!=)").Count;
+        check(others.All(x => x.EndsWith("=1", StringComparison.Ordinal)) && Count(loop, german) == 0 && sets == 3 && inUnderCulture == 2,
+            "static pin (P2-50): out of the macOS UnderCulture scope, as listed: MirrorDriftAdoptChecks, MirrorDriftChecks, MirrorDriftResolveChecks and MirrorDriftSelectChecks each keep one de-DE swap of their own; this file builds no de-DE culture (its de-DE is the fake's PowerShell) and sets the current culture only in UnderCulture (twice) and the P2-49 self-test's reset",
+            string.Join(" ", others) + " loop_de_de=" + Count(loop, german) + " culture_sets=" + sets + " in_under_culture=" + inUnderCulture);
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
