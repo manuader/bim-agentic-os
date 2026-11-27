@@ -1214,11 +1214,30 @@ try {
     # an assignment in an if counts as local), and a nested scriptblock is read as the same scope; $a.b = 1 and $a[0] = 1
     # read $a; -OutVariable, -PipelineVariable and [ref] arguments are not writes.
     function Get-P755FinallyReads([Management.Automation.Language.Ast]$Block) {
-        $assigned = @($Block.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+        $done = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::OrdinalIgnoreCase)
+        $writes = [Collections.Generic.HashSet[object]]::new()
+        $targets = {
+            param($Left)
+            if ($Left -is [Management.Automation.Language.VariableExpressionAst]) { return , $Left }
+            if ($Left -is [Management.Automation.Language.AttributedExpressionAst]) { return (& $targets $Left.Child) }
+            if ($Left -is [Management.Automation.Language.ArrayLiteralAst]) { return @($Left.Elements | ForEach-Object { & $targets $_ }) }
+            return @()
+        }
+        foreach ($n in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -or $n -is [Management.Automation.Language.ForEachStatementAst] }, $true)) {
+            if ($n -is [Management.Automation.Language.ForEachStatementAst]) { $vars = @($n.Variable); $end = $n.Condition.Extent.EndOffset; $plain = $true }
+            else { $vars = @(& $targets $n.Left); $end = $n.Extent.EndOffset; $plain = $n.Operator -eq [Management.Automation.Language.TokenKind]::Equals }
+            foreach ($v in $vars) {
+                if ($plain) { [void]$writes.Add($v) }
+                $name = $v.VariablePath.UserPath
+                if (!$done.ContainsKey($name) -or $end -lt $done[$name]) { $done[$name] = $end }
+            }
+        }
         $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
         foreach ($v in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
+            if ($writes.Contains($v)) { continue }
             $name = $v.VariablePath.UserPath
-            if ($name -notin @('null', 'true', 'false') -and $assigned -cnotcontains $name) { [void]$names.Add($name) }
+            if ($name -in @('null', 'true', 'false')) { continue }
+            if (!$done.ContainsKey($name) -or $v.Extent.StartOffset -lt $done[$name]) { [void]$names.Add($name) }
         }
         return [string[]]@($names)
     }
@@ -1226,13 +1245,33 @@ try {
     # '=' assignments (not nested in a block, not compound), sorted ordinally and once each. The P7-53 self-test expects
     # the P7-43 finally to read exactly what Invoke-P753Finally provides this way.
     function Get-P757Provided([Management.Automation.Language.FunctionDefinitionAst]$Function) {
-        return [string[]]@()
+        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($s in @(if ($Function -and $Function.Body.EndBlock) { $Function.Body.EndBlock.Statements })) {
+            if ($s -isnot [Management.Automation.Language.AssignmentStatementAst] -or $s.Operator -ne [Management.Automation.Language.TokenKind]::Equals) { continue }
+            $left = $s.Left
+            while ($left -is [Management.Automation.Language.AttributedExpressionAst]) { $left = $left.Child }
+            if ($left -is [Management.Automation.Language.VariableExpressionAst]) { [void]$names.Add($left.VariablePath.UserPath) }
+        }
+        return [string[]]@($names)
     }
     # P7-57: the shared mutant prefix pin as one line: loops = foreach ($mutant in ...) loops; messages = strings in their
     # bodies (not barewords such as command or member names, not strings inside another expandable string); bad = those that are not an expandable string starting with $($p757MutantPrefix); copies = strings anywhere
     # whose value holds $Prefix except the one assigned to $p757MutantPrefix; definitions = assignments to $p757MutantPrefix.
     function Get-P757PrefixCheck([Management.Automation.Language.Ast]$Ast, [string]$Prefix) {
-        return 'unimplemented'
+        $isString = { param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }
+        $loops = @($Ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'mutant' }, $true))
+        $isMessage = {
+            param($n)
+            if (!(& $isString $n) -or ($n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.StringConstantType -eq [Management.Automation.Language.StringConstantType]::BareWord)) { return $false }
+            for ($p = $n.Parent; $p; $p = $p.Parent) { if ($p -is [Management.Automation.Language.ExpandableStringExpressionAst]) { return $false } }
+            return $true
+        }
+        $messages = @($loops | ForEach-Object { $_.Body.FindAll($isMessage, $true) })
+        $bad = @($messages | Where-Object { $_ -isnot [Management.Automation.Language.ExpandableStringExpressionAst] -or !$_.Value.StartsWith('$($p757MutantPrefix)', [StringComparison]::Ordinal) }).Count
+        $definitions = @($Ast.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -eq 'p757MutantPrefix' }, $true))
+        $defined = @($definitions | ForEach-Object { if ($_.Right -is [Management.Automation.Language.CommandExpressionAst]) { $_.Right.Expression } })
+        $copies = @($Ast.FindAll($isString, $true) | Where-Object { $_.Value.Contains($Prefix) -and $defined -notcontains $_ }).Count
+        return "loops $($loops.Count) messages $($messages.Count) bad $bad copies $copies definitions $($definitions.Count)"
     }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
