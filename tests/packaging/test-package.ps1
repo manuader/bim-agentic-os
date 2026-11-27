@@ -1216,7 +1216,9 @@ try {
     # is done ($x; $x = 1 and $x = $x + 1 read $x), and a compound assignment ($x += 1) reads its target. Names compare
     # case-insensitively, as PowerShell variables do. Named limits (self-tested): text order, not control flow (a read after
     # an assignment in an if counts as local), and a nested scriptblock is read as the same scope; $a.b = 1 and $a[0] = 1
-    # read $a; -OutVariable, -PipelineVariable and [ref] arguments are not writes.
+    # read $a; -OutVariable, -PipelineVariable and [ref] arguments are not writes. P7-59: names are also collected
+    # case-insensitively (the first spelling in text order is kept; sorted ordinally ignoring case), and the -OutVariable,
+    # -PipelineVariable and [ref] limits are self-tested (the name they fill reads as from outside).
     function Get-P755FinallyReads([Management.Automation.Language.Ast]$Block) {
         $done = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::OrdinalIgnoreCase)
         $writes = [Collections.Generic.HashSet[object]]::new()
@@ -1236,7 +1238,7 @@ try {
                 if (!$done.ContainsKey($name) -or $end -lt $done[$name]) { $done[$name] = $end }
             }
         }
-        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         foreach ($v in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
             if ($writes.Contains($v)) { continue }
             $name = $v.VariablePath.UserPath
@@ -1247,20 +1249,33 @@ try {
     }
     # P7-57: the variables a function provides to what it runs: the plain or typed variable targets of its body's direct
     # '=' assignments (not nested in a block, not compound), sorted ordinally and once each. The P7-53 self-test expects
-    # the P7-43 finally to read exactly what Invoke-P753Finally provides this way.
+    # the P7-43 finally to read exactly what Invoke-P753Finally provides this way. P7-59: a '$null =' statement provides
+    # nothing (any case); names are collected and sorted as Get-P755FinallyReads does (ordinally ignoring case).
     function Get-P757Provided([Management.Automation.Language.FunctionDefinitionAst]$Function) {
-        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
         foreach ($s in @(if ($Function -and $Function.Body.EndBlock) { $Function.Body.EndBlock.Statements })) {
             if ($s -isnot [Management.Automation.Language.AssignmentStatementAst] -or $s.Operator -ne [Management.Automation.Language.TokenKind]::Equals) { continue }
             $left = $s.Left
             while ($left -is [Management.Automation.Language.AttributedExpressionAst]) { $left = $left.Child }
-            if ($left -is [Management.Automation.Language.VariableExpressionAst]) { [void]$names.Add($left.VariablePath.UserPath) }
+            if ($left -is [Management.Automation.Language.VariableExpressionAst] -and $left.VariablePath.UserPath -ne 'null') { [void]$names.Add($left.VariablePath.UserPath) }
         }
         return [string[]]@($names)
+    }
+    # P7-59: the P7-53 planted-run decision: $null when the run goes ahead (exactly one Invoke-P753Finally, whose provided
+    # list is not empty and equals the P7-43 finally's reads, names compared case-insensitively as PowerShell does);
+    # otherwise the SKIP line, naming why. The P7-43 block prints that line instead of running the planted finally.
+    function Get-P759PlantedSkip([int]$Found, [string]$Provides, [string]$Reads) {
+        $skip = 'SKIP P7-53 planted P7-43 finally run: '
+        if ($Found -ne 1) { return "$skip$Found Invoke-P753Finally definitions found (want 1)" }
+        if (!$Provides) { return "$($skip)Invoke-P753Finally provides no variable" }
+        if ($Reads -ne $Provides) { return "$($skip)the P7-55 finally-variables check failed (reads '$Reads', provided '$Provides')" }
+        return $null
     }
     # P7-57: the shared mutant prefix pin as one line: loops = foreach ($mutant in ...) loops; messages = strings in their
     # bodies (not barewords such as command or member names, not strings inside another expandable string); bad = those that are not an expandable string starting with $($p757MutantPrefix); copies = strings anywhere
     # whose value holds $Prefix except the one assigned to $p757MutantPrefix; definitions = assignments to $p757MutantPrefix.
+    # P7-59: stated, not scoped: copies reads the whole script ($Ast), the P4 section included, not only the P7 parts; a
+    # copy of the prefix anywhere is a second spelling of it.
     function Get-P757PrefixCheck([Management.Automation.Language.Ast]$Ast, [string]$Prefix) {
         $isString = { param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }
         $loops = @($Ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'mutant' }, $true))
@@ -2319,7 +2334,9 @@ try {
                         $p755Invoke = @($p743Ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-P753Finally' }, $true))
                         $p755Provides = if ($p755Invoke.Count -eq 1) { @(Get-P757Provided $p755Invoke[0]) -join ',' } else { '' }
                         $p755Reads = @(Get-P755FinallyReads $p753Finallies[0].Finally) -join ','
-                        $p757RunPlanted = $p755Invoke.Count -eq 1 -and $p755Provides.Length -gt 0 -and $p755Reads -ceq $p755Provides
+                        # P7-59: the run/skip decision is Get-P759PlantedSkip (self-tested below on planted counts and lists).
+                        $p759Skip = Get-P759PlantedSkip $p755Invoke.Count $p755Provides $p755Reads
+                        $p757RunPlanted = $null -eq $p759Skip
                         Assert $p757RunPlanted "P7-55: the P7-43 finally reads exactly what the one Invoke-P753Finally provides (P7-57: its direct assignments, '$p755Provides'; $($p755Invoke.Count) found); the finally reads '$p755Reads': a variable renamed in the finally must be renamed in Invoke-P753Finally"
                         $p755Renamed = @(Get-P755FinallyReads ([Management.Automation.Language.Parser]::ParseInput($p753Text.Replace('$p743Leftovers', '$p743Renamed'), [ref]$null, [ref]$null))) -join ','
                         # P7-59: the expected list is Invoke-P753Finally's provided list (above) with p743Leftovers renamed,
@@ -2366,7 +2383,7 @@ try {
                         $p759Function = [Management.Automation.Language.Parser]::ParseInput('function F { $null = $h.Add(1); $a = 2; [void]$b; $NULL = 3 }', [ref]$null, [ref]$null).Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true)
                         $p759Provided = @(Get-P757Provided $p759Function) -join ','
                         Assert ($p759Provided -ceq 'a') "P7-59 self-test: Get-P757Provided ignores '`$null =' statements: '$p759Provided' (want 'a')"
-                        if (!$p757RunPlanted) { Write-Host "SKIP P7-53 planted P7-43 finally run: the P7-55 finally-variables check failed (reads '$p755Reads', provided '$p755Provides')" }
+                        if (!$p757RunPlanted) { Write-Host $p759Skip }
                         else {
                             $p753Block = [scriptblock]::Create($p753Text.Substring(1, $p753Text.Length - 2))
                             # Runs the finally with its own $failures, $p751Start, probe and leftovers (dynamic scope), so the
@@ -2398,9 +2415,9 @@ try {
                                 @('an empty provided list', 1, '', '', 'provides no variable'),
                                 @('a read missing', 1, 'a,b', 'a', "reads 'a', provided 'a,b'"),
                                 @('a renamed read', 1, 'a,b', 'a,c', "reads 'a,c', provided 'a,b'"))) {
-                            $p759Skip = Get-P759PlantedSkip $p759Case[1] $p759Case[2] $p759Case[3]
-                            $p759Ok = if ($null -eq $p759Case[4]) { $null -eq $p759Skip } else { $null -ne $p759Skip -and $p759Skip.StartsWith('SKIP P7-53 planted P7-43 finally run: ', [StringComparison]::Ordinal) -and $p759Skip.Contains($p759Case[4]) }
-                            Assert $p759Ok "P7-59 self-test: the planted-run decision on $($p759Case[0]) (found $($p759Case[1]), provided '$($p759Case[2])', reads '$($p759Case[3])') is '$p759Skip' (want $(if ($null -eq $p759Case[4]) { 'no SKIP: the run goes ahead' } else { "a SKIP line naming: $($p759Case[4])" }))"
+                            $p759Decision = Get-P759PlantedSkip $p759Case[1] $p759Case[2] $p759Case[3]
+                            $p759Ok = if ($null -eq $p759Case[4]) { $null -eq $p759Decision } else { $null -ne $p759Decision -and $p759Decision.StartsWith('SKIP P7-53 planted P7-43 finally run: ', [StringComparison]::Ordinal) -and $p759Decision.Contains($p759Case[4]) }
+                            Assert $p759Ok "P7-59 self-test: the planted-run decision on $($p759Case[0]) (found $($p759Case[1]), provided '$($p759Case[2])', reads '$($p759Case[3])') is '$p759Decision' (want $(if ($null -eq $p759Case[4]) { 'no SKIP: the run goes ahead' } else { "a SKIP line naming: $($p759Case[4])" }))"
                         }
                     }
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
