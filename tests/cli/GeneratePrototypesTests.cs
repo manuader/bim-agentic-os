@@ -84,6 +84,11 @@ using Bim.Generative;
 //      access there still is not (stated limit: a branch mixing both); (test)!(x) is a cast of !(x), as C# reads it; an
 //      exponent's walk back crosses . and must give a whole decimal real prefix, so 1e5f - x, 0x_1e-5 and 1.E - x are
 //      subtractions while 1e-5f and .5e-3 are one value.
+//      P7-58: the mixed branch c ? a?[0] : b ?[x] : y : d is pinned as read (both ?[ nested, the reading that parses);
+//      the nested count's ? is one named helper (ConditionalQuestion); an exponent prefix takes _ only between digits
+//      (1_e-5 is a subtraction) and its sign only right after the e (1e - x, so 1e /*c*/ - x once comments are stripped,
+//      is a subtraction); (test)!(x) as a null-forgiven call is a stated reach gap (C# reads a cast); the value and
+//      exponent self-tests run through one table-driven helper.
 internal static class GeneratePrototypesTests
 {
     const string PackId = "ar.caba.codigo-edificacion";
@@ -2933,6 +2938,13 @@ internal static class GeneratePrototypesTests
     //     conditional's branch every ?[ is still an element access (c ? b ?[x] : y : d is not split at its inner ?);
     //   - the sign after the e / E of a decimal numeric literal (ExponentSign: 1e-5, 2.5E+3) is no binary operator; a hex
     //     0x1e - 5 still is.
+    // P7-58:
+    //   - a ? that opens a conditional, the span's first or one counted as nested in a branch, is one predicate
+    //     (ConditionalQuestion); the mixed branch c ? a?[0] : b ?[x] : y : d reads both ?[ as nested conditionals;
+    //   - an exponent's sign follows its e directly (1e - x is a subtraction, as is 1e /*c*/ - x once comments are
+    //     stripped) and its prefix takes _ only between digits (1_e-5 and 1.5_e-3 are subtractions);
+    //   - stated reach gap: (test)!(x) is a cast of !(x), as C# reads it, so a delegate test written so is never seen called;
+    //     C# does not compile that text as a call of a lambda's or method's parameter (test names no type).
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -3087,14 +3099,15 @@ internal static class GeneratePrototypesTests
                 {
                     var next = i + 1 < e ? code[i + 1] : '\0';
                     if (next == '?') { if (coalesce < 0) coalesce = i; i++; }
-                    else if (question < 0 && (next is not ('.' or '[') || (next == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) question = i;
+                    else if (question < 0 && ConditionalQuestion(code, i, e, true)) question = i;
                 }
             }
             if (question >= 0)
             {
                 // P7-56: a ?[ inside the branch whose ] is followed by : (CollectionBranch) first counts as a nested
                 // conditional (c ? b ?[x] : y : d); when no : is then left for this conditional, every ?[ there is an
-                // element access (c ? a?[0] : d). Stated limit: a branch mixing both kinds is read with neither nested.
+                // element access (c ? a?[0] : d). Stated limit: a branch is read with all such ?[ nested or none (P7-58:
+                // c ? a?[0] : b ?[x] : y : d nests both, the reading that parses).
                 foreach (var collections in new[] { true, false })
                 {
                     var nested = 0;
@@ -3106,7 +3119,7 @@ internal static class GeneratePrototypesTests
                         else if (c is ')' or ']' or '}') depth--;
                         else if (depth > 0) continue;
                         else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
-                        else if (c == '?' && (!(i + 1 < e && code[i + 1] is '.' or '[') || (collections && i + 1 < e && code[i + 1] == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) nested++;
+                        else if (c == '?' && ConditionalQuestion(code, i, e, collections)) nested++;
                         else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
                         {
                             Add(question + 1, i);
@@ -3132,7 +3145,8 @@ internal static class GeneratePrototypesTests
                     var p = i - 1;
                     while (p > s && char.IsWhiteSpace(code[p])) p--;
                     if (!(char.IsLetterOrDigit(code[p]) || code[p] is '_' or ')' or ']' or '"' or '\'')) continue;
-                    if (ExponentSign(code, s, p)) continue;
+                    // P7-58: an exponent's sign follows its e directly (no whitespace, so no stripped comment, between).
+                    if (p == i - 1 && ExponentSign(code, s, p)) continue;
                     Add(s, i);
                     if (c == '+') Add(i + 1, e);
                     return;
@@ -3170,6 +3184,15 @@ internal static class GeneratePrototypesTests
         return c is '+' or '-' && KeywordTypes.Contains(code[open..close].Trim().TrimEnd('?').TrimEnd());
     }
 
+    // P7-58: whether the ? at index (not the first of ??, which callers skip) opens a conditional in [.., end): not ?. nor
+    // ?[ (but ?[ starting a collection branch when collections), and not a nullable type's ? (NullableMark). One predicate
+    // for the span's first ? and for the ? a branch counts as nested.
+    static bool ConditionalQuestion(string code, int index, int end, bool collections)
+    {
+        var next = index + 1 < end ? code[index + 1] : '\0';
+        return (next is not ('.' or '[') || (collections && next == '[' && CollectionBranch(code, index + 1, end))) && !NullableMark(code, index, end);
+    }
+
     // P7-54: whether the ?[ whose [ is at open starts a collection-expression branch of a conditional (c ?[x] : d): the
     // matching ] is followed by a : (not ::). Else it is a null-conditional element access (a?[0]). P7-56: also told inside
     // a conditional's branch (c ? b ?[x] : y : d), falling back to element accesses when the conditional's : is not left.
@@ -3188,7 +3211,9 @@ internal static class GeneratePrototypesTests
     // whole decimal real prefix (digits, an optional . and digits, or . and digits, then e): a suffix ends no exponent
     // (1e5f - x), a hex stays one (0x_1e-5), and 1.E (a member access on 1) or 2.5.X1e (a member) is no exponent. Stated
     // limit: the token is read from the text before last only; a literal cut by whitespace or a comment is not seen.
-    static readonly System.Text.RegularExpressions.Regex ExponentPrefix = new(@"^(?:[0-9][0-9_]*(?:\.[0-9][0-9_]*)?|\.[0-9][0-9_]*)[eE]$");
+    // P7-58: a digit separator stands only between digits (1_0e, 1__0e; not 1_e nor 1.5_e), and Values asks only when the
+    // sign follows last directly, so a literal cut by whitespace or a stripped comment (1e - x) is a subtraction.
+    static readonly System.Text.RegularExpressions.Regex ExponentPrefix = new(@"^(?:[0-9](?:_*[0-9])*(?:\.[0-9](?:_*[0-9])*)?|\.[0-9](?:_*[0-9])*)[eE]$");
     static bool ExponentSign(string code, int start, int last)
     {
         if (code[last] is not ('e' or 'E')) return false;
@@ -4163,6 +4188,13 @@ internal static class GeneratePrototypesTests
     //       no value); a suffixed exponent 1e5f - test and 1e-5f, a separated hex 0x_1e-5, a leading-dot .5e-3 and a member
     //       access on an integer 1.E - test have self-tests; a lambda's parameter passed on after a nested collection branch
     //       is unresolved naming that.
+    //   P7-58:
+    //   af. the aa / ac / ad / ae value and exponent self-tests run through one table-driven helper (ValueSelfTests, the
+    //       cases and check names unchanged); the mixed branch c ? a?[0] : b ?[x] : test : d is pinned as read (both ?[
+    //       nested); a separator next to e (1_e-5, 1.5_e-3) is a subtraction, 1__0e-5 one value; 2.5.X1e - test, a spaced
+    //       sign 1e - test and 1e /*c*/ - test as comment-stripped are subtractions, while on text with the comment kept it
+    //       is one value (stated limit: Values reads comment-stripped code); a lambda's parameter written (test)!(0) is a
+    //       stated reach gap naming no problem of test (C# reads a cast of !(0)), while test(0) is named.
     static void WritePinScopeStage(string root, Action<bool, string, string> check)
     {
         void Check(bool condition, string name, string detail = "") => check(condition, "generate-prototypes: P7-40 " + name, detail);
@@ -4533,6 +4565,22 @@ internal static class GeneratePrototypesTests
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
+        // P7-58 (af): one table-driven helper for the Values self-tests: a row with Expected pins Values' whole list in
+        // order, a row with Named whether test itself is one of them; kind starts each check's name.
+        void ValueSelfTests(string kind, IEnumerable<(string Label, string Code, bool? Named, string[]? Expected)> rows)
+        {
+            foreach (var (label, text, named, expected) in rows)
+            {
+                var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
+                if (expected is not null)
+                    Check(values.SequenceEqual(expected), kind + ": " + label,
+                        "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
+                else
+                    Check(values.Contains("test") == named, kind + ": " + label + (named == true ? " has test as a value" : " does not have test itself as a value"),
+                        "values [" + string.Join(", ", values) + "]");
+            }
+        }
+
         // P7-52 (aa): Values tells a parenthesised operand followed by a binary operator ((test) ?? d, (test) + d) from a
         // cast ((T)test, (T)(test), (int)-test): test is a value of the first and of the casts' operands; (ab) a nullable
         // generic's ? before ?? (new List<int?>() ?? test, also spaced List<int? >) is no conditional.
@@ -4552,13 +4600,7 @@ internal static class GeneratePrototypesTests
             ("a nullable generic cast before ?? (List<int?>)test ?? d", "(List<int?>)test ?? d", true),
             ("a conditional with a nullable generic branch c ? new List<int?>() : test", "c ? new List<int?>() : test", true),
         };
-        foreach (var (label, text, named) in valueTexts)
-        {
-            var values = Values(text, 0, text.Length);
-            var isValue = values.Any(v => text[v.Start..v.End] == "test");
-            Check(isValue == named, "P7-52 value self-test: " + label + (named ? " has test as a value" : " does not have test itself as a value"),
-                "values [" + string.Join(", ", values.Select(v => text[v.Start..v.End])) + "]");
-        }
+        ValueSelfTests("P7-52 value self-test", valueTexts.Select(r => (r.Label, r.Code, (bool?)r.Named, (string[]?)null)));
         var operandMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("(aa) a lambda's parameter passed on parenthesised before ??", new[] { (ReadBytesCall, Poke),
@@ -4589,13 +4631,7 @@ internal static class GeneratePrototypesTests
             ("a conditional whose branch is an element access c ? a?[0] : test", "c ? a?[0] : test", true),
             ("an element access before ?? a?[0] ?? test", "a?[0] ?? test", true),
         };
-        foreach (var (label, text, named) in tidyValueTexts)
-        {
-            var values = Values(text, 0, text.Length);
-            var isValue = values.Any(v => text[v.Start..v.End] == "test");
-            Check(isValue == named, "P7-54 value self-test: " + label + (named ? " has test as a value" : " does not have test itself as a value"),
-                "values [" + string.Join(", ", values.Select(v => text[v.Start..v.End])) + "]");
-        }
+        ValueSelfTests("P7-54 value self-test", tidyValueTexts.Select(r => (r.Label, r.Code, (bool?)r.Named, (string[]?)null)));
         var exponentTexts = new (string Label, string Code, string[] Expected)[]
         {
             ("an exponent literal 1e-5 is one value", "1e-5", new[] { "1e-5" }),
@@ -4603,12 +4639,7 @@ internal static class GeneratePrototypesTests
             ("an exponent literal 1_0e-5 after a subtraction keeps its sign", "test - 1_0e-5", new[] { "test - 1_0e-5", "test" }),
             ("a hex literal 0x1e - 5 is a subtraction", "0x1e-5", new[] { "0x1e-5", "0x1e" }),
         };
-        foreach (var (label, text, expected) in exponentTexts)
-        {
-            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
-            Check(values.SequenceEqual(expected), "P7-54 exponent self-test: " + label,
-                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
-        }
+        ValueSelfTests("P7-54 exponent self-test", exponentTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
         var operandTidyMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("(ac) a lambda's parameter passed on null-forgiving parenthesised before ??", new[] { (ReadBytesCall, Poke),
@@ -4641,12 +4672,7 @@ internal static class GeneratePrototypesTests
             ("an element access in a branch c ? a?[0] : test", "c ? a?[0] : test", new[] { "c ? a?[0] : test", "a?[0]", "test" }),
             ("a cast of a parenthesised logical not (test)!(x), as C# reads it", "(test)!(x)", new[] { "(test)!(x)", "!(x)" }),
         };
-        foreach (var (label, text, expected) in nestedValueTexts)
-        {
-            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
-            Check(values.SequenceEqual(expected), "P7-56 value self-test: " + label,
-                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
-        }
+        ValueSelfTests("P7-56 value self-test", nestedValueTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
         // A literal's suffix ends no exponent (1e5f - test is a subtraction, 1e-5f is one value); a hex with a separator
         // (0x_1e-5) is a subtraction; a leading-dot real .5e-3 is one value; 1.E is a member access on 1, not an exponent.
         var suffixExponentTexts = new (string Label, string Code, string[] Expected)[]
@@ -4657,12 +4683,7 @@ internal static class GeneratePrototypesTests
             ("a leading-dot exponent literal .5e-3 is one value", ".5e-3", new[] { ".5e-3" }),
             ("a member access on an integer 1.E - test is a subtraction", "1.E - test", new[] { "1.E - test", "1.E" }),
         };
-        foreach (var (label, text, expected) in suffixExponentTexts)
-        {
-            var values = Values(text, 0, text.Length).Select(v => text[v.Start..v.End]).ToArray();
-            Check(values.SequenceEqual(expected), "P7-56 exponent self-test: " + label,
-                "values [" + string.Join(", ", values) + "], expected [" + string.Join(", ", expected) + "]");
-        }
+        ValueSelfTests("P7-56 exponent self-test", suffixExponentTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
         var nestedMutants = new (string Label, (string Pattern, string Replacement)[] Edits, string Reason)[]
         {
             ("(ae) a lambda's parameter passed on after a nested collection branch", new[] { (ReadBytesCall, Poke),
@@ -4673,6 +4694,49 @@ internal static class GeneratePrototypesTests
             var mutated = Mutate(followed, edits);
             var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
             Check(mutated is not null && problems.Any(p => p.Contains(reason, StringComparison.Ordinal)), "P7-56 reach self-test: " + label + " is rejected for " + reason,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-58 (af): the mixed branch is pinned as Values reads it: with collection branches counted first both ?[ are
+        // nested conditionals (c ? (a ? [0] : (b ? [x] : test)) : d), the only reading under which the text parses.
+        var mixedValueTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("a mixed branch c ? a?[0] : b ?[x] : test : d reads both ?[ as nested conditionals", "c ? a?[0] : b ?[x] : test : d",
+                new[] { "c ? a?[0] : b ?[x] : test : d", "a?[0] : b ?[x] : test", "[0]", "b ?[x] : test", "[x]", "test", "d" }),
+        };
+        ValueSelfTests("P7-58 value self-test", mixedValueTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
+        // A digit separator stands only between digits, so 1_e and 1.5_e end no exponent prefix; an exponent's sign follows
+        // its e directly, so a spaced 1e - test (and 1e /*c*/ - test, a block comment being one space once stripped) is a
+        // subtraction. Stated limit: Values reads comment-stripped code; on text with the comment kept the operand ending
+        // in */ is not one, so 1e /*c*/ - test is one value there.
+        var commentCut = ApplyIntentTests.CodeOf("1e /*c*/ - test");
+        var separatorExponentTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("a separator next to e 1_e-5 is a subtraction", "1_e-5", new[] { "1_e-5", "1_e" }),
+            ("a separator next to e after a fraction 1.5_e-3 is a subtraction", "1.5_e-3", new[] { "1.5_e-3", "1.5_e" }),
+            ("a doubled separator between digits 1__0e-5 is one value", "1__0e-5", new[] { "1__0e-5" }),
+            ("a member X1e of a real 2.5.X1e - test is a subtraction", "2.5.X1e - test", new[] { "2.5.X1e - test", "2.5.X1e" }),
+            ("a spaced sign 1e - test is a subtraction", "1e - test", new[] { "1e - test", "1e" }),
+            ("a literal cut by a comment 1e /*c*/ - test, comment-stripped, is a subtraction", commentCut, new[] { commentCut, "1e" }),
+            ("stated limit: 1e /*c*/ - test with the comment kept is one value", "1e /*c*/ - test", new[] { "1e /*c*/ - test" }),
+        };
+        ValueSelfTests("P7-58 exponent self-test", separatorExponentTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
+        // Stated reach gap: C# reads (test)!(0) as a cast of !(0) to a type test (which it does not compile for a lambda's
+        // parameter), never as a null-forgiven call of test, and so does the reach: no problem names test. A call test(0)
+        // is named, as before.
+        var castCallMutants = new (string Label, (string Pattern, string Replacement)[] Edits, bool Named)[]
+        {
+            ("(af) stated gap: a lambda's parameter written (test)!(0), a cast as C# reads it", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => (test)!(0); run(() => 0); } static void RequireUnixRegular(") }, false),
+            ("(af) a lambda's parameter called test(0)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test(0); run(() => 0); } static void RequireUnixRegular(") }, true),
+        };
+        foreach (var (label, edits, named) in castCallMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && (named ? problems.Any(p => p.Contains(LambdaCalled, StringComparison.Ordinal)) : !problems.Any(p => p.Contains("reaches test", StringComparison.Ordinal))),
+                "P7-58 reach self-test: " + label + (named ? " is rejected for " + LambdaCalled : " names no problem of test"),
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
         }
 
