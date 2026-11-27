@@ -867,6 +867,7 @@ internal static class DeletedCwdPathTests
         LockVerbsSelfTest51(root, Check);
         WiringComments55(root, Check);
         WiringComments57(root, Check);
+        SelfBodySelfTest59(Check);
         Contract47(root, Check);
         GenericCatch43(scratch, cliDll, Check);
     }
@@ -954,6 +955,7 @@ internal static class DeletedCwdPathTests
             ScopingSelfTest53(Check);
             ScopingSelfTest55(Check);
             ScopingSelfTest57(Check);
+            ScopingSelfTest59(Check);
         }
     }
 
@@ -1012,6 +1014,72 @@ internal static class DeletedCwdPathTests
         };
         var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
         Check(taken.Length == 0, Label("BlockEnd45 reports a non-raw format clause hole followed by a lone closing brace (an even run) as unclosed"), string.Join(" | ", taken));
+    }
+
+    // P10-59 self-tests: format clauses beside brace runs and quotes, each measured by a compiled probe (EchoFormat57) and
+    // pinned on BlockEnd45. A raw hole's format clause ends at its first closing brace: of the closing run the first n (the
+    // dollars) close the hole and the rest, fewer than n, are content (as P10-51 reads it). In a non-raw format clause a
+    // regular string reads a backslash as an escape (\" is a quote in the format), a verbatim one reads "" as a quote, and
+    // a lone quote ends the literal there, so the hole is unclosed (refused).
+    static void ScopingSelfTest59(Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-59 static pin scanner self-test: " + what;
+        var echo = new EchoFormat57();
+        var raw2 = $$"""{{echo:N2}}}""";
+        var raw3 = $$$"""{{{echo:N2}}}}}""";
+        Check(raw2 == "[N2]}" && raw3 == "[N2]}}",
+            Label("C# ends a raw hole's format clause at its first closing brace and reads the rest of the closing run (fewer than the dollars) as content (compiled probe, expected [N2]} and [N2]}})"), raw2 + " | " + raw3);
+        var escaped = $"{echo:\"}";
+        var backslash = $"{echo:\\}";
+        var doubled = $@"{echo:""}";
+        Check(escaped == "[\"]" && backslash == "[\\]" && doubled == "[\"]",
+            Label("C# reads \\\" and \\\\ as escapes in a regular format clause and \"\" as a quote in a verbatim one (compiled probe, expected [\"], [\\] and [\"])"), escaped + " | " + backslash + " | " + doubled);
+        var q3 = "\"\"\"";
+        var accepted = new (string Name, string Text)[]
+        {
+            ("$$ raw format clause hole closed by three braces", "{ a = $$" + q3 + "{{y:N2}}}" + q3 + "; }"),
+            ("$$$ raw format clause hole closed by five braces", "{ a = $$$" + q3 + "{{{y:N2}}}}}" + q3 + "; }"),
+            ("$ escaped quote in a format clause", "{ a = $\"{y:\\\"}\"; }"),
+            ("$ escaped backslash in a format clause", "{ a = $\"{y:\\\\}\"; }"),
+            ("$@ doubled quote in a format clause", "{ a = $@\"{y:\"\"}\"; }"),
+        };
+        var wrong = accepted.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 accepts raw format clause holes closed by n + k braces (k < n) and escaped quotes and backslashes in non-raw format clauses"), string.Join(" | ", wrong));
+        var refused = new (string Name, string Text)[]
+        {
+            ("$$$ raw format clause hole closed by six braces", "{ a = $$$" + q3 + "{{{y:N2}}}}}}" + q3 + "; }"),
+            ("$ lone quote in a format clause", "{ a = $\"{y:a\"}\"; }"),
+            ("$@ lone quote in a format clause", "{ a = $@\"{y:a\"}\"; }"),
+            ("$@ backslash then a lone quote in a format clause (no escape in verbatim)", "{ a = $@\"{y:\\\"}\"; }"),
+        };
+        var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
+        Check(taken.Length == 0, Label("BlockEnd45 reports a raw format clause closing run of twice the dollars and a lone quote in a non-raw format clause (C# ends the literal there) as unclosed"), string.Join(" | ", taken));
+    }
+
+    // P10-59 self-test of SelfBody57 on small sources: the declaration may be indented with tabs or any spaces, carry
+    // modifiers before static, and open its body on the same line; a non-static or non-void method, a commented one and a
+    // longer name are not taken.
+    static void SelfBodySelfTest59(Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-59 SelfBody57 self-test: " + what;
+        var found = new (string Name, string Source, string Body)[]
+        {
+            ("tab indentation, brace on the declaration line", "class C\n{\n\tstatic void Probe59(int x) {\n\t\tB();\n\t}\n}", "{\n\t\tB();\n\t}"),
+            ("two-space indentation, private modifier, default holding a parenthesis", "class C\n{\n  private static void Probe59(string s = \")\")\n  {\n  }\n}", "{\n  }"),
+            ("four-space indentation, brace on the next line", "class C\n{\n    static void Probe59()\n    {\n        B();\n    }\n}", "{\n        B();\n    }"),
+        };
+        var wrong = found.Where(item => SelfBody57(item.Source, "Probe59") != item.Body).Select(item => item.Name + " (got '" + SelfBody57(item.Source, "Probe59") + "')").ToArray();
+        Check(wrong.Length == 0, Label("SelfBody57 finds a static void body whatever the indentation, modifiers and brace placement"), string.Join(" | ", wrong));
+        var missing = new (string Name, string Source)[]
+        {
+            ("non-static", "class C\n{\n    void Probe59()\n    {\n    }\n}"),
+            ("non-void", "class C\n{\n    static int Probe59()\n    {\n        return 0;\n    }\n}"),
+            ("commented", "class C\n{\n    // static void Probe59() { }\n}"),
+            ("longer name", "class C\n{\n    static void Probe59X()\n    {\n    }\n}"),
+        };
+        var taken = missing.Where(item => SelfBody57(item.Source, "Probe59").Length != 0).Select(item => item.Name).ToArray();
+        Check(taken.Length == 0, Label("SelfBody57 takes only a static void declaration of that exact name"), string.Join(" | ", taken));
     }
 
     sealed class EchoFormat57 : IFormattable
@@ -1465,9 +1533,10 @@ internal static class DeletedCwdPathTests
             && p49.Contains("variable names", StringComparison.Ordinal) && p49.Contains("green 45585771329", StringComparison.Ordinal),
             "P10-49 contract: the P10-49 paragraph states format clauses, string or char defaults, the $$ closing brace run and the wiring pin's variable names",
             section.Length == 0 ? "section not found" : p49.Length == 0 ? "P10-49 paragraph not found" : p49);
-        // P10-57: the heading pin follows the heading (P10-51 listed P10-47, P10-49 and P10-51; P10-57 adds P10-53, P10-55, P10-57).
-        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47, P10-49, P10-51, P10-53, P10-55, P10-57)", StringComparison.Ordinal),
-            "P10-57 contract: the section heading lists P10-47 through P10-57", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
+        // P10-57: the heading pin follows the heading (P10-51 listed P10-47, P10-49 and P10-51; P10-57 adds P10-53, P10-55, P10-57;
+        // P10-59 adds P10-59).
+        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47, P10-49, P10-51, P10-53, P10-55, P10-57, P10-59)", StringComparison.Ordinal),
+            "P10-59 contract: the section heading lists P10-47 through P10-59", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
         // P10-51: the P10-49 paragraph cites its green run and the P10-51 paragraph states the LockVerbs47 literals, the raw
         // hole brace runs and the hole-only parenthesis count.
         Check(p49.Contains("green 45665616001", StringComparison.Ordinal),
@@ -1503,6 +1572,17 @@ internal static class DeletedCwdPathTests
             && p57.Contains("`SelfSource57`", StringComparison.Ordinal) && p57.Contains("RevitCommandDeadlineTests.cs", StringComparison.Ordinal),
             "P10-57 contract: the P10-57 paragraph states the format clause brace run rule, its compiled probe and the shared self reader",
             section.Length == 0 ? "section not found" : p57.Length == 0 ? "P10-57 paragraph not found" : p57);
+        // P10-59: the P10-57 paragraph cites its red and green runs (not the board placeholder), and an own paragraph states
+        // the raw format clause probe, the non-raw format clause quote and backslash rule, SelfBody57 and the CRLF normalisation.
+        Check(p57.Contains("red 45925500111", StringComparison.Ordinal) && p57.Contains("green 45927562052", StringComparison.Ordinal) && !p57.Contains("run id on the board", StringComparison.Ordinal),
+            "P10-59 contract: the P10-57 paragraph cites red 45925500111 and green 45927562052 instead of the board placeholder", section.Length == 0 ? "section not found" : p57.Length == 0 ? "P10-57 paragraph not found" : p57);
+        var p59 = Paragraph("P10-59 (test tidy");
+        Check(p59.Contains("raw", StringComparison.Ordinal) && p59.Contains("format clause", StringComparison.Ordinal) && p59.Contains("compiled probe", StringComparison.Ordinal)
+            && p59.Contains("backslash", StringComparison.Ordinal) && p59.Contains("lone quote", StringComparison.Ordinal) && p59.Contains("`SelfBody57`", StringComparison.Ordinal)
+            && p59.Contains("`static void`", StringComparison.Ordinal) && p59.Contains("CRLF", StringComparison.Ordinal) && p59.Contains("`RestoreWiring47`", StringComparison.Ordinal)
+            && p59.Contains("`LockVerbsSelfTest51`", StringComparison.Ordinal),
+            "P10-59 contract: the P10-59 paragraph states the raw format clause probe, the non-raw format clause quote and backslash rule, the SelfBody57 assumptions and the CRLF normalisation",
+            section.Length == 0 ? "section not found" : p59.Length == 0 ? "P10-59 paragraph not found" : p59);
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
