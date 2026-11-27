@@ -36,8 +36,14 @@ internal static class DeadlineSourceScan
     // it, where a bracket inside a string or char literal (or a comment) is not one of the code's.
     internal static string CodeMask(string source) => Blanked(source, comments: true, literals: true);
 
+    // P1-51: every comment/literal marking pass over a source (Blanked, CodeMarks), counted per thread, so a self-test can
+    // pin how many passes one MemberBody(raw: true) costs.
+    [ThreadStatic] static int maskPasses;
+    internal static int MaskPasses => maskPasses;
+
     static string Blanked(string source, bool comments, bool literals)
     {
+        maskPasses++;
         var marks = new bool[source.Length];
         var i = 0;
         StripCodeInto(source, ref i, new StringBuilder(source.Length), 0, comments ? marks : null, literals ? marks : null);
@@ -176,6 +182,7 @@ internal static class DeadlineSourceScan
     // raw path to tell a masked space or newline of a signature from code.
     static bool[] CodeMarks(string source)
     {
+        maskPasses++;
         var marks = new bool[source.Length];
         var i = 0;
         StripCodeInto(source, ref i, new StringBuilder(source.Length), 0, marks, marks);

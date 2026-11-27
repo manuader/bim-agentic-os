@@ -899,9 +899,13 @@ internal static class RevitCommandDeadlineTests
     // P1-49: a line Retitled cannot read (no 'cli-inputs step' prefix) gives a ::warning:: naming the problem with the FAIL
     // count instead of throwing, so Run's finally block still prints a summary; the problem itself reds by name in
     // VisibilitySelfTest.
-    static string FailSummary(IReadOnlyList<string> failed)
+    static string FailSummary(IReadOnlyList<string> failed) => FailSummary(failed, CliInputsSummary.Line);
+
+    // P1-51: the same with the summary line source as a seam, so the fallback line is self-tested on a replica of
+    // CliInputsSummary.Line under a changed title (ChangedTitleLine) without touching tests/cli/Program.cs.
+    static string FailSummary(IReadOnlyList<string> failed, Func<IReadOnlyList<string>, string> summaryLine)
     {
-        var line = CliInputsSummary.Line(failed);
+        var line = summaryLine(failed);
         return RetitleProblem(line) is { } problem ? "::warning::" + SummaryTitle + ": " + N(failed.Count) + " FAIL, not listed: " + SummaryEscape(problem) : Retitled(line, SummaryTitle);
     }
 
@@ -929,6 +933,10 @@ internal static class RevitCommandDeadlineTests
     // P1-47: a CliInputsSummary.Line under another title (its prefix only; the names after it are left as they are).
     // P1-49: the prefix is the literal 'cli-inputs step' (not CliInputsSummary.Title, so a changed title is caught), and
     // a line without it throws a named problem instead of being passed on unchanged.
+    // P1-51: RetitledPrefix and CliInputsSummary.Title are tied by two named checks in VisibilitySelfTest: first the live
+    // check LiveRetitleName (CliInputsSummary.Line read through Retitled; a changed title reds it by name, planted once
+    // as a self-test with ChangedTitleLine), then the stated check 'P1-51 Retitled: RetitledPrefix is
+    // CliInputsSummary.Title'.
     const string RetitledPrefix = "cli-inputs step";
     static string? RetitleProblem(string line) =>
         line.StartsWith("::warning::" + RetitledPrefix + ": ", StringComparison.Ordinal) || line.StartsWith(RetitledPrefix + ": ", StringComparison.Ordinal) ? null
@@ -941,6 +949,21 @@ internal static class RevitCommandDeadlineTests
         var warning = "::warning::" + RetitledPrefix + ": ";
         return line.StartsWith(warning, StringComparison.Ordinal) ? "::warning::" + title + ": " + line[warning.Length..] : title + ": " + line[(RetitledPrefix.Length + 2)..];
     }
+
+    // P1-51: the P1-49 live check (name and expectation unchanged), its line source a parameter so the changed-title
+    // mutant can be planted through it once; VisibilitySelfTest runs it on CliInputsSummary.Line first.
+    const string LiveRetitleName = "P1-49 Retitled: CliInputsSummary.Line starts with the 'cli-inputs step' prefix Retitled replaces (a FAIL list and 0 FAIL)";
+    static void LiveRetitleCheck(Func<IReadOnlyList<string>, string> summaryLine, Action<bool, string, string> check)
+    {
+        var liveList = RetitleOutcome(summaryLine(new[] { "a" }));
+        var liveNone = RetitleOutcome(summaryLine(Array.Empty<string>()));
+        check(liveList == "returned ::warning::" + SummaryTitle + ": 1 FAIL: #1 a" && liveNone == "returned " + SummaryTitle + ": 0 FAIL",
+            LiveRetitleName, liveList + " | " + liveNone);
+    }
+
+    // P1-51: a replica of CliInputsSummary.Line with its title changed to 'cli-inputs stage' (the P1-49 mutant).
+    static string ChangedTitleLine(IReadOnlyList<string> failed) =>
+        CliInputsSummary.Line(failed).Replace(CliInputsSummary.Title + ": ", "cli-inputs stage: ", StringComparison.Ordinal);
 
     // P1-49: what Retitled does with a line under SummaryTitle: "returned <line>" or "threw <message>", for the self-tests.
     static string RetitleOutcome(string line)
@@ -1020,11 +1043,10 @@ internal static class RevitCommandDeadlineTests
     static void VisibilitySelfTest(string root, Action<bool, string, string> check)
     {
         // P1-49: first, so a changed CliInputsSummary prefix reds by this name before any summary self-test reads it.
-        var liveList = RetitleOutcome(CliInputsSummary.Line(new[] { "a" }));
-        var liveNone = RetitleOutcome(CliInputsSummary.Line(Array.Empty<string>()));
-        check(liveList == "returned ::warning::" + SummaryTitle + ": 1 FAIL: #1 a" && liveNone == "returned " + SummaryTitle + ": 0 FAIL",
-            "P1-49 Retitled: CliInputsSummary.Line starts with the 'cli-inputs step' prefix Retitled replaces (a FAIL list and 0 FAIL)",
-            liveList + " | " + liveNone);
+        LiveRetitleCheck(CliInputsSummary.Line, check);
+        // P1-51: the stated tie, after the live check (which names a changed title first).
+        check(string.Equals(RetitledPrefix, CliInputsSummary.Title, StringComparison.Ordinal),
+            "P1-51 Retitled: RetitledPrefix is CliInputsSummary.Title", RetitledPrefix + " | " + CliInputsSummary.Title);
         var names = Enumerable.Range(1, 12).Select(k => "P1-43 synthetic failure " + N(k)).ToList();
         names[3] = "P1-43 synthetic failure 4 with a ';' and a '|'";
         names[7] = "P1-43 synthetic failure 8\nsecond line 100%";
@@ -1146,6 +1168,33 @@ internal static class RevitCommandDeadlineTests
         check(retitleOutcomes.All(outcome => outcome.StartsWith("threw ", StringComparison.Ordinal) && outcome.Contains("'cli-inputs step' prefix", StringComparison.Ordinal)),
             "P1-49 Retitled self-test: a line without the 'cli-inputs step' prefix (changed title, other level, other case, empty) throws a named problem, not passed on unchanged",
             string.Join(" | ", retitleOutcomes));
+
+        // P1-51: the changed-title mutant planted once through the P1-49 live check: it reds by that check's name (and
+        // nothing else), recorded by a collecting check that prints nothing.
+        var planted = new List<string>();
+        LiveRetitleCheck(ChangedTitleLine, Collecting((_, _, _) => { }, planted));
+        check(planted.SequenceEqual(new[] { LiveRetitleName }),
+            "P1-51 planted self-test: the changed-title mutant (CliInputsSummary.Line under 'cli-inputs stage') reds the P1-49 live check by its name",
+            N(planted.Count) + " FAIL: " + string.Join(" ; ", planted));
+        // P1-51: FailSummary's fallback line on the same mutant, through the seam: one ::warning:: line with the FAIL
+        // count and the named problem quoting the line, for a FAIL list and for 0 FAIL; it never throws.
+        const string ProblemHead = "Retitled: the line does not start with the 'cli-inputs step' prefix ('::warning::cli-inputs step: ' or 'cli-inputs step: '): ";
+        var fallbackList = FailSummary(new[] { "a", "b" }, ChangedTitleLine);
+        var fallbackNone = FailSummary(Array.Empty<string>(), ChangedTitleLine);
+        check(fallbackList == "::warning::" + SummaryTitle + ": 2 FAIL, not listed: " + ProblemHead + "::warning::cli-inputs stage: 2 FAIL: #1 a; #2 b"
+            && fallbackNone == "::warning::" + SummaryTitle + ": 0 FAIL, not listed: " + ProblemHead + "cli-inputs stage: 0 FAIL",
+            "P1-51 summary self-test: FailSummary on a changed-title line is the fallback '::warning::<title>: N FAIL, not listed: <problem>' (a FAIL list and 0 FAIL)",
+            fallbackList + " | " + fallbackNone);
+        // P1-51: RetitleProblem quotes at most the line's first 80 characters, then '...': an 80-character line whole, an
+        // 81- or 100-character one cut at 80; the fallback line carries the cut quote.
+        string Quoted(int length) => "cli-inputs stage: " + new string('y', length - "cli-inputs stage: ".Length);
+        var (line80, line81, line100) = (Quoted(80), Quoted(81), Quoted(100));
+        var cutFallback = FailSummary(new[] { "a" }, _ => line100);
+        check(RetitleProblem(line80) == ProblemHead + line80 && RetitleProblem(line81) == ProblemHead + line81[..80] + "..."
+            && RetitleProblem(line100) == ProblemHead + line100[..80] + "..." && RetitleProblem("") == ProblemHead
+            && cutFallback == "::warning::" + SummaryTitle + ": 1 FAIL, not listed: " + ProblemHead + line100[..80] + "...",
+            "P1-51 Retitled self-test: RetitleProblem quotes a line of 80 characters whole and cuts a longer one at 80 with '...' (also in the fallback line)",
+            (RetitleProblem(line81) ?? "null") + " | " + cutFallback);
 
         // ---- P1-45 (b): the runtime annotation's level and place ----
         // The step that runs cli-inputs (scripts/verify.ps1) also runs the gates that print ::notice:: lines (tests/mcp,
@@ -1546,6 +1595,18 @@ internal static class RevitCommandDeadlineTests
         check(MemberBody(spacesInLiteral, "  ", true) is null && MemberBody(newlineInBlock, " \n ", true) is null,
             "P1-49 MemberBody self-test: raw text skips a signature of spaces inside a string literal, or of spaces and a newline inside a block comment (masked, though blanked to themselves)",
             (MemberBody(spacesInLiteral, "  ", true) ?? "null") + " ; " + (MemberBody(newlineInBlock, " \n ", true) ?? "null"));
+        // P1-51: one raw MemberBody call costs one comment and literal marking pass (CodeMask's blanked text and the mask
+        // marks come from the same StripCodeInto pass); the stripped path costs none.
+        var passesBefore = DeadlineSourceScan.MaskPasses;
+        var onePass = MemberBody(afterLineComment, "static void H(", true);
+        var rawPasses = DeadlineSourceScan.MaskPasses - passesBefore;
+        var strippedSource = StripCode(afterLineComment);
+        passesBefore = DeadlineSourceScan.MaskPasses;
+        var noPass = MemberBody(strippedSource, "static void H(");
+        var strippedPasses = DeadlineSourceScan.MaskPasses - passesBefore;
+        check(onePass == HMember && rawPasses == 1 && noPass == HMember && strippedPasses == 0,
+            "P1-51 MemberBody self-test: raw text costs one comment and literal marking pass (blanked mask and marks shared), the stripped path none",
+            N(rawPasses) + " raw passes, " + N(strippedPasses) + " stripped; " + (onePass ?? "null") + " ; " + (noPass ?? "null"));
 
         // P1-47: on members with interpolated literals the raw path and the stripped path read the same member:
         // StripCode(MemberBody(raw)) == MemberBody(StripCode(source)). (The paths stay two: CodeMask cannot run on
