@@ -2282,6 +2282,97 @@ internal static class RevitCommandDeadlineTests
             check((program != BoundProgram || type != BoundClass) && (mutant.Problems.Length > 0 || mutant.Bound > mutant.Sites), "P1-50 mirror warning bound mutation self-test: " + label + " is flagged",
                 mutant.Problems + " | at most " + N(mutant.Bound));
         }
+
+        LinkWarningFollowUps(root, self, cliProgram, deleted, check);
+    }
+
+    // P1-52: the step summary position per OS, the call-chain reader's one home, the reflection ban scoped to
+    // SummaryEscape and CliInputsSummary, and DeadlineWarningLines tied to the console write list (static, self-tests).
+    static void LinkWarningFollowUps(string root, string self, string cliProgram, string deleted, Action<bool, string, string> check)
+    {
+        var perOs = PerOsSummary(deleted, self);
+        var perOsProblems = PerOsSummaryProblems(deleted, self);
+        check(perOsProblems.Length == 0, "P1-52 static: in a failing run the step summary is warning " + N(WindowsSummaryWarning) + " of the cli-inputs step on Windows (RunCases and RunUnsearchable return before their probe warnings) and "
+            + N(UnixSummaryWarning) + " on Linux/macOS (the runtime and link-skip warnings are Windows-only); P1-50's summed " + N(StepSummaryWorstWarning) + " stays the cross-OS bound",
+            perOsProblems + " | Windows " + N(perOs.Windows) + ", Linux/macOS " + N(perOs.Unix));
+        var d = deleted.ReplaceLineEndings("\n");
+        const string CasesSkip = "Windows cannot delete a directory that is a process's current directory\");";
+        const string CasesGuard = "        if (OperatingSystem.IsWindows())\n        {\n            foreach (var (verb, argument, _, _) in cases)";
+        const string ModesGuard = "        if (OperatingSystem.IsWindows())\n        {\n            foreach (var c in cases) skip(";
+        const string NoticeGuard = "if (OperatingSystem.IsWindows() && RuntimeNotice(framework, os) is { } notice)";
+        const string LinkCall = "LinkOutcome(linkCreated, resolvedThroughLink, OperatingSystem.IsWindows(), skipReason)";
+        foreach (var (label, mutantDeleted, mutantSelf) in new[]
+        {
+            ("RunCases without its Windows return", d.Replace(CasesSkip + "\n            return;", CasesSkip, StringComparison.Ordinal), self),
+            ("RunUnsearchable's skip on macOS instead of Windows", d.Replace(ModesGuard, ModesGuard.Replace("IsWindows", "IsMacOS", StringComparison.Ordinal), StringComparison.Ordinal), self),
+            ("a console write before RunCases' Windows return", d.Replace(CasesGuard, "        Console.WriteLine(scratch);\n" + CasesGuard, StringComparison.Ordinal), self),
+            ("the runtime warning written on every OS", d, self.Replace(NoticeGuard, "if (RuntimeNotice(framework, os) is { } notice)", StringComparison.Ordinal)),
+            ("the link-skip warning written on every OS", d, self.Replace(LinkCall, "LinkOutcome(linkCreated, resolvedThroughLink, true, skipReason)", StringComparison.Ordinal)),
+            ("a P10-30 verb added (Linux/macOS 20)", d.Replace("\"plan-layouts\" }", "\"plan-layouts\", \"plan-extra\" }", StringComparison.Ordinal), self),
+        })
+            check((mutantDeleted != d || mutantSelf != self) && PerOsSummaryProblems(mutantDeleted, mutantSelf).Length > 0, "P1-52 per-OS summary position mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        var scanPath = Path.Combine(root, "tests", "cli", "DeadlineSourceScan.cs");
+        var scan = File.Exists(scanPath) ? File.ReadAllText(scanPath) : "";
+        var home = CallChainHomeProblems(self, scan);
+        check(home.Length == 0, "P1-52 static: the call-chain reader (SourceBlocks, ContextAt, CallRuns) lives once in DeadlineSourceScan.cs with its limits stated (delegates, goto, partial types, object initialisers)", home);
+        foreach (var (label, mutantSelf, mutantScan) in new[]
+        {
+            ("a SourceBlocks copy left here", self + "\nstatic class G { static List<SourceBlock> SourceBlocks(string mask) => new(); }\n", scan),
+            ("the goto limit not stated", self, scan.Replace("goto", "jump", StringComparison.Ordinal)),
+        })
+            check((mutantSelf != self || mutantScan != scan) && CallChainHomeProblems(mutantSelf, mutantScan).Length > 0, "P1-52 call-chain home mutation self-test: " + label + " is flagged", "no problem flagged");
+
+        foreach (var (label, extra) in new[]
+        {
+            ("an unrelated GetMethod in an expression-bodied member", "\nstatic class G { static object? M() => typeof(string).GetMethod(\"Trim\"); }\n"),
+            ("an unrelated GetMethod and BindingFlags in a block member", "\nstatic class G { static object? M() { var t = typeof(string); return t.GetMethod(\"Trim\", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance); } }\n"),
+        })
+        {
+            var unrelated = EscapeDirectProblems(cliProgram, self + extra);
+            check(unrelated.Length == 0, "P1-52 reflection ban self-test: " + label + " is not flagged", unrelated);
+        }
+        var spread = EscapeDirectProblems(cliProgram, self + "\nstatic class G { static object? M() { var t = typeof(CliInputsSummary); return t.GetMethod(\"Escape\"); } }\n");
+        check(spread.Length > 0, "P1-52 reflection ban mutation self-test: CliInputsSummary read by reflection over two statements of one member is flagged", "no problem flagged");
+
+        var writes = WriteListProblem(DeadlineWrites, DeadlineWarningLines);
+        var budgetBody = MemberBody(StripCode(self.ReplaceLineEndings("\n")), "static string WarningBudgetProblems(");
+        var budgetFlat = budgetBody is null ? "" : string.Concat(budgetBody.Where(c => !char.IsWhiteSpace(c)));
+        check(writes.Length == 0 && WindowsOnlyWrites.All(write => Array.IndexOf(DeadlineWrites, write) >= 0)
+            && budgetFlat.Contains("varknown=DeadlineWrites;", StringComparison.Ordinal) && budgetFlat.Contains("WriteListProblem(known,DeadlineWarningLines)", StringComparison.Ordinal),
+            "P1-52 static: DeadlineWarningLines (" + N(DeadlineWarningLines) + ") is the length of DeadlineWrites, the console write list WarningBudgetProblems reads (the Windows-only writes among them)", writes);
+        check(WriteListProblem(DeadlineWrites.Append("Console.WriteLine(extra);").ToArray(), DeadlineWarningLines).Length > 0,
+            "P1-52 write list mutation self-test: a fourth known write while DeadlineWarningLines stays " + N(DeadlineWarningLines) + " is flagged", "no problem flagged");
+    }
+
+    // P1-52: the console writes of this file (WarningBudgetProblems' known list) and the Windows-only ones among them.
+    static readonly string[] DeadlineWrites = { "Console.WriteLine(notice);", "Console.WriteLine(skipWarning);", "Console.WriteLine(FailSummary(names));" };
+    static readonly string[] WindowsOnlyWrites = { "Console.WriteLine(notice);", "Console.WriteLine(skipWarning);" };
+    const int WindowsSummaryWarning = 4;
+    const int UnixSummaryWarning = 19;
+
+    static string WriteListProblem(string[] writes, int lines) => "";
+
+    static (int Windows, int Unix, string Problems) PerOsSummary(string deleted, string self) => (0, 0, "not counted per OS yet");
+
+    static string PerOsSummaryProblems(string deleted, string self) => PerOsSummary(deleted, self).Problems;
+
+    // P1-52: "" when the call-chain reader is declared in DeadlineSourceScan.cs alone and its limits are stated there.
+    static string CallChainHomeProblems(string self, string scan)
+    {
+        static string Flat(string source) => string.Concat(StripCode(source.ReplaceLineEndings("\n")).Where(c => !char.IsWhiteSpace(c)));
+        var own = Flat(self);
+        var shared = Flat(scan);
+        var problems = new List<string>();
+        foreach (var declaration in new[] { "List<SourceBlock>SourceBlocks(stringmask)", "SourceContextContextAt(List<SourceBlock>blocks,intat)", "longCallRuns(Dictionary<string,(stringMask,List<SourceBlock>Blocks)>files," })
+        {
+            if (own.Contains(declaration, StringComparison.Ordinal)) problems.Add("RevitCommandDeadlineTests.cs declares " + declaration);
+            if (CountOf(shared, "internalstatic" + declaration) != 1) problems.Add("DeadlineSourceScan.cs does not declare internal static " + declaration + " once");
+        }
+        var comments = string.Join(" ", scan.ReplaceLineEndings("\n").Split('\n').Select(line => line.Trim()).Where(line => line.StartsWith("//", StringComparison.Ordinal)));
+        foreach (var limit in new[] { "delegate", "goto", "partial type", "object initialiser" })
+            if (!comments.Contains(limit, StringComparison.Ordinal)) problems.Add("no stated limit for " + limit + "s");
+        return string.Join("; ", problems);
     }
 
     // P1-44: ControlLocationProblem names a missing git apart from a path that is not gitignored, and resolves symlinks
