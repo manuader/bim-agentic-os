@@ -510,3 +510,6 @@ Relay306 (cloud, 2026-11-27): merged P3-54, P10-57, P7-57 (test-only). No new ow
 
 ## Relay307 (2026-11-27, cloud scheduled)
 - Relay307 merged P10-58, P6-57, P7-58 (all test-only). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull).
+
+## Relay308 (2026-11-27, cloud scheduled)
+- Relay308 merged P1-51, P5-45, P2-50 (all test-only). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21 run 3, git pull — main is now d2c7efb2).
