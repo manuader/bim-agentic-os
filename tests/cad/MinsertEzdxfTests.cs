@@ -1910,7 +1910,7 @@ internal static class MinsertEzdxfTests
             string[] stepNeeded =
             {
                 ".tools/ezdxf/bin/python -m pip install ezdxf==1.4.2 numpy==2.5.3",
-                "grep -v '^self-test planted .*: caught (' \"$out\" | cut -c1-900 | awk -v level=\"$level\"",
+                "grep -v -e '^self-test planted .*: caught (' -e '^self-test checked .*: caught (' \"$out\" | cut -c1-900 | awk -v level=\"$level\"",
                 "more output lines not annotated",
                 "grep '^differing rows: '",
             };
@@ -2143,6 +2143,52 @@ internal static class MinsertEzdxfTests
             c(cliAbsent.Count == 0,
                 "justified: generator: P6-58 the --stale-line and --stale-prefix modes are self-tested in Python, and _listed's cut at a separator is a stated limit self-tested on C_EXT_DRIFT",
                 "missing " + string.Join(" | ", cliAbsent));
+
+            // P6-60: the step refuses an empty stale_prefix by name (a [ -n ] guard that exits 1) between reading it and
+            // both greps on it, as an empty prefix (^ alone) matches every line. Checked on changed copies: the guard
+            // removed, and the guard moved after the greps.
+            const string StaleGuard = "if ! [ -n \"$stale_prefix\" ]; then\n            echo \"::error title=ezdxf-check-c-ext-stale::stale_prefix is empty";
+            static bool Guarded(string step)
+            {
+                var read = step.IndexOf(StalePrefixRead, StringComparison.Ordinal);
+                var guard = step.IndexOf(StaleGuard, StringComparison.Ordinal);
+                var exit = guard < 0 ? -1 : step.IndexOf("\n            exit 1\n          fi\n", guard, StringComparison.Ordinal);
+                var first = step.IndexOf(StaleGrep, StringComparison.Ordinal);
+                var second = first < 0 ? -1 : step.IndexOf(StaleGrep, first + 1, StringComparison.Ordinal);
+                return read >= 0 && read < guard && guard < exit && exit < first && first < second && Occurs(step, StaleGuard) == 1;
+            }
+            var guardAt = stepText.IndexOf(StaleGuard, StringComparison.Ordinal);
+            var guardEnd = guardAt < 0 ? -1 : stepText.IndexOf("\n          fi\n", guardAt, StringComparison.Ordinal);
+            var guardBlock = guardAt < 0 || guardEnd < 0 ? "" : stepText[guardAt..(guardEnd + "\n          fi\n".Length)];
+            var unguarded = guardBlock.Length == 0 ? stepText : stepText.Replace(guardBlock, "", StringComparison.Ordinal);
+            var guardMoved = unguarded + "\n          " + guardBlock;
+            var guardCopiesCaught = guardBlock.Length > 0 && !Guarded(unguarded) && !Guarded(guardMoved);
+            c(Guarded(stepText) && guardCopiesCaught,
+                "justified: generator: P6-60 the CI step refuses an empty stale_prefix by name ([ -n ] guard, exit 1) before both greps on it, checked on changed copies (guard removed, guard moved after the greps)",
+                "guarded " + Guarded(stepText) + " changed copies caught " + guardCopiesCaught + " guard at " + guardAt.ToString(CultureInfo.InvariantCulture));
+            // P6-60: the two CLI checks and the separator check print a label of their own ("self-test checked "), not
+            // "self-test planted " (they plant nothing); the step's annotation filter drops the caught lines of every
+            // self-test label the generator prints, read from the filter's -e patterns and run on sample lines.
+            const string StaleFilter = "grep -v -e '^self-test planted .*: caught (' -e '^self-test checked .*: caught (' \"$out\" | cut -c1-900 | awk -v level=\"$level\"";
+            var labels = System.Text.RegularExpressions.Regex.Matches(generator, "print\\(\"self-test (\\w+) ").Select(m => m.Groups[1].Value).Distinct().OrderBy(l => l, StringComparer.Ordinal).ToList();
+            string[] labelNeeded =
+            {
+                "print(\"self-test checked \" + label + \": \" + (\"caught\" if caught else \"NOT caught\") + \" (exit \" + str(run.returncode) + \")\")",
+                "print(\"self-test checked the _listed separator limit on the C_EXT_DRIFT names: \"",
+            };
+            var labelAbsent = labelNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            var cliPlanted = generator.Contains("print(\"self-test planted \" + label + \": \" + (\"caught\" if caught else \"NOT caught\") + \" (exit \" + str(run.returncode) + \")\")", StringComparison.Ordinal)
+                || generator.Contains("print(\"self-test planted the _listed", StringComparison.Ordinal);
+            var filterAt = stepText.IndexOf(StaleFilter, StringComparison.Ordinal);
+            var patterns = System.Text.RegularExpressions.Regex.Matches(StaleFilter, "-e '([^']*)'").Select(m => m.Groups[1].Value).ToList();
+            var filtered = labels.All(l => patterns.Contains("^self-test " + l + " .*: caught (")) && patterns.Count == labels.Count;
+            bool Dropped(string line) => patterns.Any(p => System.Text.RegularExpressions.Regex.IsMatch(line, p.Replace("(", "\\(", StringComparison.Ordinal)));
+            var samplesOk = Dropped("self-test checked the --stale-line mode: caught (exit 0)") && Dropped("self-test checked the _listed separator limit on the C_EXT_DRIFT names: caught (0 names)")
+                && Dropped("self-test planted a missing Cells table: caught (1 failures)") && !Dropped("self-test checked the --stale-line mode: NOT caught (exit 1)")
+                && !Dropped("self-test planted a missing Cells table: NOT caught (0 failures)");
+            c(labels.SequenceEqual(new[] { "checked", "planted" }) && labelAbsent.Count == 0 && !cliPlanted && filterAt >= 0 && Occurs(stepText, "grep -v ") == 1 && filtered && samplesOk,
+                "justified: generator: P6-60 the CLI and separator self-tests print \"self-test checked \" (not the planted label), and the step's annotation filter drops the caught lines of both labels (pinned, run on sample lines)",
+                "labels " + string.Join(",", labels) + " missing " + string.Join(" | ", labelAbsent) + " planted label left " + cliPlanted + " filter at " + filterAt.ToString(CultureInfo.InvariantCulture) + " filtered " + filtered + " samples " + samplesOk);
         }
         catch (Exception error)
         {
