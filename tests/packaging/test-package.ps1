@@ -52,6 +52,9 @@
 # spelled-once check reads every run of four header ids; $p751Requires reuses the parsed AST; the paragraph cites the P7-51 runs.
 # P7-55: the failure summary names mutants only from messages starting with the P7-41 mutant prefix; the four-id run length is
 # pinned with its reason; the planted-finally self-test asserts the variables the finally reads; the paragraph cites P7-53 runs.
+# P7-57: the P7-41 mutant prefix is one constant (AST check: the mutant loop's messages start with it, no other string holds it);
+# the planted finally run is skipped when the finally-variables check fails; finally reads follow text order (read before assign,
+# typed, multiple, compound and foreach assignments); the expected reads are Invoke-P753Finally's; the paragraph cites P7-55 runs.
 # P4-31: release A ships no Bim.Gltf in mcp/ (no mcp/ Bim.Gltf file, sbom.json or manifest.json line; mcp/Bim.Mcp.deps.json names
 # no Bim.Gltf) while cli/Bim.Gltf.dll keeps one sbom and one manifest line with its sha256 (control); paths normalised; self-tested on a copy.
 # P4-32: an sbom.json/manifest.json path whose .. climbs above the package root is a named escaping path (never clamped); an
@@ -1153,22 +1156,28 @@ try {
     # static binding error (unknown or ambiguous parameter, extra positional) does not count.
     # P7-51: the P7 header ids this script must list (from P7-39 on); the one expected value of both own-script header
     # asserts (P7-41 and P7-43 blocks). A new '# P7-<n>: ' header line updates this constant and the contract paragraph.
-    $p751HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49,P7-51,P7-53,P7-55'
+    $p751HeaderIds = 'P7-39,P7-41,P7-43,P7-45,P7-47,P7-49,P7-51,P7-53,P7-55,P7-57'
     # P7-55: the run length Get-P753SpelledCount looks for. Pinned, not derived from this script (a value derived from the
     # longest run found would grow with a second copy and hide it). Reason: the longest run of consecutive header ids in any
     # other string of this script is three (the P7-43 self-test summaries 'header' + three ids + ' outer ...'), so four is
     # the shortest run no self-test text spells; the P7-41 block asserts that longest run is $p755RunLength - 1.
     $p755RunLength = 4
+    # P7-57: the prefix of every P7-41 mutant failure message and the one text Get-P751FailureSummary names a mutant from.
+    # Spelled in this string only: an AST check in the P7-41 block (Get-P757PrefixCheck) asserts that every string of the
+    # mutant loop starts with $($p757MutantPrefix) and that no other string of this script holds the prefix text.
+    $p757MutantPrefix = 'P7-41 self-test: mutant '''
     # P7-51: one line naming every failure added by the P7-39/P7-41/P7-43 self-test blocks (mutant names, otherwise the
     # first 60 characters), so all of them reach one CI annotation even when the detailed failures exceed the annotation
     # cap; $null with no failure. Complete cuts each failure line at 900 characters, which bounds how many names show.
     # P7-53: it is not printed first: the P7-43 finally inserts it at $p751Start, so failures of earlier sections print
     # above it and the block's own details right after it (its text says how many lines follow). P7-55: a mutant is named
-    # only from a message that starts with the P7-41 prefix "P7-41 self-test: mutant '" (a message quoting one is not).
+    # only from a message that starts with the P7-41 mutant prefix (a message quoting one is not). P7-57: that prefix is the
+    # shared constant $p757MutantPrefix; the name runs from it to the next quote (a message with no closing quote is cut).
     function Get-P751FailureSummary([string[]]$Messages) {
         $names = @($Messages | Where-Object { $_ } | ForEach-Object {
                 $one = ($_ -replace '[\r\n]+', ' ')
-                if ($one -cmatch "^P7-41 self-test: mutant '([^']+)'") { "mutant $($Matches[1])" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
+                $close = if ($one.StartsWith($p757MutantPrefix, [StringComparison]::Ordinal)) { $one.IndexOf("'", $p757MutantPrefix.Length) } else { -1 }
+                if ($close -gt $p757MutantPrefix.Length) { "mutant $($one.Substring($p757MutantPrefix.Length, $close - $p757MutantPrefix.Length))" } else { $one.Substring(0, [Math]::Min(60, $one.Length)) }
             })
         if (!$names.Count) { return $null }
         return "P7-51: $($names.Count) cleanup pin check(s) failed, detailed in the $($names.Count) line(s) after this one: $($names -join '; ')"
@@ -1197,14 +1206,72 @@ try {
     }
     # P7-55: the variables a block reads, by name, sorted ordinally and once each: every variable the block names except
     # those it assigns itself and $null/$true/$false (a variable assigned in the block is not read from outside it).
+    # P7-57: in text order. A write is a variable target of an assignment (plain $x, typed [int]$x, or an element of
+    # $a, [string]$b = ...) or a foreach loop variable; it is done at the end of its statement (a loop variable once the
+    # in-expression is read). A name is read from outside when one of its other occurrences starts before its first write
+    # is done ($x; $x = 1 and $x = $x + 1 read $x), and a compound assignment ($x += 1) reads its target. Names compare
+    # case-insensitively, as PowerShell variables do. Named limits (self-tested): text order, not control flow (a read after
+    # an assignment in an if counts as local), and a nested scriptblock is read as the same scope; $a.b = 1 and $a[0] = 1
+    # read $a; -OutVariable, -PipelineVariable and [ref] arguments are not writes.
     function Get-P755FinallyReads([Management.Automation.Language.Ast]$Block) {
-        $assigned = @($Block.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath })
+        $done = [Collections.Generic.Dictionary[string, int]]::new([StringComparer]::OrdinalIgnoreCase)
+        $writes = [Collections.Generic.HashSet[object]]::new()
+        $targets = {
+            param($Left)
+            if ($Left -is [Management.Automation.Language.VariableExpressionAst]) { return , $Left }
+            if ($Left -is [Management.Automation.Language.AttributedExpressionAst]) { return (& $targets $Left.Child) }
+            if ($Left -is [Management.Automation.Language.ArrayLiteralAst]) { return @($Left.Elements | ForEach-Object { & $targets $_ }) }
+            return @()
+        }
+        foreach ($n in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -or $n -is [Management.Automation.Language.ForEachStatementAst] }, $true)) {
+            if ($n -is [Management.Automation.Language.ForEachStatementAst]) { $vars = @($n.Variable); $end = $n.Condition.Extent.EndOffset; $plain = $true }
+            else { $vars = @(& $targets $n.Left); $end = $n.Extent.EndOffset; $plain = $n.Operator -eq [Management.Automation.Language.TokenKind]::Equals }
+            foreach ($v in $vars) {
+                if ($plain) { [void]$writes.Add($v) }
+                $name = $v.VariablePath.UserPath
+                if (!$done.ContainsKey($name) -or $end -lt $done[$name]) { $done[$name] = $end }
+            }
+        }
         $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
         foreach ($v in $Block.FindAll({ param($n) $n -is [Management.Automation.Language.VariableExpressionAst] }, $true)) {
+            if ($writes.Contains($v)) { continue }
             $name = $v.VariablePath.UserPath
-            if ($name -notin @('null', 'true', 'false') -and $assigned -cnotcontains $name) { [void]$names.Add($name) }
+            if ($name -in @('null', 'true', 'false')) { continue }
+            if (!$done.ContainsKey($name) -or $v.Extent.StartOffset -lt $done[$name]) { [void]$names.Add($name) }
         }
         return [string[]]@($names)
+    }
+    # P7-57: the variables a function provides to what it runs: the plain or typed variable targets of its body's direct
+    # '=' assignments (not nested in a block, not compound), sorted ordinally and once each. The P7-53 self-test expects
+    # the P7-43 finally to read exactly what Invoke-P753Finally provides this way.
+    function Get-P757Provided([Management.Automation.Language.FunctionDefinitionAst]$Function) {
+        $names = [Collections.Generic.SortedSet[string]]::new([StringComparer]::Ordinal)
+        foreach ($s in @(if ($Function -and $Function.Body.EndBlock) { $Function.Body.EndBlock.Statements })) {
+            if ($s -isnot [Management.Automation.Language.AssignmentStatementAst] -or $s.Operator -ne [Management.Automation.Language.TokenKind]::Equals) { continue }
+            $left = $s.Left
+            while ($left -is [Management.Automation.Language.AttributedExpressionAst]) { $left = $left.Child }
+            if ($left -is [Management.Automation.Language.VariableExpressionAst]) { [void]$names.Add($left.VariablePath.UserPath) }
+        }
+        return [string[]]@($names)
+    }
+    # P7-57: the shared mutant prefix pin as one line: loops = foreach ($mutant in ...) loops; messages = strings in their
+    # bodies (not barewords such as command or member names, not strings inside another expandable string); bad = those that are not an expandable string starting with $($p757MutantPrefix); copies = strings anywhere
+    # whose value holds $Prefix except the one assigned to $p757MutantPrefix; definitions = assignments to $p757MutantPrefix.
+    function Get-P757PrefixCheck([Management.Automation.Language.Ast]$Ast, [string]$Prefix) {
+        $isString = { param($n) $n -is [Management.Automation.Language.StringConstantExpressionAst] -or $n -is [Management.Automation.Language.ExpandableStringExpressionAst] }
+        $loops = @($Ast.FindAll({ param($n) $n -is [Management.Automation.Language.ForEachStatementAst] -and $n.Variable.VariablePath.UserPath -eq 'mutant' }, $true))
+        $isMessage = {
+            param($n)
+            if (!(& $isString $n) -or ($n -is [Management.Automation.Language.StringConstantExpressionAst] -and $n.StringConstantType -eq [Management.Automation.Language.StringConstantType]::BareWord)) { return $false }
+            for ($p = $n.Parent; $p; $p = $p.Parent) { if ($p -is [Management.Automation.Language.ExpandableStringExpressionAst]) { return $false } }
+            return $true
+        }
+        $messages = @($loops | ForEach-Object { $_.Body.FindAll($isMessage, $true) })
+        $bad = @($messages | Where-Object { $_ -isnot [Management.Automation.Language.ExpandableStringExpressionAst] -or !$_.Value.StartsWith('$($p757MutantPrefix)', [StringComparison]::Ordinal) }).Count
+        $definitions = @($Ast.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] -and $n.Left.VariablePath.UserPath -eq 'p757MutantPrefix' }, $true))
+        $defined = @($definitions | ForEach-Object { if ($_.Right -is [Management.Automation.Language.CommandExpressionAst]) { $_.Right.Expression } })
+        $copies = @($Ast.FindAll($isString, $true) | Where-Object { $_.Value.Contains($Prefix) -and $defined -notcontains $_ }).Count
+        return "loops $($loops.Count) messages $($messages.Count) bad $bad copies $copies definitions $($definitions.Count)"
     }
     function Get-P741CleanupPin([string]$Text) {
         $tokens = $null; $parseErrors = $null
@@ -2064,12 +2131,32 @@ try {
                             if (!$text.Contains($pair[0])) { $text = $null; break }
                             $text = $text.Replace($pair[0], $pair[1])
                         }
-                        if ($null -eq $text) { $failures.Add("P7-41 self-test: mutant '$($mutant.Name)' could not be planted"); continue }
+                        if ($null -eq $text) { $failures.Add("$($p757MutantPrefix)$($mutant.Name)' could not be planted"); continue }
                         $got = Get-P741CleanupPin $text
-                        Assert ($got.Summary -ceq $mutant.Want) "P7-41 self-test: mutant '$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
+                        Assert ($got.Summary -ceq $mutant.Want) "$($p757MutantPrefix)$($mutant.Name)': $($got.Summary) (want $($mutant.Want))"
                     }
                     $p741OwnPin = Get-P741CleanupPin $p741Own
                     Assert ($p741OwnPin.Header -ceq $p751HeaderIds -and $p741OwnPin.Outer -eq 1) "P7-41: this script's header lists exactly $p751HeaderIds (P7-49: every P7 line from P7-39 on, the ids the pin reads) and its outer finally calls Write-PackageCleanupWarnings once: $($p741OwnPin.Summary)"
+                    # P7-57: the mutant prefix is one constant: every string of the mutant loop starts with $($p757MutantPrefix)
+                    # and no other string of this script holds the prefix text (the self-test texts build it from the constant).
+                    $p757Own = Get-P757PrefixCheck $p751Ast $p757MutantPrefix
+                    $p757OwnWant = 'loops 1 messages 2 bad 0 copies 0 definitions 1'
+                    Assert ($p757Own -ceq $p757OwnWant) "P7-57: the P7-41 mutant prefix is the one constant `$p757MutantPrefix, which every mutant loop message starts with: $p757Own (want $p757OwnWant)"
+                    # P7-57 self-test: planted texts (the prefix text is inserted at run time, so this block spells none).
+                    $p757Def = '$p757MutantPrefix = ''' + $p757MutantPrefix.Replace("'", "''") + ''''
+                    $p757Loop = 'foreach ($mutant in $m) { $failures.Add("$($p757MutantPrefix)$($mutant.Name)'' x"); Assert $true "$($p757MutantPrefix)$($mutant.Name)'': y" }'
+                    $p757Use = '$($p757MutantPrefix)'
+                    $p757First = $p757Loop.IndexOf($p757Use); $p757Second = $p757Loop.LastIndexOf($p757Use)
+                    foreach ($p757Case in @(
+                            @('the constant and a loop using it', "$p757Def`n$p757Loop", 'loops 1 messages 2 bad 0 copies 0 definitions 1'),
+                            @('a hard-coded prefix in a loop message', ("$p757Def`n" + $p757Loop.Remove($p757First, $p757Use.Length).Insert($p757First, $p757MutantPrefix)),'loops 1 messages 2 bad 1 copies 1 definitions 1'),
+                            @('a loop message not starting with the prefix', ("$p757Def`n" + $p757Loop.Insert($p757Second, 'x ')),'loops 1 messages 2 bad 1 copies 0 definitions 1'),
+                            @('a single-quoted loop message', ("$p757Def`n" + $p757Loop.Replace('Assert $true "$($p757MutantPrefix)$($mutant.Name)'': y"', 'Assert $true ''$($p757MutantPrefix) y''')),'loops 1 messages 2 bad 1 copies 0 definitions 1'),
+                            @('a copy of the prefix elsewhere', "$p757Def`n$p757Loop`n`$q = `"$($p757MutantPrefix)z`"", 'loops 1 messages 2 bad 0 copies 1 definitions 1'),
+                            @('no constant', $p757Loop, 'loops 1 messages 2 bad 0 copies 0 definitions 0'))) {
+                        $p757Got = Get-P757PrefixCheck ([Management.Automation.Language.Parser]::ParseInput($p757Case[1], [ref]$null, [ref]$null)) $p757MutantPrefix
+                        Assert ($p757Got -ceq $p757Case[2]) "P7-57 self-test: prefix check on $($p757Case[0]): $p757Got (want $($p757Case[2]))"
+                    }
                     # P7-51: the expected id list is spelled in one string only ($p751HeaderIds) and both own-script header
                     # asserts (here and in the P7-43 block) compare against that variable.
                     # P7-53: the count reads every run of four ids of the list (Get-P753SpelledCount), not only its first four.
@@ -2194,22 +2281,22 @@ try {
                     Assert ($p749StandIns -eq 1) "P7-49: this script defines the stand-in Remove-Item once (found $p749StandIns definitions)"
                     # P7-51: the contract paragraph for these pins exists once and is pinned whole (sha256 and UTF-8 length of
                     # its one line, so every word is checked, not chosen substrings); a wording change updates this pin.
-                    $p751ParagraphSha = '2B7905AF257906896D8B74A2E4B33A65BD3891E98FD1286A634CD6401CC6E132'; $p751ParagraphLength = 4955
+                    $p751ParagraphSha = '94567ED22FF22BB2EE07B45D1DABB8B15922F960067FA1B01043B26D3509EFAA'; $p751ParagraphLength = 6307
                     $p751Paragraphs = @([IO.File]::ReadAllLines((Join-Path $root 'docs/contracts/module-contracts.md')) | Where-Object { $_.StartsWith('P7-39..P7-', [StringComparison]::Ordinal) })
                     $p751Bytes = if ($p751Paragraphs.Count -eq 1) { [Text.Encoding]::UTF8.GetBytes($p751Paragraphs[0]) } else { [byte[]]@() }
                     $p751Sha = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([byte[]]$p751Bytes))
-                    Assert ($p751Paragraphs.Count -eq 1 -and $p751Paragraphs[0].StartsWith('P7-39..P7-55 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p751Sha -ceq $p751ParagraphSha -and $p751Bytes.Length -eq $p751ParagraphLength) "P7-51: docs/contracts/module-contracts.md has one P7-39..P7-55 cleanup pin paragraph, pinned whole (P7-55: renamed, cites the P7-53 runs): observed sha256 $p751Sha, $($p751Bytes.Length) bytes (pinned $p751ParagraphSha, $p751ParagraphLength); found $($p751Paragraphs.Count): $(($p751Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / ')"
+                    Assert ($p751Paragraphs.Count -eq 1 -and $p751Paragraphs[0].StartsWith('P7-39..P7-57 (package cleanup pin, test-only): ', [StringComparison]::Ordinal) -and $p751Sha -ceq $p751ParagraphSha -and $p751Bytes.Length -eq $p751ParagraphLength) "P7-51: docs/contracts/module-contracts.md has one P7-39..P7-57 cleanup pin paragraph, pinned whole (P7-57: renamed, cites the P7-55 runs): observed sha256 $p751Sha, $($p751Bytes.Length) bytes (pinned $p751ParagraphSha, $p751ParagraphLength); found $($p751Paragraphs.Count): $(($p751Paragraphs | ForEach-Object { $_.Substring(0, [Math]::Min(60, $_.Length)) }) -join ' / ')"
                     # P7-51 self-test: the failure summary names mutants by name and other failures by their first 60
                     # characters, in order, in one line; no failure gives no line.
-                    $p751Synthetic = Get-P751FailureSummary ([string[]]@("P7-41 self-test: mutant 'P7-51 one': header x (want y)", '', "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph`nciting"))
+                    $p751Synthetic = Get-P751FailureSummary ([string[]]@("$($p757MutantPrefix)P7-51 one': header x (want y)", '', "P7-49: docs/contracts/module-contracts.md has one P7-39..P7-49 cleanup pin paragraph`nciting"))
                     $p751SummaryWant = 'P7-51: 2 cleanup pin check(s) failed, detailed in the 2 line(s) after this one: mutant P7-51 one; P7-49: docs/contracts/module-contracts.md has one P7-39..P7-'
                     Assert ($p751Synthetic -ceq $p751SummaryWant -and $null -eq (Get-P751FailureSummary ([string[]]@()))) "P7-51 self-test: the failure summary reads '$p751Synthetic' (want '$p751SummaryWant') and nothing with no failure"
                     # P7-55 self-test: a mutant is named only from a message that starts with the P7-41 mutant prefix; a P7-53
                     # message quoting a planted mutant failure (as the P7-53 asserts print the list they got) and an indented
                     # copy of the prefix are cut at 60 characters like any other failure.
-                    $p755Quoting = "P7-53 self-test: the P7-43 finally inserts the summary (got 1: P7-41 self-test: mutant 'P7-53 planted': header x)"
-                    $p755Indented = " P7-41 self-test: mutant 'P7-55 indented': x"
-                    $p755Summary = Get-P751FailureSummary ([string[]]@("P7-41 self-test: mutant 'P7-55 named': header x (want y)", $p755Quoting, $p755Indented))
+                    $p755Quoting = "P7-53 self-test: the P7-43 finally inserts the summary (got 1: $($p757MutantPrefix)P7-53 planted': header x)"
+                    $p755Indented = " $($p757MutantPrefix)P7-55 indented': x"
+                    $p755Summary = Get-P751FailureSummary ([string[]]@("$($p757MutantPrefix)P7-55 named': header x (want y)", $p755Quoting, $p755Indented))
                     $p755SummaryWant = "P7-51: 3 cleanup pin check(s) failed, detailed in the 3 line(s) after this one: mutant P7-55 named; $($p755Quoting.Substring(0, 60)); $p755Indented"
                     Assert ($p755Summary -ceq $p755SummaryWant) "P7-55 self-test: the failure summary names a mutant only from a message starting with the P7-41 mutant prefix: '$p755Summary' (want '$p755SummaryWant')"
                     # P7-53 self-test: the P7-43 finally (the one finally of this script that reads $p751Start, taken from its
@@ -2221,34 +2308,61 @@ try {
                         $p753Text = $p753Finallies[0].Finally.Extent.Text
                         # P7-55: before the run, the finally must read exactly the variables Invoke-P753Finally provides (it
                         # assigns each), so renaming one in the finally (or here) fails with this message, not an error from
-                        # the run. The planted rename below shows the read list follows the finally's text.
-                        $p755Provides = 'failures,p743Leftovers,p743Probe,p751Start'
-                        $p755Reads = @(Get-P755FinallyReads $p753Finallies[0].Finally) -join ','
+                        # the run. The planted rename below shows the read list follows the finally's text. P7-57: the expected
+                        # list is Invoke-P753Finally's direct assignments (Get-P757Provided), not a literal, and the planted run
+                        # below is skipped (a named SKIP) when this check fails: the check names the mismatch, the run would only
+                        # throw or report a confusing count.
                         $p755Invoke = @($p743Ast.FindAll({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Invoke-P753Finally' }, $true))
-                        $p755Assigned = if ($p755Invoke.Count -eq 1) { @($p755Invoke[0].Body.FindAll({ param($n) $n -is [Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.Left.VariablePath.UserPath }) } else { @() }
-                        $p755Missing = @($p755Provides -split ',' | Where-Object { $p755Assigned -cnotcontains $_ })
-                        Assert ($p755Reads -ceq $p755Provides -and $p755Invoke.Count -eq 1 -and $p755Missing.Count -eq 0) "P7-55: the P7-43 finally reads exactly $p755Provides, each assigned by the one Invoke-P753Finally before it runs the finally; the finally reads '$p755Reads' and Invoke-P753Finally ($($p755Invoke.Count) found) does not assign '$($p755Missing -join ',')': a variable renamed in the finally must be renamed in Invoke-P753Finally and here"
+                        $p755Provides = if ($p755Invoke.Count -eq 1) { @(Get-P757Provided $p755Invoke[0]) -join ',' } else { '' }
+                        $p755Reads = @(Get-P755FinallyReads $p753Finallies[0].Finally) -join ','
+                        $p757RunPlanted = $p755Invoke.Count -eq 1 -and $p755Provides.Length -gt 0 -and $p755Reads -ceq $p755Provides
+                        Assert $p757RunPlanted "P7-55: the P7-43 finally reads exactly what the one Invoke-P753Finally provides (P7-57: its direct assignments, '$p755Provides'; $($p755Invoke.Count) found); the finally reads '$p755Reads': a variable renamed in the finally must be renamed in Invoke-P753Finally"
                         $p755Renamed = @(Get-P755FinallyReads ([Management.Automation.Language.Parser]::ParseInput($p753Text.Replace('$p743Leftovers', '$p743Renamed'), [ref]$null, [ref]$null))) -join ','
                         Assert ($p755Renamed -ceq 'failures,p743Probe,p743Renamed,p751Start') "P7-55 self-test: the finally with `$p743Leftovers planted as `$p743Renamed reads '$p755Renamed' (want failures,p743Probe,p743Renamed,p751Start), so the check above names the rename"
-                        $p753Block = [scriptblock]::Create($p753Text.Substring(1, $p753Text.Length - 2))
-                        # Runs the finally with its own $failures, $p751Start, probe and leftovers (dynamic scope), so the
-                        # run-wide list is untouched; the probe path does not exist, so the cleanup call returns at once.
-                        function Invoke-P753Finally([string[]]$Planted) {
-                            $failures = [Collections.Generic.List[string]]::new()
-                            $failures.Add('P7-53 earlier section: planted')
-                            $p751Start = $failures.Count
-                            foreach ($one in $Planted) { $failures.Add($one) }
-                            $p743Probe = Join-Path $p733Case ('p7-53 absent ' + [Guid]::NewGuid().ToString('N'))
-                            $p743Leftovers = [Collections.Generic.List[string]]::new()
-                            & $p753Block
-                            return [string[]]$failures.ToArray()
+                        # P7-57 self-test: the reads follow text order and every assignment form (named limits last).
+                        foreach ($p757Case in @(
+                                @('read before assign', '$a; $a = 1; $a', 'a'),
+                                @('assign then read (any case)', '$a = 1; $A', ''),
+                                @('read in its own right side', '$b = $b + 1', 'b'),
+                                @('compound assignment', '$c += 1; $c', 'c'),
+                                @('typed assignment', '[int]$d = 1; $d + $e', 'e'),
+                                @('typed read in its own right side', '[int]$d = $d', 'd'),
+                                @('multiple assignment', '$g, [string]$h = 1, 2; $g + $h', ''),
+                                @('foreach variable', 'foreach ($one in $list) { $one }', 'list'),
+                                @('foreach variable read in its in-expression', 'foreach ($one in $one) { }', 'one'),
+                                @('member assignment reads the object', '$o.x = 1; $o', 'o'),
+                                @('$null, $true and $false', '$null = $true -and $false', ''),
+                                @('named limit: text order, not control flow', 'if ($c) { $j = 1 }; $j', 'c'),
+                                @('named limit: a nested scriptblock is the same scope', '& { $k = 1 }; $k', ''))) {
+                            $p757Got = @(Get-P755FinallyReads ([Management.Automation.Language.Parser]::ParseInput($p757Case[1], [ref]$null, [ref]$null))) -join ','
+                            Assert ($p757Got -ceq $p757Case[2]) "P7-57 self-test: Get-P755FinallyReads on $($p757Case[0]) ($($p757Case[1])) reads '$p757Got' (want '$($p757Case[2])')"
                         }
-                        $p753Planted = [string[]]@("P7-41 self-test: mutant 'P7-53 planted': header x (want y)", 'P7-43: a planted plain failure')
-                        $p753After = @(Invoke-P753Finally $p753Planted)
-                        $p753Summary = Get-P751FailureSummary $p753Planted
-                        Assert ($p753After.Count -eq 4 -and $p753After[0] -ceq 'P7-53 earlier section: planted' -and $p753After[1] -ceq $p753Summary -and $p753After[2] -ceq $p753Planted[0] -and $p753After[3] -ceq $p753Planted[1]) "P7-53 self-test: the P7-43 finally inserts the summary at `$p751Start on a planted failure (want earlier, summary, 2 details; got $($p753After.Count): $($p753After -join ' / '))"
-                        $p753None = @(Invoke-P753Finally ([string[]]@()))
-                        Assert ($p753None.Count -eq 1) "P7-53 self-test: the P7-43 finally adds nothing with no planted failure (got $($p753None.Count): $($p753None -join ' / '))"
+                        # P7-57 self-test: a function provides its direct plain and typed '=' assignments only.
+                        $p757Function = [Management.Automation.Language.Parser]::ParseInput('function F([string]$p) { $a = 1; [int]$b = 2; $c += 3; if ($x) { $d = 4 }; foreach ($e in 1) { }; $f.g = 5; $h.Add(6) }', [ref]$null, [ref]$null).Find({ param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] }, $true)
+                        $p757Provided = @(Get-P757Provided $p757Function) -join ','
+                        Assert ($p757Provided -ceq 'a,b') "P7-57 self-test: Get-P757Provided reads only direct plain and typed '=' assignments: '$p757Provided' (want 'a,b')"
+                        if (!$p757RunPlanted) { Write-Host "SKIP P7-53 planted P7-43 finally run: the P7-55 finally-variables check failed (reads '$p755Reads', provided '$p755Provides')" }
+                        else {
+                            $p753Block = [scriptblock]::Create($p753Text.Substring(1, $p753Text.Length - 2))
+                            # Runs the finally with its own $failures, $p751Start, probe and leftovers (dynamic scope), so the
+                            # run-wide list is untouched; the probe path does not exist, so the cleanup call returns at once.
+                            function Invoke-P753Finally([string[]]$Planted) {
+                                $failures = [Collections.Generic.List[string]]::new()
+                                $failures.Add('P7-53 earlier section: planted')
+                                $p751Start = $failures.Count
+                                foreach ($one in $Planted) { $failures.Add($one) }
+                                $p743Probe = Join-Path $p733Case ('p7-53 absent ' + [Guid]::NewGuid().ToString('N'))
+                                $p743Leftovers = [Collections.Generic.List[string]]::new()
+                                & $p753Block
+                                return [string[]]$failures.ToArray()
+                            }
+                            $p753Planted = [string[]]@("$($p757MutantPrefix)P7-53 planted': header x (want y)", 'P7-43: a planted plain failure')
+                            $p753After = @(Invoke-P753Finally $p753Planted)
+                            $p753Summary = Get-P751FailureSummary $p753Planted
+                            Assert ($p753After.Count -eq 4 -and $p753After[0] -ceq 'P7-53 earlier section: planted' -and $p753After[1] -ceq $p753Summary -and $p753After[2] -ceq $p753Planted[0] -and $p753After[3] -ceq $p753Planted[1]) "P7-53 self-test: the P7-43 finally inserts the summary at `$p751Start on a planted failure (want earlier, summary, 2 details; got $($p753After.Count): $($p753After -join ' / '))"
+                            $p753None = @(Invoke-P753Finally ([string[]]@()))
+                            Assert ($p753None.Count -eq 1) "P7-53 self-test: the P7-43 finally adds nothing with no planted failure (got $($p753None.Count): $($p753None -join ' / '))"
+                        }
                     }
                 } catch { $failures.Add("P7-43 self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
                 finally {
