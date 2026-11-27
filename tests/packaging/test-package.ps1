@@ -3234,8 +3234,8 @@ try {
         try {
             $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
             # P4-41: the one own-header assert (P4-40 asserted the same list again; that copy is gone). P4-42: the header
-            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31); P4-43 and P4-44 add their lines.
-            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44') "P4-36..P4-44: this script's header lists P4-31..P4-44: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44)"
+            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31); P4-43..P4-45 add their lines.
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44,P4-45') "P4-36..P4-45: this script's header lists P4-31..P4-45: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44,P4-45)"
             $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
             Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
             $p436Misplaced = [ordered]@{
@@ -3604,6 +3604,46 @@ try {
             $p444Notes = @((Get-P444HeadroomNotice 2500 500 6), (Get-P444HeadroomNotice 2500 115 6), (Get-P444HeadroomNotice 500 0 6), (Get-P444HeadroomNotice 600 100 6)) -join ';'
             Assert ($p444Notes -ceq '5.0x is under the 6x notice threshold, look at the tokenizer cost;;;') "P4-44 self-test: Get-P444HeadroomNotice (2500/500, 2500/115, 500/0, 600/100 against 6x): '$p444Notes' (want '5.0x is under the 6x notice threshold, look at the tokenizer cost;;;')"
         } catch { $failures.Add("P4-44 headroom notice self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-45 self-test: a CleanupFailed = whose value starts with a literal and continues ("x" + F("y"), "x" ?? "y") keeps
+        # its one-message wording for the first literal and refuses every later literal of the expression by name (up to the
+        # ; or a closing bracket at depth 0, a later declaration stays clean); 'CleanupFailed =' text inside a string literal
+        # or a comment is blanked code and stays clean (control).
+        try {
+            $p445Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p445Into 'P4-45' '/p4-45/left' { param($l, $p) 'W' }
+            $p445Prefix = if ($p445Into.Count -eq 1 -and $p445Into[0].EndsWith('W')) { $p445Into[0].Substring(0, $p445Into[0].Length - 1) } else { '<none>' }
+            $p445Decl = 'const string CleanupFailed = "' + $p445Prefix + '";'
+            $p445Quoted = '"' + $p445Prefix + '"'
+            $p445Later = 'CleanupFailed assignment continued after its first literal refused '
+            $p445Plus = 'CleanupFailed literal followed by + (a concatenation, not one literal) '
+            $p445Cases = @(
+                @{ Label = 'mutable CleanupFailed = "x" + F("y"): the later literal is walked'; Text = $p445Decl + ' void M() { CleanupFailed = "x" + F("y"); } string Z = "z";'; Want = $p445Plus + '"x"|' + $p445Later + '"y"' }
+                @{ Label = 'static CleanupFailed = "x" + "y" + "w" without a declaration: every later literal'; Text = 'static string CleanupFailed = "x" + "y" + "w";'; Want = $p445Plus + '"x"|' + $p445Later + '"y"|' + $p445Later + '"w"' }
+                @{ Label = 'const declaration-shaped "p" ?? "y": next token named, later literal refused'; Text = 'const string CleanupFailed = ' + $p445Quoted + ' ?? "y";'; Want = "CleanupFailed declaration literal followed by '??' (not one declaration) $p445Quoted|" + $p445Later + '"y"' }
+                @{ Label = 'object initialiser member "x" + F("y"), next member refused too (conservative)'; Text = $p445Decl + ' var t = new T { CleanupFailed = "x" + F("y"), Other = "o" }; string Z = "z";'; Want = $p445Plus + '"x"|' + $p445Later + '"y"|' + $p445Later + '"o"' }
+                @{ Label = 'control: one-literal declaration, later literals after the ; stay clean'; Text = $p445Decl + ' string Z = "z" + "w";'; Want = '' }
+                @{ Label = 'control: CleanupFailed = text inside a string literal'; Text = $p445Decl + ' string Doc = "CleanupFailed = \"x\" + F(\"y\")";'; Want = '' }
+                @{ Label = 'control: CleanupFailed = text inside a verbatim string literal'; Text = $p445Decl + ' string Doc = @"CleanupFailed = ""x"" + F(""y"")";'; Want = '' }
+                @{ Label = 'control: CleanupFailed = text inside a comment'; Text = $p445Decl + " // CleanupFailed = `"x`" + F(`"y`")`n string Z = `"z`";"; Want = '' }
+            )
+            foreach ($p445Case in $p445Cases) {
+                $p445Found = Get-P435PrefixMismatch $p445Case.Text $p445Prefix
+                Assert (($p445Found -join '|') -ceq $p445Case.Want) "P4-45 self-test: $($p445Case.Label): $(Format-P431List $p445Found) (want [$($p445Case.Want)])"
+            }
+        } catch { $failures.Add("P4-45 literal-first/string-literal self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-45 self-test: every line of this script's P4 header section (from the P4-31 line up to the line before the next
+        # header section) is at most 130 characters wide; the section is found, not empty.
+        try {
+            $p445Width = 130
+            $p445Lines = [IO.File]::ReadAllLines($PSCommandPath)
+            $p445First = -1; $p445End = -1
+            for ($l = 0; $l -lt $p445Lines.Count -and $p445Lines[$l].StartsWith('#'); $l++) {
+                if ($p445First -lt 0) { if ($p445Lines[$l].StartsWith('# P4-31: ')) { $p445First = $l } }
+                elseif ($p445End -lt 0 -and !$p445Lines[$l].StartsWith('# P4-') -and $p445Lines[$l] -cmatch '^# (P\d+-\d+:|Every )') { $p445End = $l }
+            }
+            $p445Wide = @(if ($p445First -ge 0 -and $p445End -gt $p445First) { for ($l = $p445First; $l -lt $p445End; $l++) { if ($p445Lines[$l].Length -gt $p445Width) { "line $($l + 1) ($($p445Lines[$l].Length))" } } })
+            Assert ($p445First -ge 0 -and $p445End -gt $p445First -and $p445Wide.Count -eq 0) "P4-45: this script's P4 header section (lines $($p445First + 1)..$p445End) is at most $p445Width characters wide: $(Format-P431List $p445Wide) (want a found section and [])"
+        } catch { $failures.Add("P4-45 header width self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
