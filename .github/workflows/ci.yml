@@ -84,16 +84,24 @@ jobs:
           cstatus=0
           cext=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check 2>&1) || cstatus=$?
           if [ "$cstatus" -ne 0 ]; then clevel=error; else clevel=notice; fi
-          # P6-54: each line is cut at 900 characters; the annotation counts the lines cut.
+          # P6-54: each line is cut at 900 characters; the annotation counts the lines cut. P6-56: the stale line (cut at 900
+          # characters by stale_warn below) is counted too.
           cdiff=$(printf '%s\n' "$cext" | grep '^differing rows: ' || true)
           cpick=$(printf '%s\n' "$cext" | grep -e '^C-extension drift: ' -e '^new C-extension drift rows: ' -e 'NOT caught' -e 'not caught as' -e 'not found exactly once' -e '^kept under the C extensions: ' || true)
           clast=$(printf '%s\n' "$cext" | tail -n 1)
-          ccut=$(printf '%s\n' "$cdiff" "$cpick" "$clast" | awk 'length > 900' | wc -l | tr -d ' ')
+          cstale=$(printf '%s\n' "$cext" | grep '^pinned C-extension drift rows no longer drifting: ' || true)
+          ccut=$(printf '%s\n' "$cdiff" "$cpick" "$clast" "$cstale" | awk 'length > 900' | wc -l | tr -d ' ')
           echo "::$clevel title=ezdxf-check-c-ext::with the wheel's C extensions: $(printf '%s\n' "$cdiff" | cut -c1-900); $(printf '%s\n' "$cpick" | cut -c1-900 | tr '\n' ' '); $(printf '%s\n' "$clast" | cut -c1-900); lines cut at 900 characters: $ccut"
           # P6-52: a pinned C-extension drift row that stops drifting is named in a warning annotation. P6-54: the wiring
           # is one function, checked first on a planted stale line (the step fails unless it yields the annotation).
-          stale_warn() { grep '^pinned C-extension drift rows no longer drifting: ' | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }
-          planted='pinned C-extension drift rows no longer drifting: C1>NB (planted by the step)'
+          # P6-56: grep's no-match is guarded, so stale_warn exits 0 with no stale line, checked under bash -eo pipefail;
+          # the planted line is printed by the generator (_stale_line, which check_main prints the stale line with).
+          stale_warn() { { grep '^pinned C-extension drift rows no longer drifting: ' || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }
+          if ! quiet=$(set -eo pipefail; printf '%s\n' 'differing rows: none' 'C-extension drift: none' | stale_warn) || [ -n "$quiet" ]; then
+            echo "::error title=ezdxf-check-c-ext-stale::the stale-row wiring failed or printed under bash -eo pipefail with no stale line: $quiet"
+            exit 1
+          fi
+          planted=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-line 'C1>NB')
           if [ "$(printf '%s\n' 'differing rows: none' "$planted" 'C-extension drift: none' | stale_warn)" != "::warning title=ezdxf-check-c-ext-stale::$planted" ]; then
             echo "::error title=ezdxf-check-c-ext-stale::the stale-row wiring did not turn a planted stale line into its warning annotation"
             exit 1
