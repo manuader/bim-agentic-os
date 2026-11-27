@@ -81,7 +81,9 @@
 # P4-42: literals in a CleanupFailed property's braces (nested accessor bodies) or initialiser are refused by name; the
 # next-token wording names a whole token; the header pin reads P4-40..P4-42; the cost notice prints the measured headroom.
 # P4-43: an unclosed CleanupFailed property brace and every literal of a =>, += or ??= expression are refused by name; the
-# next-token wording names three-character operators (>>=, <<=, >>>, >>>=) whole; the cost comment cites both OSes' headroom.
+# next-token wording names the whole operators (>>>=, >>>, >>=, <<=, ??=); the cost comment cites both OSes' headroom.
+# P4-44: the expression walk is conservative at a depth-0 comma; a CleanupFailed = whose value does not start with a literal is
+# walked; an unclosed property brace is one summary message; the tokenizer cost notice has a named 6x notice threshold.
 # Every failure is printed as a GitHub annotation because CI logs are not downloadable.
 param([string]$Dotnet)
 $ErrorActionPreference = 'Stop'
@@ -2640,8 +2642,14 @@ try {
         # CleanupFailed must be the one const or static readonly declaration. An unclosed CleanupFailed { (no matching } on
         # the blanked code) is refused by name and every literal after it is an accessor literal. A =>, += or ??= form
         # refuses every literal of its expression (Get-P443ExpressionEnd: up to the ; or a closing bracket at depth 0), so
-        # CleanupFailed => new("x") and += F("x") are named. Three-character operators (>>=, <<=, >>>, ??=) and >>>= are
-        # named whole by the next-token wording.
+        # CleanupFailed => new("x") and += F("x") are named. The next-token wording names the whole operators >>>=, >>>,
+        # >>=, <<= and ??= (the same list as the header and the inline comment above the regex; P4-44 pins it).
+        # P4-44: Get-P443ExpressionEnd does not stop at a depth-0 comma (conservative): M(CleanupFailed += "a", "b"), a
+        # switch arm or an object initialiser member refuses the next argument, arm or member too, because < > are not
+        # brackets and a comma stop would end inside Dictionary<string, string>. A CleanupFailed = (not ==, =>) whose value
+        # does not start with a literal (F("x"), c ? "a" : "b", string.Concat(...)) is walked the same way and refuses every
+        # literal as a non-literal assignment; a value that starts with a literal keeps its one-message wording. An unclosed
+        # CleanupFailed { is one summary message counting the literals after it (none is listed).
         function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
             $problems = [Collections.Generic.List[string]]::new()
             $scan = Get-P437CsLiterals $CsText
@@ -2659,6 +2667,11 @@ try {
                 $from = $m.Index + $m.Length; $end = Get-P443ExpressionEnd $scan.Code $from
                 foreach ($literal in $scan.Literals) { if ($literal.Start -ge $from -and $literal.Start -lt $end) { $formStarts[$literal.Start] = $m.Groups[1].Value } }
             }
+            # P4-44: a CleanupFailed = whose value does not start with a literal: every literal of the expression.
+            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*=(?![=>])(?!\s*")')) {
+                $from = $m.Index + $m.Length; $end = Get-P443ExpressionEnd $scan.Code $from
+                foreach ($literal in $scan.Literals) { if ($literal.Start -ge $from -and $literal.Start -lt $end) { $formStarts[$literal.Start] = 'assign' } }
+            }
             # P4-42: a CleanupFailed property: every literal inside its braces (accessor bodies, nested braces counted on the
             # blanked code) is 'accessor'; every literal of an initialiser after the closing } (= up to the ; or closing
             # bracket at bracket depth 0, so new(...) and { ... } collection initialisers are inside) is 'property'.
@@ -2669,9 +2682,11 @@ try {
                     elseif ($scan.Code[$k] -ceq '}') { $depth--; if ($depth -eq 0) { $close = $k; break } }
                 }
                 if ($close -lt 0) {
-                    # P4-43: an unclosed property brace is refused by name; every literal after it is an accessor literal.
-                    $problems.Add("CleanupFailed property brace at offset $open is never closed (unclosed {, refused)")
-                    foreach ($literal in $scan.Literals) { if ($literal.Start -gt $open) { $formStarts[$literal.Start] = 'accessor' } }
+                    # P4-43: an unclosed property brace is refused by name. P4-44: one summary message counting the literals
+                    # after it (refused with it, not listed one by one).
+                    $after = @($scan.Literals | Where-Object { $_.Start -gt $open })
+                    $problems.Add("CleanupFailed property brace at offset $open is never closed (unclosed {, refused; $($after.Count) literals after it refused with it, not listed)")
+                    foreach ($literal in $after) { $formStarts[$literal.Start] = 'unclosed' }
                     continue
                 }
                 foreach ($literal in $scan.Literals) { if ($literal.Start -gt $open -and $literal.Start -lt $close) { $formStarts[$literal.Start] = 'accessor' } }
@@ -2695,7 +2710,8 @@ try {
                 if ($literal.Start -eq $declaration) { continue }
                 if ($formStarts.ContainsKey($literal.Start)) {
                     $form = $formStarts[$literal.Start]
-                    $problems.Add($(if ($form -ceq 'property') { "CleanupFailed auto-property initialiser refused $($literal.Raw)" } elseif ($form -ceq 'accessor') { "CleanupFailed property accessor literal refused $($literal.Raw)" } elseif ($form -ceq '=>') { "CleanupFailed expression-bodied member (=>) refused $($literal.Raw)" } else { "CleanupFailed compound assignment ($form) refused $($literal.Raw)" })); continue
+                    if ($form -ceq 'unclosed') { continue }
+                    $problems.Add($(if ($form -ceq 'property') { "CleanupFailed auto-property initialiser refused $($literal.Raw)" } elseif ($form -ceq 'accessor') { "CleanupFailed property accessor literal refused $($literal.Raw)" } elseif ($form -ceq '=>') { "CleanupFailed expression-bodied member (=>) refused $($literal.Raw)" } elseif ($form -ceq 'assign') { "CleanupFailed assigned a non-literal expression refused $($literal.Raw)" } else { "CleanupFailed compound assignment ($form) refused $($literal.Raw)" })); continue
                 }
                 if ($assignStarts.Contains($literal.Start)) {
                     $access = $member.Match($scan.Code, $literal.End)
@@ -2955,6 +2971,12 @@ try {
             if ($Elapsed -lt 1) { return "more than $($Bound)x" }
             return [string]::Format([Globalization.CultureInfo]::InvariantCulture, '{0:0.0}x', $Bound / $Elapsed)
         }
+        # P4-44: the cost notice's named threshold: '<headroom> is under the <threshold>x notice threshold, look at the
+        # tokenizer cost' when the measured headroom (Get-P442Headroom) is under $Threshold, else empty (also under 1 ms).
+        function Get-P444HeadroomNotice([double]$Bound, [double]$Elapsed, [double]$Threshold) {
+            if ($Elapsed -lt 1 -or $Bound / $Elapsed -ge $Threshold) { return '' }
+            return "$(Get-P442Headroom $Bound $Elapsed) is under the $($Threshold)x notice threshold, look at the tokenizer cost"
+        }
         # P4-39: the P4-36 plant source pin on the PowerShell AST of script text: "source <a> prefix <b> neutral <c> other <d>
         # plants <e> hardcoded <f>"; a = Add-P433CleanupFailure calls into $p436Into, b = assignments of $p436Prefix that read
         # $p436Into, c = assignments $p436Neutral = $p436Prefix, d = any other assignment of $p436Neutral, e =
@@ -3158,8 +3180,8 @@ try {
         try {
             $p436Own = Get-P436Header ([IO.File]::ReadAllText($PSCommandPath))
             # P4-41: the one own-header assert (P4-40 asserted the same list again; that copy is gone). P4-42: the header
-            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31); P4-43 adds its line.
-            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43') "P4-36..P4-43: this script's header lists P4-31..P4-43: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43)"
+            # lists P4-40..P4-42 too (Get-P436Header reads every '# P4-<n>: ' line with n >= 31); P4-43 and P4-44 add their lines.
+            Assert ($p436Own -ceq 'P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44') "P4-36..P4-44: this script's header lists P4-31..P4-44: $p436Own (want P4-31,P4-32,P4-33,P4-34,P4-35,P4-36,P4-37,P4-38,P4-39,P4-40,P4-41,P4-42,P4-43,P4-44)"
             $p436Late = Get-P436Header ("#Requires -Version 7.2`n# P4-34: a`n# P4-35: b`nparam()`n# P4-36: after the leading block")
             Assert ($p436Late -ceq 'P4-34,P4-35') "P4-36 self-test: a P4-36 comment after the leading block is not a header line: $p436Late (want P4-34,P4-35)"
             $p436Misplaced = [ordered]@{
@@ -3260,10 +3282,14 @@ try {
             # P4-42: the notice prints the measured headroom (bound / elapsed, Get-P442Headroom) of this run. P4-43: measured
             # range on both OSes, relay301 green 45858133159: Linux 116 ms of 2471 ms (21.3x, ~21x), Windows 210 ms (11.9x,
             # ~12x); relay305 red 45913834579: Linux 120 ms (20.6x), Windows 78 ms (32.1x). So headroom is about 12-32x and
-            # the Windows runner varies most (both directions); a run under ~6x would warrant a look.
+            # the Windows runner varies most (both directions). P4-44: a run under the named notice threshold
+            # ($p438NoticeThreshold, 6x, about half the lowest measured headroom) prints the cost as a warning naming it
+            # (Get-P444HeadroomNotice); the bound itself still decides failure.
+            $p438NoticeThreshold = 6
             $p438Bound = [math]::Max(500, [math]::Ceiling($p438Cs.Length * 25 / 1000))
-            $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound $p438Bound ms = 25 ms per 1000 chars, floor 500; headroom $(Get-P442Headroom $p438Bound $p438Watch.ElapsedMilliseconds))"
-            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::notice title=packaging::' + ($p438Cost -replace '%', '%25')) } else { Write-Host $p438Cost }
+            $p438Note = Get-P444HeadroomNotice $p438Bound $p438Watch.ElapsedMilliseconds $p438NoticeThreshold
+            $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound $p438Bound ms = 25 ms per 1000 chars, floor 500; headroom $(Get-P442Headroom $p438Bound $p438Watch.ElapsedMilliseconds); notice threshold $($p438NoticeThreshold)x)$(if ($p438Note) { ': ' + $p438Note })"
+            if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ("::$(if ($p438Note) { 'warning' } else { 'notice' }) title=packaging::" + ($p438Cost -replace '%', '%25')) } else { Write-Host $p438Cost }
             Assert ($null -eq $p438Scan.Error -and $p438Scan.Literals.Count -gt 0 -and $p438Watch.ElapsedMilliseconds -lt $p438Bound) "P4-38: the tokenizer reads tests/cli/PackageLayoutPackTests.cs without error within its bound: $p438Cost error $($p438Scan.Error)"
         } catch { $failures.Add("P4-38 tokenizer self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         # P4-39 self-test: a raw interpolation hole closed by fewer braces than its $ count, a comment inside a hole and a raw
@@ -3455,8 +3481,8 @@ try {
             $p443Open = $p443Decl + ' static string CleanupFailed { get { return "x";'
             $p443Bare = $p443Decl + ' string CleanupFailed { get;'
             $p443Cases = @(
-                @{ Label = 'unclosed property brace with a literal'; Text = $p443Open; Want = "CleanupFailed property brace at offset $($p443Open.IndexOf('{')) is never closed (unclosed {, refused)|" + $p443Accessor + '"x"' }
-                @{ Label = 'unclosed property brace without a literal'; Text = $p443Bare; Want = "CleanupFailed property brace at offset $($p443Bare.IndexOf('{')) is never closed (unclosed {, refused)" }
+                @{ Label = 'unclosed property brace with a literal'; Text = $p443Open; Want = "CleanupFailed property brace at offset $($p443Open.IndexOf('{')) is never closed (unclosed {, refused; 1 literals after it refused with it, not listed)" }
+                @{ Label = 'unclosed property brace without a literal'; Text = $p443Bare; Want = "CleanupFailed property brace at offset $($p443Bare.IndexOf('{')) is never closed (unclosed {, refused; 0 literals after it refused with it, not listed)" }
                 @{ Label = 'expression-bodied member => new("x")'; Text = 'static string CleanupFailed => new("x");'; Want = $p443Arrow + '"x"' }
                 @{ Label = 'expression-bodied lambda, every literal, later declaration clean'; Text = $p443Decl + ' static Lazy<string> CleanupFailed => new(() => "a" + "b"); const string Y = "c";'; Want = $p443Arrow + '"a"|' + $p443Arrow + '"b"' }
                 @{ Label = 'compound += with a call'; Text = $p443Decl + ' void M() { CleanupFailed += F("x"); } string Z = "z";'; Want = 'CleanupFailed compound assignment (+=) refused "x"' }
@@ -3472,6 +3498,58 @@ try {
                 Assert (($p443Found -join '|') -ceq $p443Case.Want) "P4-43 self-test: $($p443Case.Label): $(Format-P431List $p443Found) (want [$($p443Case.Want)])"
             }
         } catch { $failures.Add("P4-43 unclosed property/expression/operator self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-44 self-test: Get-P443ExpressionEnd is conservative at a depth-0 comma (it walks on to the ; or the closing
+        # bracket, so the next argument, switch arm or initialiser member is refused too; a comma stop would end inside
+        # Dictionary<string, string>, whose < > are not brackets); a CleanupFailed = whose value does not start with a literal
+        # (F("x"), a ternary, an object initialiser member) is walked and every literal refused by name; an unclosed property
+        # brace is one summary message however many literals follow; the header and the inline next-token comment list the
+        # same whole operators; the cost notice has a named notice threshold (Get-P444HeadroomNotice).
+        try {
+            $p444Into = [Collections.Generic.List[string]]::new()
+            Add-P433CleanupFailure $p444Into 'P4-44' '/p4-44/left' { param($l, $p) 'W' }
+            $p444Prefix = if ($p444Into.Count -eq 1 -and $p444Into[0].EndsWith('W')) { $p444Into[0].Substring(0, $p444Into[0].Length - 1) } else { '<none>' }
+            $p444Decl = 'const string CleanupFailed = "' + $p444Prefix + '";'
+            $p444Quoted = '"' + $p444Prefix + '"'
+            $p444Plus = 'CleanupFailed compound assignment (+=) refused '
+            $p444Arrow = 'CleanupFailed expression-bodied member (=>) refused '
+            $p444Assign = 'CleanupFailed assigned a non-literal expression refused '
+            $p444Open = $p444Decl + ' static string CleanupFailed { get { return "a" + "b" + "c" + "d";'
+            $p444Cases = @(
+                @{ Label = 'depth-0 comma: M(CleanupFailed += "a", "b") refuses the next argument too (conservative)'; Text = $p444Decl + ' void N() { M(CleanupFailed += "a", "b"); } string Z = "z";'; Want = $p444Plus + '"a"|' + $p444Plus + '"b"' }
+                @{ Label = 'depth-0 comma: a switch arm refuses the next arm too (conservative)'; Text = $p444Decl + ' string S(int x) => x switch { 1 => CleanupFailed += "a", _ => "b" }; string Z = "z";'; Want = $p444Plus + '"a"|' + $p444Plus + '"b"' }
+                @{ Label = 'depth-0 comma inside generic arguments does not end the walk'; Text = $p444Decl + ' static Dictionary<string, string> CleanupFailed => new Dictionary<string, string> { ["k"] = "v" };'; Want = $p444Arrow + '"k"|' + $p444Arrow + '"v"' }
+                @{ Label = 'mutable CleanupFailed = F("x") is walked'; Text = $p444Decl + ' void M() { CleanupFailed = F("x"); } string Z = "z";'; Want = $p444Assign + '"x"' }
+                @{ Label = 'static CleanupFailed = F("x", "y") without a declaration: every literal, no declaration count'; Text = 'static string CleanupFailed = F("x", "y");'; Want = $p444Assign + '"x"|' + $p444Assign + '"y"' }
+                @{ Label = 'static readonly CleanupFailed = string.Concat(...) is not a declaration literal'; Text = 'static readonly string CleanupFailed = string.Concat("a", "b");'; Want = $p444Assign + '"a"|' + $p444Assign + '"b"' }
+                @{ Label = 'ternary value is walked'; Text = $p444Decl + ' void M() { CleanupFailed = c ? "a" : "b"; }'; Want = $p444Assign + '"a"|' + $p444Assign + '"b"' }
+                @{ Label = 'object initialiser member, next member refused too (conservative)'; Text = $p444Decl + ' var t = new T { CleanupFailed = F("x"), Other = "y" }; string Z = "z";'; Want = $p444Assign + '"x"|' + $p444Assign + '"y"' }
+                @{ Label = 'control: CleanupFailed == F("x") is a comparison'; Text = $p444Decl + ' bool B() => CleanupFailed == F("x");'; Want = '' }
+                @{ Label = 'control: CleanupFailed = null has no literal'; Text = $p444Decl + ' void M() { CleanupFailed = null; }'; Want = '' }
+                @{ Label = 'unclosed property brace with four literals is one summary message'; Text = $p444Open; Want = "CleanupFailed property brace at offset $($p444Open.IndexOf('{')) is never closed (unclosed {, refused; 4 literals after it refused with it, not listed)" }
+                @{ Label = '??= after the declaration literal is named whole'; Text = 'const string CleanupFailed = ' + $p444Quoted + ' ??= x;'; Want = "CleanupFailed declaration literal followed by '??=' (not one declaration) $p444Quoted" }
+            )
+            foreach ($p444Case in $p444Cases) {
+                $p444Found = Get-P435PrefixMismatch $p444Case.Text $p444Prefix
+                Assert (($p444Found -join '|') -ceq $p444Case.Want) "P4-44 self-test: $($p444Case.Label): $(Format-P431List $p444Found) (want [$($p444Case.Want)])"
+            }
+        } catch { $failures.Add("P4-44 comma/assignment/unclosed self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-44 self-test: the whole operators named by the next-token wording are listed the same way, in the same order, in
+        # this script's header and in the inline comment above the next-token regex (its line names the list once).
+        try {
+            $p444Ops = '>>>=, >>>, >>=, <<=, ??='
+            $p444Lines = [IO.File]::ReadAllLines($PSCommandPath)
+            $p444HeaderEnd = 0; while ($p444HeaderEnd -lt $p444Lines.Count -and $p444Lines[$p444HeaderEnd].StartsWith('#')) { $p444HeaderEnd++ }
+            $p444InHeader = @($p444Lines[0..($p444HeaderEnd - 1)] | Where-Object { $_.Contains("($p444Ops)") }).Count
+            $p444Regex = @(for ($l = 1; $l -lt $p444Lines.Count; $l++) { if ($p444Lines[$l].TrimStart().StartsWith('$nextToken = [regex]::new(')) { $p444Lines[$l - 1] } })
+            $p444Inline = @($p444Regex | Where-Object { $_.TrimStart().StartsWith('#') -and $_.Contains("($p444Ops)") }).Count
+            Assert ($p444InHeader -eq 1 -and $p444Regex.Count -eq 1 -and $p444Inline -eq 1) "P4-44: the header and the inline next-token comment list the whole operators ($p444Ops): header lines $p444InHeader, regex lines $($p444Regex.Count), inline comment $p444Inline (want 1, 1, 1)"
+        } catch { $failures.Add("P4-44 operator list self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
+        # P4-44 self-test: Get-P444HeadroomNotice names the notice threshold when the measured headroom is under it (empty
+        # otherwise, and when the scan took under 1 ms).
+        try {
+            $p444Notes = @((Get-P444HeadroomNotice 2500 500 6), (Get-P444HeadroomNotice 2500 115 6), (Get-P444HeadroomNotice 500 0 6), (Get-P444HeadroomNotice 600 100 6)) -join ';'
+            Assert ($p444Notes -ceq '5.0x is under the 6x notice threshold, look at the tokenizer cost;;;') "P4-44 self-test: Get-P444HeadroomNotice (2500/500, 2500/115, 500/0, 600/100 against 6x): '$p444Notes' (want '5.0x is under the 6x notice threshold, look at the tokenizer cost;;;')"
+        } catch { $failures.Add("P4-44 headroom notice self-test threw: $($_.Exception.Message) at line $($_.InvocationInfo.ScriptLineNumber)") }
         try {
             Copy-P431Layout $outA $p431Copy
             $clean = Get-P431Leaks $p431Copy; $cleanControl = Get-P431ControlMissing $p431Copy
