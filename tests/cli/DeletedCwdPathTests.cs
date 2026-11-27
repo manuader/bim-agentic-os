@@ -1055,20 +1055,12 @@ internal static class DeletedCwdPathTests
 
     // P10-55: this file's wiring and comments: P10_41 calls LockVerbsSelfTest51 beside the other P10_41 self-tests (not from
     // inside RestoreWiring47), and the BlockEnd45 and CodeEnd47 header comments state the P10-51, P10-53 and P10-55 brace
-    // rules. Each header comment is the run of // lines right above the declaration.
+    // rules. Each header comment is the run of // lines right above the declaration. P10-57: read through SelfSource57 and
+    // SelfBody57.
     static void WiringComments55(string root, Action<bool, string, string> Check)
     {
         string Label(string what) => "P10-55 wiring and comments: " + what;
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
-        string Body(string declaration)
-        {
-            var at = source.IndexOf("\n    static void " + declaration + "(", StringComparison.Ordinal);
-            var open = at < 0 ? -1 : source.IndexOf("\n    {", at, StringComparison.Ordinal);
-            var close = open < 0 ? -1 : BlockEnd45(source, open + 5);
-            return close < 0 ? "" : source[(open + 5)..(close + 1)];
-        }
+        if (SelfSource57(root, Check, Label("WiringComments55")) is not { } source) return;
         string Header(string declaration)
         {
             var at = source.IndexOf("\n    static int " + declaration + "(", StringComparison.Ordinal);
@@ -1084,8 +1076,8 @@ internal static class DeletedCwdPathTests
             }
             return string.Join(" ", lines);
         }
-        var p41 = Body("P10_41");
-        var restore = Body("RestoreWiring47");
+        var p41 = SelfBody57(source, "P10_41");
+        var restore = SelfBody57(source, "RestoreWiring47");
         Check(p41.Contains("RestoreWiring47(root, Check);", StringComparison.Ordinal) && p41.Contains("LockVerbsSelfTest51(root, Check);", StringComparison.Ordinal)
             && restore.Length > 0 && !restore.Contains("LockVerbsSelfTest51(", StringComparison.Ordinal),
             Label("P10_41 calls LockVerbsSelfTest51 beside RestoreWiring47 and the other P10_41 self-tests"), p41.Length == 0 ? "P10_41 body not found" : restore.Length == 0 ? "RestoreWiring47 body not found" : p41);
@@ -1227,7 +1219,8 @@ internal static class DeletedCwdPathTests
     // Literals met here are read by LiteralEnd47, which calls back for each hole (hole: true): P10-51: a raw hole closes with
     // as many braces as dollars, the rest of the run text, so a run reaching twice the dollars is unclosed (-1); P10-53: a raw
     // content closing brace run must be shorter than the dollars (CS9007); P10-55: a lone closing brace (not }}) in non-raw
-    // interpolated content is unclosed (CS8086).
+    // interpolated content is unclosed (CS8086). P10-57: a non-raw hole's format clause ends at its first closing brace (as
+    // C# reads it, measured), so the braces right after it are content under the P10-55 rule.
     static int CodeEnd47(string source, int start, bool hole = false)
     {
         var depth = 0;
@@ -1401,9 +1394,7 @@ internal static class DeletedCwdPathTests
     static void RestoreWiring47(string root, Action<bool, string, string> Check)
     {
         string Label(string what) => "P10-47 lock verbs restore wiring: " + what;
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
+        if (SelfSource57(root, Check, Label("RestoreWiring47")) is not { } source) return;
         Check(RestoreWiringProblem47(source) is null,
             Label("LockVerbsUnsearchable41 aggregates the reference and the locked call's restore problems into the restore check (pinned by the variable names reference, result and restoreProblem: a rename fails this pin)"),
             RestoreWiringProblem47(source) ?? "");
@@ -1428,9 +1419,7 @@ internal static class DeletedCwdPathTests
     // inside string and char parameter defaults (the name is split so this file's text holds no second declaration).
     static void LockVerbsSelfTest51(string root, Action<bool, string, string> Check)
     {
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, "P10-51 lock verbs restore wiring (LockVerbsSelfTest51): tests/cli/DeletedCwdPathTests.cs is readable", error.Message); return; }
+        if (SelfSource57(root, Check, "P10-51 lock verbs restore wiring (LockVerbsSelfTest51)") is not { } source) return;
         var declared = "LockVerbs" + "Unsearchable41(";
         var literals = "static void " + declared + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
         Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + declared + "string a = \"(\" {"),
