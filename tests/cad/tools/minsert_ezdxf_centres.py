@@ -1238,6 +1238,8 @@ def _self_tests(generated, source, cs_path):
     # P6-58: the --stale-line and --stale-prefix modes, run as the CI step runs them (a child Python, -I): the stale line
     # must equal the one check_main printed for the stop-drifting plant above (the names _listed reads from it) and
     # start with STALE_PREFIX, which --stale-prefix must print alone.
+    # P6-60: these checks and the separator check below plant nothing, so they print "self-test checked ", a label of
+    # their own that the CI step's annotation filter drops when caught, like "self-test planted ".
     stale_names = _listed(stale_printed, "no longer drifting: ") if stale_printed else []
     cli = [
         ("the --stale-line mode", ["--stale-line"] + stale_names, stale_printed),
@@ -1247,12 +1249,12 @@ def _self_tests(generated, source, cs_path):
         run = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "--check"] + args, capture_output=True, text=True)
         got = run.stdout[:-1] if run.stdout.endswith("\n") else run.stdout
         caught = want is not None and run.returncode == 0 and got == want and got.startswith(STALE_PREFIX)
-        print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(run.returncode) + ")")
+        print("self-test checked " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(run.returncode) + ")")
         if not caught:
             failures.append("self-test " + label + ": not caught as exit 0 printing " + repr(want) + "; got exit " + str(run.returncode) + ": " + repr(got) + " " + repr(run.stderr[-300:]))
     # P6-58: _listed cuts a list at " (" and "; " and splits it at ", "; a C_EXT_DRIFT name containing one would be cut.
     cut = [d for d in C_EXT_DRIFT for sep in (" (", "; ", ", ") if sep in d]
-    print("self-test planted the _listed separator limit on the C_EXT_DRIFT names: " + ("caught" if not cut else "NOT caught") + " (" + str(len(cut)) + " names)")
+    print("self-test checked the _listed separator limit on the C_EXT_DRIFT names: " + ("caught" if not cut else "NOT caught") + " (" + str(len(cut)) + " names)")
     if cut:
         failures.append("self-test _listed limit: C_EXT_DRIFT names containing a separator: " + ", ".join(cut))
     return failures

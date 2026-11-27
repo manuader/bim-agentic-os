@@ -88,6 +88,11 @@ jobs:
           # characters by stale_warn below) is counted too. P6-58: the stale line's prefix is defined once, in the generator
           # (STALE_PREFIX), and read from it here.
           stale_prefix=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-prefix)
+          # P6-60: an empty stale_prefix would make both greps on it match every line (^ alone), so the step refuses it.
+          if ! [ -n "$stale_prefix" ]; then
+            echo "::error title=ezdxf-check-c-ext-stale::stale_prefix is empty (the generator's --check --stale-prefix printed nothing); both greps on it would match every line"
+            exit 1
+          fi
           cdiff=$(printf '%s\n' "$cext" | grep '^differing rows: ' || true)
           cpick=$(printf '%s\n' "$cext" | grep -e '^C-extension drift: ' -e '^new C-extension drift rows: ' -e 'NOT caught' -e 'not caught as' -e 'not found exactly once' -e '^kept under the C extensions: ' || true)
           clast=$(printf '%s\n' "$cext" | tail -n 1)
@@ -116,8 +121,9 @@ jobs:
           EZDXF_DISABLE_C_EXT=1 .tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check > "$out" 2>&1 || status=$?
           if [ "$status" -ne 0 ]; then level=error; else level=notice; fi
           # P6-48: every output line but the caught self-tests is annotated, 20 lines an annotation (GitHub keeps 10 per
-          # step and level, so at most 9 here); the count of any lines left over is printed in the last one.
-          grep -v '^self-test planted .*: caught (' "$out" | cut -c1-900 | awk -v level="$level" '
+          # step and level, so at most 9 here); the count of any lines left over is printed in the last one. P6-60: the
+          # caught self-tests are the planted ones and the checked ones (the CLI and separator checks, which plant nothing).
+          grep -v -e '^self-test planted .*: caught (' -e '^self-test checked .*: caught (' "$out" | cut -c1-900 | awk -v level="$level" '
             { gsub(/\r/, ""); gsub(/%/, "%25"); lines[NR] = $0 }
             END {
               chunks = int((NR + 19) / 20); shown = chunks > 9 ? 9 : chunks
