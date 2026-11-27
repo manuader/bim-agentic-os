@@ -812,6 +812,20 @@ internal static class RepeatedEnvelopeKeyTests
         return (kept.ToString(), chars);
     }
 
+    // P10-60: the kept head's length as ReadBounded leaves it: all chars when they fit, else keep chars.
+    internal static bool KeptHeadOk(string kept, long chars, int keep) =>
+        chars >= kept.Length && (chars > keep ? kept.Length == keep : kept.Length == chars);
+
+    // P10-60: the declarations of a local named name in code (comments removed): every one is a using declaration
+    // (using var name =, or using with the type), and there is at least one.
+    static bool UsingDeclared(string source, string name)
+    {
+        var code = DocUpdateLinkTests.CodeOf(source);
+        var declarations = System.Text.RegularExpressions.Regex.Matches(code,
+            @"(?<using>\busing\s+)?\b(?:var|[A-Za-z_][A-Za-z0-9_]*)\s+" + System.Text.RegularExpressions.Regex.Escape(name) + @"\s*=(?![=>])");
+        return declarations.Count > 0 && declarations.All(found => found.Groups["using"].Success);
+    }
+
     // P10-58: the stderr of a killed child, waited for at most waitMs. When it was not read in time the text is the
     // StderrNotRead marker and no char is counted as written (the marker is not the child's output).
     internal const string StderrNotRead = "<stderr not read>";
@@ -1387,7 +1401,7 @@ internal static class RepeatedEnvelopeKeyTests
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
                 && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal)
                 && plantedErr.Contains("Tracing enabled", StringComparison.Ordinal) && plantedErr.Length <= StderrKeep
-                && plantedChars >= plantedErr.Length && (plantedChars > StderrKeep ? plantedErr.Length == StderrKeep : plantedErr.Length == plantedChars)
+                && KeptHeadOk(plantedErr, plantedChars, StderrKeep)
                 && planted.Measured[0].EndsWith(" stderr " + BoundedStderr(plantedErr, plantedChars), StringComparison.Ordinal)
                 && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
@@ -1463,6 +1477,14 @@ internal static class RepeatedEnvelopeKeyTests
                 ("using static System.Diagnostics." + "Process;\nstatic void " + "Start(int x) { }", 0),
                 ("using static System.Diagnostics." + "Process;\nProcess? " + "Start(ProcessStartInfo i) => " + "Start(i);", 1),
                 ("using static System.Diagnostics." + "Process;\nIEnumerable<int> " + "Start(int n) { yield return n; } int[] " + "Start(long n) => []; var q = x ?? " + "Start(info);", 1),
+                // P10-60: a ternary with no space before ? is a call (the parameter list of a declaration is followed by a
+                // body, => or ;), and so is a Start call after ref or a LINQ query keyword; a nullable return type stays a
+                // declaration, with or without a space before ?.
+                ("using static System.Diagnostics." + "Process;\nvar p = ready? " + "Start(info) : null; var q = ready?" + "Start(info) : null;", 2),
+                ("using static System.Diagnostics." + "Process;\nint? " + "Start(int n) { return n; } int?" + "Start(long n) => null; int? " + "Start(short n);", 0),
+                ("using static System.Diagnostics." + "Process;\nref var p = ref " + "Start(info);", 1),
+                ("using static System.Diagnostics." + "Process;\nvar ps = from i in infos where " + "Start(i) != null orderby " + "Start(i).Id select " + "Start(i);", 3),
+                ("using static System.Diagnostics." + "Process;\nvar gs = from i in infos join j in infos on " + "Start(i).Id equals " + "Start(j).Id group " + "Start(i) by " + "Start(j).Id;", 4),
             };
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
@@ -1611,6 +1633,32 @@ internal static class RepeatedEnvelopeKeyTests
                 + " chars ending " + LastOf(keptCut) + " of " + charsCut.ToString(CultureInfo.InvariantCulture) + "; pair kept whole: " + keptWhole.Length.ToString(CultureInfo.InvariantCulture)
                 + " ending " + LastOf(keptWhole) + "; cut inside a read, keep 3: kept " + keptSmall.Length.ToString(CultureInfo.InvariantCulture) + " ending " + LastOf(keptSmall)
                 + " of " + charsSmall.ToString(CultureInfo.InvariantCulture) + ")");
+            // P10-60: BoundedStderr cuts at StderrBound by the same rule as ReadBounded: a cut between the halves of a
+            // surrogate pair drops the high half too (StderrBound - 1 chars kept); a pair kept whole before the cut stays;
+            // well-formed text (ASCII) reads as before. The planted-L2 check (KeptHeadOk) accepts keep - 1 kept chars when
+            // ReadBounded's cut fell on a pair (the dropped high half), and nothing shorter.
+            var boundCut = BoundedStderr(new string('e', StderrBound - 1) + SurrogatePair + "tail");
+            var boundWhole = BoundedStderr(new string('e', StderrBound - 2) + SurrogatePair + "tail");
+            var boundAscii = BoundedStderr(new string('e', 5000), 9000);
+            var boundPairOk = boundCut == new string('e', StderrBound - 1) + "...(" + (StderrBound + 5).ToString(CultureInfo.InvariantCulture) + " chars)"
+                && boundWhole == new string('e', StderrBound - 2) + SurrogatePair + "...(" + (StderrBound + 4).ToString(CultureInfo.InvariantCulture) + " chars)"
+                && boundAscii == new string('e', StderrBound) + "...(9000 chars)" && BoundedStderr(SurrogatePair) == SurrogatePair;
+            var keptHeadOk = KeptHeadOk(new string('t', StderrKeep), StderrKeep + 9L, StderrKeep) && KeptHeadOk(new string('t', StderrKeep - 1), StderrKeep + 9L, StderrKeep)
+                && !KeptHeadOk(new string('t', StderrKeep - 2), StderrKeep + 9L, StderrKeep) && !KeptHeadOk(new string('t', StderrKeep - 1) + "\ud83d", StderrKeep + 9L, StderrKeep)
+                && KeptHeadOk("short", 5, StderrKeep) && !KeptHeadOk("shor", 5, StderrKeep);
+            static string Tail(string text) => text.Length <= 24 ? text : "..." + text[^24..];
+            selfTest.Add((boundPairOk && keptHeadOk ? "ok" : "FAIL") + " the bounded stderr never splits a surrogate pair at " + StderrBound.ToString(CultureInfo.InvariantCulture)
+                + " (cut on a pair: " + Tail(boundCut) + " ending at " + LastOf(boundCut[..boundCut.IndexOf("...(", StringComparison.Ordinal)]) + "; pair kept whole: " + Tail(boundWhole)
+                + "; ASCII: " + Tail(boundAscii) + "), the planted-L2 kept-length check accepts keep - 1 after a pair cut and nothing shorter: " + keptHeadOk);
+            // P10-60: the shared isolated cache stays a using declaration (structural pin on this file's source: every
+            // declaration of that local is using var), self-tested on a planted plain declaration and a planted using one.
+            var isolatedPinned = UsingDeclared(ownSource, "isolated" + "Roots");
+            var plainPlanted = UsingDeclared("var " + "isolatedRoots = new IsolatedCliCache(\"x\");", "isolated" + "Roots");
+            var usingPlanted = UsingDeclared("using var " + "isolatedRoots = new IsolatedCliCache(\"x\");", "isolated" + "Roots");
+            var bothPlanted = UsingDeclared("using var " + "isolatedRoots = a; IsolatedCliCache " + "isolatedRoots = b;", "isolated" + "Roots");
+            var usingPinOk = isolatedPinned && !plainPlanted && usingPlanted && !bothPlanted;
+            selfTest.Add((usingPinOk ? "ok" : "FAIL") + " the shared isolated cache stays a using declaration (this file: " + isolatedPinned + "; planted plain declaration: " + plainPlanted
+                + ", planted using declaration: " + usingPlanted + ", using then plain: " + bothPlanted + ")");
             // P10-58: a killed child's stderr not read in time is the marker with no written char counted (the timeout
             // message then shows the marker alone, no char count); stderr read in time is returned as read.
             var notRead = KilledStderr(new TaskCompletionSource<(string Kept, long Chars)>().Task, 50);
@@ -1620,11 +1668,12 @@ internal static class RepeatedEnvelopeKeyTests
             selfTest.Add((markerOk ? "ok" : "FAIL") + " a killed child's unread stderr counts no written chars (not read: " + notRead.Text + " " + notRead.Chars.ToString(CultureInfo.InvariantCulture)
                 + " chars; read in time: " + readInTime.Text + " " + readInTime.Chars.ToString(CultureInfo.InvariantCulture) + " chars)");
             Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk && noCapturedEnvironment && keepOk
-                    && lifetimeOk && cutOk && markerOk,
+                    && lifetimeOk && cutOk && markerOk && boundPairOk && keptHeadOk && usingPinOk,
                 "P10-48/P10-50/P10-52/P10-54/P10-56/P10-58 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case (L2 only launched, stderr listed); a missing timeout-child Bim.Mcp.dll is one named precondition failure; Cli kills a child at its timeout, its stdin release task ends with it and the message carries its stderr; one launcher (all start forms); the L4 case's own label names its policy-file dependence (a plain L4 label reds); stderr bounded and reported on a failed launch; release task cancelled after a normal exit; L4 isolated from a malformed policy file"
                 + "; P10-54: the planted and timeout runs carry the captured host trace text (COREHOST_TRACE), a target-typed Process constructor counted, the copy time listed"
                 + "; P10-56: stderr kept to StderrKeep chars with its full size stated, a using alias and a using static Start counted, one isolated copy reused with its planted policy file removed, the environment an argument of Cli"
-                + "; P10-58: the isolated copy removed in a finally (planted throw) and keyed by source dll, no lone high surrogate at the kept cut, a method declaration named Start not counted, an unread killed stderr counts no chars, no field or closure holds an environment (structural) | "
+                + "; P10-58: the isolated copy removed in a finally (planted throw) and keyed by source dll, no lone high surrogate at the kept cut, a method declaration named Start not counted, an unread killed stderr counts no chars, no field or closure holds an environment (structural)"
+                + "; P10-60: the bounded stderr keeps surrogate pairs whole, the planted-L2 kept length accepts a pair cut, a ternary, ref or LINQ Start call counted, the shared isolated cache a using declaration (structural) | "
                 + string.Join(" ; ", selfTest));
             // P10-48: the repository root comes from Program.cs FindRoot (root), not a second walk in this file.
             Check(!ownSource.Contains("AppContext." + "BaseDirectory", StringComparison.Ordinal),
