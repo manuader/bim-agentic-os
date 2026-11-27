@@ -2521,6 +2521,13 @@ try {
         # name as an accessor literal and every literal of its initialiser expression (new(() => "..."), { "a", "b" }) as an
         # auto-property initialiser, so attributes and generic types before the name do not matter; the next-token wording
         # names a whole token ([, is, as, ??) or '<end of text>'.
+        # P4-43: the property walk is conservative: every literal inside a CleanupFailed property's braces is refused, even
+        # one that is not its value (a log message in a setter, an attribute argument on an accessor); a clean
+        # CleanupFailed must be the one const or static readonly declaration. An unclosed CleanupFailed { (no matching } on
+        # the blanked code) is refused by name and every literal after it is an accessor literal. A =>, += or ??= form
+        # refuses every literal of its expression (Get-P443ExpressionEnd: up to the ; or a closing bracket at depth 0), so
+        # CleanupFailed => new("x") and += F("x") are named. Three-character operators (>>=, <<=, >>>, ??=) and >>>= are
+        # named whole by the next-token wording.
         function Get-P435PrefixMismatch([string]$CsText, [string]$Prefix) {
             $problems = [Collections.Generic.List[string]]::new()
             $scan = Get-P437CsLiterals $CsText
@@ -2533,7 +2540,11 @@ try {
             $assignStarts = [Collections.Generic.HashSet[int]]::new()
             foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*=\s*(?=")')) { [void]$assignStarts.Add($m.Index + $m.Length) }
             $formStarts = [Collections.Generic.Dictionary[int, string]]::new()
-            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*(\+=|\?\?=|=>)\s*(?=")')) { $formStarts[$m.Index + $m.Length] = $m.Groups[1].Value }
+            # P4-43: every literal of the =>, += or ??= expression, not only one right after the operator.
+            foreach ($m in [regex]::Matches($markedText, '(?<![\w.@])CleanupFailed\s*(\+=|\?\?=|=>)')) {
+                $from = $m.Index + $m.Length; $end = Get-P443ExpressionEnd $scan.Code $from
+                foreach ($literal in $scan.Literals) { if ($literal.Start -ge $from -and $literal.Start -lt $end) { $formStarts[$literal.Start] = $m.Groups[1].Value } }
+            }
             # P4-42: a CleanupFailed property: every literal inside its braces (accessor bodies, nested braces counted on the
             # blanked code) is 'accessor'; every literal of an initialiser after the closing } (= up to the ; or closing
             # bracket at bracket depth 0, so new(...) and { ... } collection initialisers are inside) is 'property'.
@@ -2543,25 +2554,24 @@ try {
                     if ($scan.Code[$k] -ceq '{') { $depth++ }
                     elseif ($scan.Code[$k] -ceq '}') { $depth--; if ($depth -eq 0) { $close = $k; break } }
                 }
-                if ($close -lt 0) { continue }
+                if ($close -lt 0) {
+                    # P4-43: an unclosed property brace is refused by name; every literal after it is an accessor literal.
+                    $problems.Add("CleanupFailed property brace at offset $open is never closed (unclosed {, refused)")
+                    foreach ($literal in $scan.Literals) { if ($literal.Start -gt $open) { $formStarts[$literal.Start] = 'accessor' } }
+                    continue
+                }
                 foreach ($literal in $scan.Literals) { if ($literal.Start -gt $open -and $literal.Start -lt $close) { $formStarts[$literal.Start] = 'accessor' } }
                 $init = [regex]::new('\G\s*=(?![=>])').Match($scan.Code, $close + 1)
                 if (!$init.Success) { continue }
-                $from = $init.Index + $init.Length; $k = $from; $depth = 0
-                while ($k -lt $scan.Code.Length) {
-                    $ch = $scan.Code[$k]
-                    if ($ch -ceq '(' -or $ch -ceq '[' -or $ch -ceq '{') { $depth++ }
-                    elseif ($ch -ceq ')' -or $ch -ceq ']' -or $ch -ceq '}') { if ($depth -eq 0) { break }; $depth-- }
-                    elseif ($ch -ceq ';' -and $depth -eq 0) { break }
-                    $k++
-                }
+                $from = $init.Index + $init.Length; $k = Get-P443ExpressionEnd $scan.Code $from
                 foreach ($literal in $scan.Literals) { if ($literal.Start -ge $from -and $literal.Start -lt $k) { $formStarts[$literal.Start] = 'property' } }
             }
             $plus = [regex]::new('\G\s*\+(?![+=])')
             $semicolon = [regex]::new('\G\s*;')
             $member = [regex]::new('\G\s*(\??\.)\s*(@?\w+)')
             # P4-42: the next token is a whole token: a word (is, as), a two-character operator (??, =>, ==, &&, ...) or one character.
-            $nextToken = [regex]::new('\G\s*(@?\w+|\?\?=?|=>|[=!<>]=|&&|\|\||<<|>>|::|->|\S)')
+            # P4-43: three- and four-character operators first (>>>=, >>>, >>=, <<=, ??=), so >>= is not named '>>'.
+            $nextToken = [regex]::new('\G\s*(@?\w+|>>>=|>>>|>>=|<<=|\?\?=?|=>|[=!<>]=|&&|\|\||<<|>>|::|->|\S)')
             $declared = @($scan.Literals | Where-Object { $declStarts.Contains($_.Start) -and $semicolon.IsMatch($scan.Code, $_.End) })
             $declaration = if ($declared.Count -eq 1) { $declared[0].Start } else { -1 }
             $mutable = @($scan.Literals | Where-Object { $_.Start -ne $declaration -and ($assignStarts.Contains($_.Start) -or $formStarts.ContainsKey($_.Start)) }).Count
@@ -2587,6 +2597,19 @@ try {
                 elseif ($Prefix.Length -gt 0 -and $content.Contains($Prefix, [StringComparison]::Ordinal)) { $problems.Add("hard-coded prefix literal $($literal.Raw)") }
             }
             return , $problems
+        }
+        # P4-43: the end of a C# expression on blanked code starting at $From: the offset of the first ; or closing bracket
+        # () ] }) at bracket depth 0, or the text length (an unterminated expression runs to the end).
+        function Get-P443ExpressionEnd([string]$Code, [int]$From) {
+            $k = $From; $depth = 0
+            while ($k -lt $Code.Length) {
+                $ch = $Code[$k]
+                if ($ch -ceq '(' -or $ch -ceq '[' -or $ch -ceq '{') { $depth++ }
+                elseif ($ch -ceq ')' -or $ch -ceq ']' -or $ch -ceq '}') { if ($depth -eq 0) { break }; $depth-- }
+                elseif ($ch -ceq ';' -and $depth -eq 0) { break }
+                $k++
+            }
+            return $k
         }
         # P4-37: whether a C# char or string literal starts at $At ('...', "...", or a run of $/@ before ").
         function Test-P437LiteralStart([string]$T, [int]$At) {
@@ -3120,7 +3143,10 @@ try {
             # P4-40: the bound is size-relative: 25 ms per 1000 chars (floor 500 ms for JIT warm-up), so the file may grow but a
             # per-character regression fails. P4-41: measured headroom about 20x (15-21x): the whole scan, including JIT, took
             # 115 ms (relay293) and 159 ms (relay297) on Linux, 144 ms on Windows, of a 2471-2500 ms bound for about 99000 chars.
-            # P4-42: the notice prints the measured headroom (bound / elapsed, Get-P442Headroom) of this run.
+            # P4-42: the notice prints the measured headroom (bound / elapsed, Get-P442Headroom) of this run. P4-43: measured
+            # range on both OSes, relay301 green 45858133159: Linux 116 ms of 2471 ms (21.3x, ~21x), Windows 210 ms (11.9x,
+            # ~12x); relay305 red 45913834579: Linux 120 ms (20.6x), Windows 78 ms (32.1x). So headroom is about 12-32x and
+            # the Windows runner varies most (both directions); a run under ~6x would warrant a look.
             $p438Bound = [math]::Max(500, [math]::Ceiling($p438Cs.Length * 25 / 1000))
             $p438Cost = "P4-38: the C# literal tokenizer read tests/cli/PackageLayoutPackTests.cs ($($p438Cs.Length) chars, $($p438Scan.Literals.Count) string literals) in $($p438Watch.ElapsedMilliseconds) ms (bound $p438Bound ms = 25 ms per 1000 chars, floor 500; headroom $(Get-P442Headroom $p438Bound $p438Watch.ElapsedMilliseconds))"
             if ($env:GITHUB_ACTIONS -eq 'true') { Write-Host ('::notice title=packaging::' + ($p438Cost -replace '%', '%25')) } else { Write-Host $p438Cost }
