@@ -2023,7 +2023,7 @@ internal static class MinsertEzdxfTests
                 "(\"a pinned row that stops drifting under the C extensions\", ",
             };
             var cextAbsent = cextNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
-            string[] staleNeeded = { "grep '^pinned C-extension drift rows no longer drifting: '", "::warning title=ezdxf-check-c-ext-stale::" };
+            string[] staleNeeded = { "grep -e \"^$stale_prefix\"", "::warning title=ezdxf-check-c-ext-stale::" };
             var staleAbsent = staleNeeded.Where(n => !stepText.Contains(n, StringComparison.Ordinal)).ToList();
             c(cextAbsent.Count == 0 && staleAbsent.Count == 0 && !generator.Contains("failures = _drift_failures(differing)", StringComparison.Ordinal),
                 "justified: generator: P6-52 under the C extensions structural failures are kept beside the drift failures, check_main's C-extension path is self-tested, and a pinned row that stops drifting is a warning annotation",
@@ -2033,7 +2033,7 @@ internal static class MinsertEzdxfTests
             // annotation it must yield, else the step fails) before it is applied to the C-extension run's output; the
             // planted line starts with the prefix the generator prints. P6-56: the function's grep is guarded and the planted
             // line is printed by the generator (pinned below).
-            const string StaleWarn = "stale_warn() { { grep '^pinned C-extension drift rows no longer drifting: ' || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
+            const string StaleWarn = "stale_warn() { { grep -e \"^$stale_prefix\" || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
             const string StalePlanted = "planted=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-line 'C1>NB')";
             const string StaleCheck = "if [ \"$(printf '%s\\n' 'differing rows: none' \"$planted\" 'C-extension drift: none' | stale_warn)\" != \"::warning title=ezdxf-check-c-ext-stale::$planted\" ]; then";
             const string StaleApplied = "printf '%s\\n' \"$cext\" | stale_warn\n";
@@ -2045,7 +2045,7 @@ internal static class MinsertEzdxfTests
             // step's cstale grep only counts the stale line's 900-character cut.
             const string StaleSed = "sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'";
             var staleUnwired = stepText.IndexOf(StaleSed, StringComparison.Ordinal) != stepText.LastIndexOf(StaleSed, StringComparison.Ordinal);
-            c(staleInOrder && staleFails && !staleUnwired && generator.Contains("return \"pinned C-extension drift rows no longer drifting: \"", StringComparison.Ordinal),
+            c(staleInOrder && staleFails && !staleUnwired && generator.Contains("return STALE_PREFIX + ", StringComparison.Ordinal),
                 "justified: generator: P6-54 the CI step's stale-row grep-to-warning wiring is one function, self-checked on a planted stale line (the step fails unless it yields the warning annotation) before it reads the C-extension run",
                 "positions " + string.Join(",", staleAt.Select(i => i.ToString(CultureInfo.InvariantCulture))) + " fails on mismatch " + staleFails + " inline pipeline left " + staleUnwired);
             // P6-54: the C-extension annotation counts its lines cut at 900 characters.
@@ -2078,19 +2078,18 @@ internal static class MinsertEzdxfTests
             c(headerParagraph == docParagraph && keptAbsent.Count == 0,
                 "justified: generator: P6-56 the header and docstring P6-50 paragraphs name the kept-as-failures list and the plant of a pinned row drifting and committed twice",
                 "missing " + string.Join(" | ", keptAbsent) + " paragraphs equal " + (headerParagraph == docParagraph));
-            // P6-56: stale_warn exits 0 when no line is stale (grep's no-match guarded), checked by the step under bash
-            // -eo pipefail on output with no stale line; the planted stale line is printed by the generator (the function
-            // check_main prints it with), not written in the step; and the stale warning's cut at 900 characters is counted.
-            const string StaleWarnGuarded = StaleWarn;
-            const string StalePipefail = "if ! quiet=$(set -eo pipefail; printf '%s\\n' 'differing rows: none' 'C-extension drift: none' | stale_warn) || [ -n \"$quiet\" ]; then";
-            const string StaleGenerated = StalePlanted;
+            // P6-56: stale_warn exits 0 when no line is stale (grep's no-match guarded), checked by the step with pipefail
+            // set on output with no stale line (P6-58: set -e is not claimed there, as it does not apply inside an if
+            // condition); the planted stale line is printed by the generator (the function check_main prints it with), not
+            // written in the step; and the stale warning's cut at 900 characters is counted.
+            const string StalePipefail = "if ! quiet=$(set -o pipefail; printf '%s\\n' 'differing rows: none' 'C-extension drift: none' | stale_warn) || [ -n \"$quiet\" ]; then";
             const string StaleCounted = "printf '%s\\n' \"$cdiff\" \"$cpick\" \"$clast\" \"$cstale\" | awk 'length > 900'";
-            string[] pipefailNeeded = { StaleWarnGuarded, StalePipefail, StaleGenerated, StaleCounted };
+            string[] pipefailNeeded = { StaleWarn, StalePipefail, StalePlanted, StaleCounted };
             var pipefailAt = pipefailNeeded.Select(s => stepText.IndexOf(s, StringComparison.Ordinal)).ToList();
             var pipefailExit = pipefailAt[1] < 0 ? -1 : stepText.IndexOf("exit 1", pipefailAt[1], StringComparison.Ordinal);
             var appliedAt = stepText.IndexOf(StaleApplied, StringComparison.Ordinal);
             var pipefailOk = pipefailAt.All(i => i >= 0) && pipefailAt[0] < pipefailAt[1] && pipefailExit > 0 && pipefailExit < appliedAt && pipefailAt[2] < appliedAt
-                && !stepText.Contains("(planted by the step)", StringComparison.Ordinal);
+                && !stepText.Contains("(planted by the step)", StringComparison.Ordinal) && !stepText.Contains("-eo pipefail", StringComparison.Ordinal);
             string[] lineNeeded =
             {
                 "def _stale_line(names):", "print(_stale_line(stale))", "if sys.argv[2:3] == [\"--stale-line\"]:", "print(_stale_line(sys.argv[3:]))",
@@ -2112,6 +2111,38 @@ internal static class MinsertEzdxfTests
             c(listedAbsent.Count == 0 && !firstOnly,
                 "justified: generator: P6-56 the duplicate plant finds C1>NB anywhere in the kept-as-failures list, and _nudged states the scope of the first number it nudges",
                 "missing " + string.Join(" | ", listedAbsent) + " first-position check left " + firstOnly);
+
+            // P6-58: the stale prefix is defined once, in the generator (STALE_PREFIX, used by _stale_line and the
+            // self-tests); the step reads it from the generator (--check --stale-prefix) and greps for it in both places.
+            // The pin is checked on a changed copy: a literal prefix back in the step, or a second one in the generator.
+            const string StalePrefix = "\"pinned C-extension drift rows no longer drifting: \"";
+            const string StalePrefixRead = "stale_prefix=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-prefix)";
+            const string StaleGrep = "grep -e \"^$stale_prefix\"";
+            static int Occurs(string text, string part) => text.Split(part, StringSplitOptions.None).Length - 1;
+            static bool PrefixOnce(string step, string gen) =>
+                Occurs(gen, "STALE_PREFIX = " + StalePrefix) == 1 && Occurs(gen, StalePrefix) == 1 && !step.Contains(StalePrefix.Trim('"').TrimEnd(), StringComparison.Ordinal)
+                && Occurs(step, StalePrefixRead) == 1 && Occurs(step, StaleGrep) == 2 && step.IndexOf(StalePrefixRead, StringComparison.Ordinal) < step.IndexOf(StaleGrep, StringComparison.Ordinal);
+            var stepCopy = stepText.Replace("cstale=$(printf '%s\\n' \"$cext\" | " + StaleGrep, "cstale=$(printf '%s\\n' \"$cext\" | grep '^" + StalePrefix.Trim('"') + "'", StringComparison.Ordinal);
+            var genCopy = generator.Replace("def _stale_line(names):", "_STALE = " + StalePrefix + "\n\n\ndef _stale_line(names):", StringComparison.Ordinal);
+            var prefixOnce = PrefixOnce(stepText, generator);
+            var copiesCaught = stepCopy != stepText && genCopy != generator && !PrefixOnce(stepCopy, generator) && !PrefixOnce(stepText, genCopy);
+            string[] prefixNeeded = { "if sys.argv[2:3] == [\"--stale-prefix\"]:", "print(STALE_PREFIX)" };
+            var prefixAbsent = prefixNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            c(prefixOnce && copiesCaught && prefixAbsent.Count == 0,
+                "justified: generator: P6-58 the stale prefix is defined once (STALE_PREFIX in the generator, read by the CI step with --check --stale-prefix), checked on a changed copy",
+                "defined once " + prefixOnce + " changed copies caught " + copiesCaught + " missing " + string.Join(" | ", prefixAbsent));
+            // P6-58: the --stale-line and --stale-prefix modes have a Python self-test (run as the step runs them, a child
+            // Python with -I, compared with the stale line check_main printed for the stop-drifting plant), and _listed's
+            // cut at " (", "; " and ", " is stated as a limit, with a self-test that no C_EXT_DRIFT name contains one.
+            string[] cliNeeded =
+            {
+                "(\"the --stale-line mode\", ", "(\"the --stale-prefix mode\", ", "subprocess.run([sys.executable, \"-I\", os.path.abspath(__file__), \"--check\"] + args",
+                "a limit: a name containing one is cut there", "for sep in (\" (\", \"; \", \", \") if sep in d]",
+            };
+            var cliAbsent = cliNeeded.Where(n => !generator.Contains(n, StringComparison.Ordinal)).ToList();
+            c(cliAbsent.Count == 0,
+                "justified: generator: P6-58 the --stale-line and --stale-prefix modes are self-tested in Python, and _listed's cut at a separator is a stated limit self-tested on C_EXT_DRIFT",
+                "missing " + string.Join(" | ", cliAbsent));
         }
         catch (Exception error)
         {
