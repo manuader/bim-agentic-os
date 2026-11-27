@@ -441,13 +441,14 @@ internal static class InternalErrorDelegationTests
         // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
         // P3-51: the marks are pinned per row (plantedByRow below, asserted): each pinned label is a visible failure
         // annotation of its row's red run. Evidence runs, one line per row (below the cap note).
-        // P3-55: named limit AnnotationCap: GitHub shows at most 10 error, 10 warning and 10 notice annotations per step (and 50 per job)
-        // (P3-53 said 10 per job; the 10 is the constant AnnotationCap below, checked against this line). Each ci.yml
-        // job runs tests/cli from one step (checked below), so a job shows at most AnnotationCap of its FAIL errors, and
-        // a run's annotations are the only failure evidence (its logs cannot be downloaded). A caught case past the cap
-        // (its row's red run failed more than AnnotationCap checks in that step and its label is not among those shown)
-        // is not marked: it carries "(planted)" only once a red run with at most AnnotationCap failures shows it. Every
-        // row below fits the cap (each at most AnnotationCap labels; the largest, P3-35, pins 8; both asserted).
+        // P3-55: named limit AnnotationCap: GitHub shows at most 10 error, 10 warning and 10 notice annotations per step
+        // (and 50 per job; P3-53 said 10 per job; the 10 is the constant AnnotationCap below, checked against this note).
+        // Each ci.yml job runs tests/cli from one step (checked below, by the textual keys of named limit
+        // CliInvocationKeys), so a job shows at most AnnotationCap of its FAIL errors, and a run's annotations are the
+        // only failure evidence (its logs cannot be downloaded). A caught case past the cap (its row's red run failed more
+        // than AnnotationCap checks in that step and its label is not among those shown) is not marked: it carries
+        // "(planted)" only once a red run with at most AnnotationCap failures shows it. Every row below fits the cap (each
+        // at most AnnotationCap labels; the largest, P3-35, pins 8; both asserted).
         //   P3-29 red 44882607530: stored block lambda; nested in a block inside a stored block lambda; stored anonymous
         //         method; stored anonymous method with parameters (WorkProbe). "passed as an argument" is not among its
         //         visible failures, so its mark is dropped (P3-51).
@@ -732,12 +733,19 @@ internal static class InternalErrorDelegationTests
             // P3-53: AnnotationCap: no row pins more labels than one step's error annotations can show. P3-55: the 10 is the
             // constant AnnotationCap, and the cap note above states it (checked against this constant); the largest row
             // pins 8 labels (asserted); every job runs tests/cli from at most one step (checked on ci.yml and verify.ps1).
-            const int AnnotationCap = 10;
+            // P3-57: the cap note is wrapped to the file's column width (ColumnWidth, the widest comment lines here): its
+            // first line ends at "per step" and the next opens with "(and 50 per job", checked verbatim; every line of the
+            // note (up to the first evidence line) fits ColumnWidth.
+            const int AnnotationCap = 10, ColumnWidth = 125;
             var helpers = File.ReadAllText(Path.Combine(root, "tests", "cli", "InternalErrorDelegationTests.cs"));
             var capNote = "named limit AnnotationCap: GitHub shows at most " + AnnotationCap.ToString(CultureInfo.InvariantCulture) + " error, "
                 + AnnotationCap.ToString(CultureInfo.InvariantCulture) + " warning and " + AnnotationCap.ToString(CultureInfo.InvariantCulture) + " notice annotations per step";
-            Check(helpers.Contains("// P3-55: " + capNote + " (and 50 per job)", StringComparison.Ordinal),
-                "P3-29 seam hygiene: the cap note states [" + capNote + " (and 50 per job)] from the constant AnnotationCap", "");
+            var capNoteLines = helpers.ReplaceLineEndings("\n").Split('\n').SkipWhile(l => l.Trim() != "// P3-55: " + capNote).TakeWhile(l => !l.TrimStart().StartsWith("//   P3-29 red", StringComparison.Ordinal)).ToArray();
+            Check(helpers.ReplaceLineEndings("\n").Contains("        // P3-55: " + capNote + "\n        // (and 50 per job", StringComparison.Ordinal)
+                    && capNoteLines.Length > 1 && capNoteLines.All(l => l.Length <= ColumnWidth),
+                "P3-29 seam hygiene: the cap note states [" + capNote + "] then [(and 50 per job] on its next line from the constant AnnotationCap, every line within "
+                    + ColumnWidth.ToString(CultureInfo.InvariantCulture) + " columns",
+                string.Join(", ", capNoteLines.Select(l => l.Length.ToString(CultureInfo.InvariantCulture))));
             Check(plantedByRow.All(r => r.Labels.Length <= AnnotationCap) && plantedByRow.Max(r => r.Labels.Length) == 8,
                 "P3-29 seam hygiene: named limit AnnotationCap: every plantedByRow row pins at most " + AnnotationCap.ToString(CultureInfo.InvariantCulture)
                     + " labels (one step's error annotations) and the largest row pins 8",
@@ -747,12 +755,36 @@ internal static class InternalErrorDelegationTests
             var jobStarts = jobsAt < 0 ? new List<(string Name, int At)>()
                 : System.Text.RegularExpressions.Regex.Matches(workflow[jobsAt..], @"^  ([\w-]+):[ \t]*$", System.Text.RegularExpressions.RegexOptions.Multiline)
                     .Select(m => (Name: m.Groups[1].Value, At: jobsAt + m.Index)).ToList();
-            var testSteps = jobStarts.Select((job, i) => (job.Name, Count: System.Text.RegularExpressions.Regex.Matches(
-                workflow[job.At..(i + 1 < jobStarts.Count ? jobStarts[i + 1].At : workflow.Length)], @"dotnet run --project tests/cli\b|\./scripts/verify\.ps1\b").Count)).ToArray();
+            // P3-57: named limit CliInvocationKeys: a ci.yml step runs tests/cli when one line of it holds `dotnet run` or
+            // `dotnet test` with --project naming tests/cli (also ./tests/cli, a trailing slash or tests/cli/Bim.Cli.Tests.csproj,
+            // either slash), or scripts/verify.ps1 (also ./scripts/verify.ps1). The keys are textual: a step reaching tests/cli
+            // through a variable, another script, a solution or a command split over lines is not counted (self-tests below).
+            static int CliSteps(string text) => System.Text.RegularExpressions.Regex.Matches(text, @"\bdotnet\s+(?:run|test)\b[^\n]*?\s--project\s+[""']?(?:\./)?tests[/\\]cli(?:[/\\](?:Bim\.Cli\.Tests\.csproj)?)?(?![\w/\\.-])|(?<![\w/.-])(?:\./)?scripts/verify\.ps1\b").Count;
+            var testSteps = jobStarts.Select((job, i) => (job.Name, Count: CliSteps(workflow[job.At..(i + 1 < jobStarts.Count ? jobStarts[i + 1].At : workflow.Length)]))).ToArray();
             var verifyRuns = System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(Path.Combine(root, "scripts", "verify.ps1")), @"""\$root/tests/cli""").Count;
-            Check(testSteps.All(j => j.Count <= 1) && testSteps.Sum(j => j.Count) == 3 && verifyRuns == 1,
-                "P3-29 seam hygiene: named limit AnnotationCap: each ci.yml job runs tests/cli from at most one step (core and core-windows through verify.ps1, ifc-portable on macOS directly; verify.ps1 runs it once)",
-                string.Join(", ", testSteps.Select(j => j.Name + ": " + j.Count.ToString(CultureInfo.InvariantCulture))) + "; verify.ps1 runs " + verifyRuns.ToString(CultureInfo.InvariantCulture));
+            var stepCounts = string.Join(", ", testSteps.Select(j => j.Name + ": " + j.Count.ToString(CultureInfo.InvariantCulture)));
+            Check(testSteps.All(j => j.Count <= 1),
+                "P3-29 seam hygiene: named limit AnnotationCap: each ci.yml job runs tests/cli from at most one step (the cap note's one-step-per-job assumption)", stepCounts);
+            Check(testSteps.Sum(j => j.Count) == 3,
+                "P3-29 seam hygiene: named limit AnnotationCap: ci.yml runs tests/cli from 3 steps (core and core-windows through verify.ps1, ifc-portable on macOS directly); on a change, revisit the cap note (P3-55, named limit AnnotationCap) and this count",
+                stepCounts);
+            Check(verifyRuns == 1,
+                "P3-29 seam hygiene: named limit AnnotationCap: verify.ps1 runs tests/cli once; on a change, revisit the cap note (P3-55, named limit AnnotationCap)",
+                "verify.ps1 runs " + verifyRuns.ToString(CultureInfo.InvariantCulture));
+            foreach (var (step, expected, why) in new[]
+            {
+                ("run: dotnet run --project ./tests/cli --configuration Release --no-build", 1, "a ./ project path"),
+                ("run: dotnet run --configuration Release --project tests/cli/Bim.Cli.Tests.csproj", 1, "the project file, --project after other options"),
+                ("run: pwsh -NoProfile -File scripts/verify.ps1", 1, "verify.ps1 without ./"),
+                ("run: dotnet build tests/cli --configuration Release --warnaserror", 0, "a build, not a run"),
+                ("run: dotnet run --project tests/cli-extra", 0, "another project"),
+                ("run: dotnet run --project \"$CLI_TESTS\" --configuration Release", 0, "named limit CliInvocationKeys: a variable is not read"),
+            })
+            {
+                Check(CliSteps(step) == expected, "P3-29 seam hygiene self-test: CliSteps counts [" + step + "] as " + expected.ToString(CultureInfo.InvariantCulture) + " tests/cli step (" + why + ")",
+                    CliSteps(step).ToString(CultureInfo.InvariantCulture));
+                selfTests++;
+            }
             // 8 lambda/anonymous-method cases plus 8 local-function/attributed-lambda cases (P3-33) plus 14
             // accessor/operator/constrained-generic/tuple-return cases (P3-35) plus 27 accessor-modifier/member-kind
             // cases (P3-37, 3 of them now the folded table) plus 21 base-initializer/new-modifier/checked-operator/
@@ -767,7 +799,8 @@ internal static class InternalErrorDelegationTests
             // of the 9 seams; plus 3 header-span pins and 6 ReducedHeader pins: 1186. P3-51: plus 2 order-sensitive
             // ReducedHeader pins, 1 LeadingInnerCommute named-limit self-test and 2 StarOperand named-limit pins: 1191.
             // P3-53: plus 1 replacement-piece tie pin and 1 changed-string self-test of that tie: 1193. P3-55: plus 1
-            // swapped-Replace-lines self-test and 1 PlainLiteralPieces named-limit self-test of the tie: 1195.
+            // swapped-Replace-lines self-test and 1 PlainLiteralPieces named-limit self-test of the tie: 1195. P3-57: plus 2
+            // PlainLiteralPieces self-tests (escaped quote, escaped backslash) and 6 CliSteps self-tests: 1203.
             // P3-43: HeaderStart spans a for (;;) / using (...) header from its keyword (the ';' and the object creation
             // inside the parentheses do not split it). P3-47: named limit BracketedBraces: a '}' inside brackets outside any
             // parentheses (a collection expression holding a block lambda in a field initializer) still splits the header
@@ -851,12 +884,17 @@ internal static class InternalErrorDelegationTests
             // backslash as a replacement (no verbatim @"...", raw or interpolated string, no escaped quote or backslash).
             // A replacement written any other way is not read as a piece, so the piece list loses it and the tie fails
             // loudly (the fields are no longer the three in order); shown on a copy with InnerAttributes' "[]" made @"[]".
-            var verbatimReducer = reducer.Replace(InnerCall, "InnerAttributes.Replace(header, @\"[]\")", StringComparison.Ordinal);
-            var verbatimPieces = ReplacePieces(verbatimReducer);
-            Check(verbatimReducer != reducer && verbatimPieces.Select(p => p.Field).SequenceEqual(new[] { "LeadingAttributes", "InitializerArguments" }, StringComparer.Ordinal) && !Tied(verbatimPieces),
-                "P3-29 seam hygiene self-test: named limit PlainLiteralPieces: the replacement-piece tie fails on a copy of ReducedHeader's source with InnerAttributes' \"[]\" written as a verbatim string",
-                "pieces " + string.Join(", ", verbatimPieces.Select(p => p.Field + " -> [" + p.Replacement + "]")));
-            selfTests++;
+            // P3-57: and on copies with InnerAttributes' "[]" holding an escaped quote ("[\"]") or an escaped backslash ("[\\]").
+            foreach (var (literal, written) in new[] { ("@\"[]\"", "a verbatim string"), ("\"[\\\"]\"", "an escaped quote"), ("\"[\\\\]\"", "an escaped backslash") })
+            {
+                var plainReducer = reducer.Replace(InnerCall, "InnerAttributes.Replace(header, " + literal + ")", StringComparison.Ordinal);
+                var plainPieces = ReplacePieces(plainReducer);
+                Check(plainReducer != reducer && plainPieces.Select(p => p.Field).SequenceEqual(new[] { "LeadingAttributes", "InitializerArguments" }, StringComparer.Ordinal) && !Tied(plainPieces),
+                    "P3-29 seam hygiene self-test: named limit PlainLiteralPieces: the replacement-piece tie fails on a copy of ReducedHeader's source with InnerAttributes' \"[]\" written as "
+                        + literal + " (" + written + ")",
+                    "pieces " + string.Join(", ", plainPieces.Select(p => p.Field + " -> [" + p.Replacement + "]")));
+                selfTests++;
+            }
             foreach (var (header, reduced, swap, order, swapped) in orderPins)
             {
                 var other = Chain(Ordered(pieces, order), header);
@@ -888,7 +926,7 @@ internal static class InternalErrorDelegationTests
                 Check(MethodBody(header), "P3-29 seam hygiene self-test: named limit StarOperand: MethodBody reads [" + header + "] as a method header", header);
                 selfTests++;
             }
-            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 + 2 + 1 + 2 + 2 + 2 && selfTests == 1195, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
+            Check(selfTests == 9 * (8 + 8 + 14 + 27 + 21 + 7 + 16 + 8 + 8 + 6) + 2 * (16 + 1) + 2 * (16 + 2) + 3 + 6 + 2 + 1 + 2 + 2 + 2 + 2 + 6 && selfTests == 1203, "P3-29 seam hygiene: every self-test ran", selfTests.ToString(CultureInfo.InvariantCulture));
             // P3-43: the balancing-group header regexes (initializer arguments, leading attribute sections) carry a match
             // timeout, so a pathological header fails the check with RegexMatchTimeoutException instead of hanging it.
             // P3-45: so does every regex InBlockLambda and MethodBody use (the lambda/anonymous-method header, the
