@@ -1251,7 +1251,8 @@ internal static class GenerateTypologyToolTests
                 (Pad + "grep \"a\\\n" + Pad + "b\" \"$out\" | cut -c1-9", 1),
                 // P3-50: only a YAML run: | line is a block header; any other line ending in a colon and a pipe is joined.
                 (Pad + "echo a: |\n" + Pad + "  grep PASS", 1),
-                (Pad + "- run: |\n" + Pad + "  grep -q PASS \"$out\"", 0),
+                // P3-54: the run lines sit deeper than the `run` key, so the block holds them and the header join is what is tested.
+                (Pad + "- run: |\n" + Pad + "    grep -q PASS \"$out\"", 0),
                 // P3-52: a ${ ... } expansion is masked whole: a # or ) inside it, also after a backslash-newline that splits
                 // it, does not leave a group open.
                 (Pad + "v=${x:-a\\\n" + Pad + "#b}\n" + Pad + "tail -n 5 \"$out\" | grep PASS || true", 0),
@@ -1276,10 +1277,39 @@ internal static class GenerateTypologyToolTests
                 (Pad + "- name: Bob's step\n" + Pad + "  run: |\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- name: x\n" + Pad + "  if: runner.os == 'macOS' || it's\n" + Pad + "  run: |\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- run: |\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
-                // P3-52 limits, stated: a grep that is not the last command of a piped group is not counted (bash -e ends the
-                // step on it as on an unpiped grep); a piped grep in a group whose last command is another counts (safe side).
-                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9", 0),
-                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; } || true", 1),
+                // P3-54: a grep anywhere in a group piped onward counts (under bash -e and pipefail the group stops at the
+                // failing grep and its status fails the pipeline): a `;` inside the group walks on to the group's end, so
+                // only a guard after the whole pipeline or on the grep itself counts; an or-true after a group guards a
+                // piped grep inside it (bash ignores -e in a guarded list, so the group's status is its last command's).
+                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9", 1),
+                (Pad + "( grep PASS \"$out\"; echo ) | cut -c1-9", 1),
+                (Pad + "{ { grep PASS \"$out\"; echo; }; echo; } | cut -c1-9", 1),
+                (Pad + "{\n" + Pad + "  grep PASS \"$out\"\n" + Pad + "  echo\n" + Pad + "} | cut -c1-9", 1),
+                (Pad + "{ grep PASS \"$out\"; echo || true; } | cut -c1-9", 1),
+                (Pad + "{ grep PASS \"$out\"; echo; } | cut -c1-9 || true", 0),
+                (Pad + "{ grep PASS \"$out\" || true; echo; } | cut -c1-9", 0),
+                (Pad + "{ grep -q PASS \"$out\"; echo; }", 0),
+                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; } || true", 0),
+                (Pad + "{ grep PASS \"$out\" | cut -c1-9; echo; }", 1),
+                // P3-54: a `#` that starts a backslash-continued line after a word (no blank before the backslash) is no
+                // comment (bash joins it to that word); after a blank it is one.
+                (Pad + "echo a\\\n" + Pad + "#b | grep PASS", 1),
+                (Pad + "echo a \\\n" + Pad + "#b | grep PASS", 0),
+                (Pad + "echo a\\\n" + Pad + "#b; tail -n 5 \"$out\" | grep PASS || true", 0),
+                // P3-54: a `<<` inside $(( )) or (( )) is an arithmetic shift, not a heredoc, quoted or not.
+                (Pad + "n=$(( 1 << x ))\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "(( n = x << y ))\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "echo \"$(( 1 << x ))\"\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "v=${n:-$(( 1 << x ))}\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "n=$(( (1 + 2) << x )); cat <<EOF\n" + Pad + "grep x | cut\n" + Pad + "EOF", 0),
+                // P3-54: ShellOnly recognises a single-line run: value and the |-, |+ and > block headers.
+                (Pad + "- name: Bob's step\n" + Pad + "  run: grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: grep PASS \"$out\" | cut -c1-9 || true", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: echo ok\n" + Pad + "  env: { P: grep x | cut }", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |-\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |+\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: >\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |-\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
             };
             var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim().Replace("\n", " <NL> ", StringComparison.Ordinal)).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
@@ -1308,16 +1338,29 @@ internal static class GenerateTypologyToolTests
                 && paragraph.Contains("a quote or `${` left open at the end of the step counts as an open continuation (every grep on its line unguarded)", StringComparison.Ordinal)
                 && paragraph.Contains("a heredoc body (after `<<` or `<<-` and a bare or quoted word, up to the line holding only that word or the end of the step) is masked, not scanned as commands", StringComparison.Ordinal)
                 && paragraph.Contains("only the lines of a YAML `run: |` block are scanned (the `name`, `if` and other YAML-level lines are blanked, so an apostrophe there cannot mask the run lines)", StringComparison.Ordinal)
-                && paragraph.Contains("a grep that is not the last command of a piped group (`{ grep x; echo; } | cut`) is not counted", StringComparison.Ordinal)
-                && paragraph.Contains("a piped grep in a group whose last command is another (`{ grep x | cut; echo; } || true`) counts as unguarded (safe side)", StringComparison.Ordinal)
                 && paragraph.Contains("P3-50 relay298 CI red 45796706106, green 45798472088", StringComparison.Ordinal),
-                "P3-52 docs/contracts P3-34 paragraph: ${ ... } masking, open quote at the end, heredoc body, run block only, piped-group limits, the P3-50 runs | " + Short(paragraph));
+                "P3-52 docs/contracts P3-34 paragraph: ${ ... } masking, open quote at the end, heredoc body, run block only, the P3-50 runs | " + Short(paragraph));
+            // P3-54: the contract states the piped-group rule (superseding the P3-52 limits, negatively pinned), the `#` after
+            // a word-joining backslash, the arithmetic shift, the run header forms, and cites the P3-52 runs.
+            Check(paragraph.Contains("a grep anywhere in a group piped onward (`{ grep x; echo; } | cut`) counts as unguarded unless it or the whole pipeline is guarded: under `bash -e` and pipefail the group stops at the failing grep and its status fails the pipeline", StringComparison.Ordinal)
+                && paragraph.Contains("a piped grep in a group guarded after it (`{ grep x | cut; echo; } || true`) counts as guarded (bash ignores `-e` inside a guarded list, so the group's status is its last command's)", StringComparison.Ordinal)
+                && paragraph.Contains("a `#` that starts a backslash-continued line after a word (no blank before the backslash) is scanned, not read as a comment, because bash joins it to that word; the YAML block indentation is kept, so such a `#` that bash reads as a comment (the continued line indented deeper than the block) is scanned too (safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("a `<<` inside `$(( ... ))` or `(( ... ))` is an arithmetic shift, not a heredoc", StringComparison.Ordinal)
+                && paragraph.Contains("a `run: |`, `run: |-`, `run: |+` or `run: >` line opens a block (a folded `>` block is scanned line by line, not folded) and a single-line `run:` value is scanned as shell (a quoted or multi-line plain value is not unquoted or folded; the step uses `run: |`)", StringComparison.Ordinal)
+                && paragraph.Contains("P3-52 relay302 CI red 45872291694, green 45875372305", StringComparison.Ordinal)
+                && !paragraph.Contains("is not counted: under `bash -e` it ends the step", StringComparison.Ordinal)
+                && !paragraph.Contains("counts as unguarded (safe side); a `#`", StringComparison.Ordinal)
+                && !paragraph.Contains("an arithmetic `<<` shift is read as one", StringComparison.Ordinal)
+                && !paragraph.Contains("a single-line `run:` is not recognized", StringComparison.Ordinal)
+                && !paragraph.Contains("is read as a comment (bash joins it to the previous word)", StringComparison.Ordinal),
+                "P3-54 docs/contracts P3-34 paragraph: piped groups, # after a continued word, arithmetic shift, run header forms, the P3-52 runs (P3-52 limits superseded) | " + Short(paragraph));
             // P3-50: the contract states the multi-line groups, the quoting across lines, the trailing-; rule and the run
             // block header, cites the P3-48 runs, and pins the number of checks this section runs (the last check is this
             // one; the macOS step's notice counts them as PASS lines).
             // P3-52: must equal the number in the contract's "section 9 runs N checks" sentence (docs/contracts/module-contracts.md,
             // P3-34 paragraph); a new section-9 check bumps both together.
-            const int SectionNineChecks = 43;
+            // P3-54: 43 → 44 (the P3-54 contract check).
+            const int SectionNineChecks = 44;
             Check(paragraph.Contains("quoting is followed across lines (a single- or double-quoted string, or a backslash-newline inside double quotes, spanning lines stays one masked word)", StringComparison.Ordinal)
                 && paragraph.Contains("a `{ ... }`, `( ... )` or `$( ... )` group left open at a line end is joined up to its closing line (each newline inside it read as `;`), so a pipe or guard on the closing line counts", StringComparison.Ordinal)
                 && paragraph.Contains("a line ending in `;` is joined inside a group and ends the command outside one", StringComparison.Ordinal)
