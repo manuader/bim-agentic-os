@@ -2462,3 +2462,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay311
 - 2026-11-27T12:54:24Z lock taken (session_014pxpsSEPgsJ9xAvs6wc7Lz relay311; was FREE, relay310 released 2026-11-27T12:00:23Z)
+- 2026-11-27T12:55:05Z picked P10-60 (phase 10), P6-59 (phase 6), P7-60 (phase 7) — oldest-touched (relay307); P6-60 serializes with P6-59 and P7-61 same phase (left); disjoint files (tests/mcp/RepeatedEnvelopeKeyTests.cs; tests/cad/CodePins.cs + PdfType3GlyphListTests.cs; tests/cli/GeneratePrototypesTests.cs). Workers spawned; heartbeat loop in background.
