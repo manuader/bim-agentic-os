@@ -2435,3 +2435,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay308
 - 05:53Z relay308 takes lock (claude-cloud).
+- 2026-11-27T05:54:24Z picked P1-51 (phase 1), P5-45 (phase 5), P2-50 (phase 2) — oldest-touched (relay300/304); P1-52 serializes with P1-51 and P5-46 with P5-45 (left); disjoint files (tests/cli/DeadlineSourceScan.cs + RevitCommandDeadlineTests.cs P1-43/P1-49 parts; tests/mcp/StdoutFailureToolTests.cs + tests/cli/SkillListTests.cs header; tests/mirror-journal macOS helpers). Workers spawned; heartbeat loop in background.
