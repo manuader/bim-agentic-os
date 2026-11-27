@@ -2938,6 +2938,13 @@ internal static class GeneratePrototypesTests
     //     conditional's branch every ?[ is still an element access (c ? b ?[x] : y : d is not split at its inner ?);
     //   - the sign after the e / E of a decimal numeric literal (ExponentSign: 1e-5, 2.5E+3) is no binary operator; a hex
     //     0x1e - 5 still is.
+    // P7-58:
+    //   - a ? that opens a conditional, the span's first or one counted as nested in a branch, is one predicate
+    //     (ConditionalQuestion); the mixed branch c ? a?[0] : b ?[x] : y : d reads both ?[ as nested conditionals;
+    //   - an exponent's sign follows its e directly (1e - x is a subtraction, as is 1e /*c*/ - x once comments are
+    //     stripped) and its prefix takes _ only between digits (1_e-5 and 1.5_e-3 are subtractions);
+    //   - stated reach gap: (test)!(x) is a cast of !(x), as C# reads it, so a delegate test written so is never seen called;
+    //     C# does not compile that text as a call of a lambda's or method's parameter (test names no type).
     static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
     {
         "if", "for", "foreach", "while", "do", "switch", "catch", "when", "using", "lock", "return", "throw", "nameof", "typeof", "sizeof",
@@ -3092,14 +3099,15 @@ internal static class GeneratePrototypesTests
                 {
                     var next = i + 1 < e ? code[i + 1] : '\0';
                     if (next == '?') { if (coalesce < 0) coalesce = i; i++; }
-                    else if (question < 0 && (next is not ('.' or '[') || (next == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) question = i;
+                    else if (question < 0 && ConditionalQuestion(code, i, e, true)) question = i;
                 }
             }
             if (question >= 0)
             {
                 // P7-56: a ?[ inside the branch whose ] is followed by : (CollectionBranch) first counts as a nested
                 // conditional (c ? b ?[x] : y : d); when no : is then left for this conditional, every ?[ there is an
-                // element access (c ? a?[0] : d). Stated limit: a branch mixing both kinds is read with neither nested.
+                // element access (c ? a?[0] : d). Stated limit: a branch is read with all such ?[ nested or none (P7-58:
+                // c ? a?[0] : b ?[x] : y : d nests both, the reading that parses).
                 foreach (var collections in new[] { true, false })
                 {
                     var nested = 0;
@@ -3111,7 +3119,7 @@ internal static class GeneratePrototypesTests
                         else if (c is ')' or ']' or '}') depth--;
                         else if (depth > 0) continue;
                         else if (c == '?' && i + 1 < e && code[i + 1] == '?') i++;
-                        else if (c == '?' && (!(i + 1 < e && code[i + 1] is '.' or '[') || (collections && i + 1 < e && code[i + 1] == '[' && CollectionBranch(code, i + 1, e))) && !NullableMark(code, i, e)) nested++;
+                        else if (c == '?' && ConditionalQuestion(code, i, e, collections)) nested++;
                         else if (c == ':' && !(i + 1 < e && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':') && nested-- == 0)
                         {
                             Add(question + 1, i);
@@ -3137,7 +3145,8 @@ internal static class GeneratePrototypesTests
                     var p = i - 1;
                     while (p > s && char.IsWhiteSpace(code[p])) p--;
                     if (!(char.IsLetterOrDigit(code[p]) || code[p] is '_' or ')' or ']' or '"' or '\'')) continue;
-                    if (ExponentSign(code, s, p)) continue;
+                    // P7-58: an exponent's sign follows its e directly (no whitespace, so no stripped comment, between).
+                    if (p == i - 1 && ExponentSign(code, s, p)) continue;
                     Add(s, i);
                     if (c == '+') Add(i + 1, e);
                     return;
@@ -3175,6 +3184,15 @@ internal static class GeneratePrototypesTests
         return c is '+' or '-' && KeywordTypes.Contains(code[open..close].Trim().TrimEnd('?').TrimEnd());
     }
 
+    // P7-58: whether the ? at index (not the first of ??, which callers skip) opens a conditional in [.., end): not ?. nor
+    // ?[ (but ?[ starting a collection branch when collections), and not a nullable type's ? (NullableMark). One predicate
+    // for the span's first ? and for the ? a branch counts as nested.
+    static bool ConditionalQuestion(string code, int index, int end, bool collections)
+    {
+        var next = index + 1 < end ? code[index + 1] : '\0';
+        return (next is not ('.' or '[') || (collections && next == '[' && CollectionBranch(code, index + 1, end))) && !NullableMark(code, index, end);
+    }
+
     // P7-54: whether the ?[ whose [ is at open starts a collection-expression branch of a conditional (c ?[x] : d): the
     // matching ] is followed by a : (not ::). Else it is a null-conditional element access (a?[0]). P7-56: also told inside
     // a conditional's branch (c ? b ?[x] : y : d), falling back to element accesses when the conditional's : is not left.
@@ -3193,7 +3211,9 @@ internal static class GeneratePrototypesTests
     // whole decimal real prefix (digits, an optional . and digits, or . and digits, then e): a suffix ends no exponent
     // (1e5f - x), a hex stays one (0x_1e-5), and 1.E (a member access on 1) or 2.5.X1e (a member) is no exponent. Stated
     // limit: the token is read from the text before last only; a literal cut by whitespace or a comment is not seen.
-    static readonly System.Text.RegularExpressions.Regex ExponentPrefix = new(@"^(?:[0-9][0-9_]*(?:\.[0-9][0-9_]*)?|\.[0-9][0-9_]*)[eE]$");
+    // P7-58: a digit separator stands only between digits (1_0e, 1__0e; not 1_e nor 1.5_e), and Values asks only when the
+    // sign follows last directly, so a literal cut by whitespace or a stripped comment (1e - x) is a subtraction.
+    static readonly System.Text.RegularExpressions.Regex ExponentPrefix = new(@"^(?:[0-9](?:_*[0-9])*(?:\.[0-9](?:_*[0-9])*)?|\.[0-9](?:_*[0-9])*)[eE]$");
     static bool ExponentSign(string code, int start, int last)
     {
         if (code[last] is not ('e' or 'E')) return false;
