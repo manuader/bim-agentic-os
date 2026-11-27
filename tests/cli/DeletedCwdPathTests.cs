@@ -866,6 +866,7 @@ internal static class DeletedCwdPathTests
         RestoreWiring47(root, Check);
         LockVerbsSelfTest51(root, Check);
         WiringComments55(root, Check);
+        WiringComments57(root, Check);
         Contract47(root, Check);
         GenericCatch43(scratch, cliDll, Check);
     }
@@ -952,6 +953,7 @@ internal static class DeletedCwdPathTests
             ScopingSelfTest51(Check);
             ScopingSelfTest53(Check);
             ScopingSelfTest55(Check);
+            ScopingSelfTest57(Check);
         }
     }
 
@@ -981,22 +983,84 @@ internal static class DeletedCwdPathTests
         Check(taken.Length == 0, Label("BlockEnd45 reports a lone closing brace in non-raw interpolated content (C# CS8086) as unclosed"), string.Join(" | ", taken));
     }
 
+    // P10-57 self-tests: in a non-raw hole ($"..." or $@"...") C# ends the format clause at its first closing brace, which
+    // closes the hole; the closing braces right after it are content and follow the P10-55 rule (}} is an escaped brace, a
+    // lone one is refused). Measured by a compiled probe (EchoFormat57 returns the format it receives) and pinned on BlockEnd45.
+    static void ScopingSelfTest57(Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-57 static pin scanner self-test: " + what;
+        var echo = new EchoFormat57();
+        var regular = $"{echo:N2}}}";
+        var verbatim = $@"{echo:N2}}}";
+        Check(regular == "[N2]}" && verbatim == "[N2]}",
+            Label("C# ends a non-raw hole's format clause at its first closing brace and reads the rest of the run as content (compiled probe)"), regular + " | " + verbatim);
+        var accepted = new (string Name, string Text)[]
+        {
+            ("$ format clause hole closed by three braces", "{ a = $\"{y:N2}}}\"; }"),
+            ("$@ format clause hole closed by three braces", "{ a = $@\"{y:N2}}}\"; }"),
+            ("$ format clause hole closed by five braces", "{ a = $\"{y:N2}}}}}\"; }"),
+            ("$ alignment and format clause hole closed by three braces", "{ a = $\"{y,4:N2}}}\"; }"),
+        };
+        var wrong = accepted.Where(block => BlockEnd45(block.Text, 0) != block.Text.Length - 1)
+            .Select(block => block.Name + " (" + BlockEnd45(block.Text, 0).ToString(CultureInfo.InvariantCulture) + " of " + (block.Text.Length - 1).ToString(CultureInfo.InvariantCulture) + ")").ToArray();
+        Check(wrong.Length == 0, Label("BlockEnd45 accepts a non-raw format clause hole followed by escaped closing brace pairs"), string.Join(" | ", wrong));
+        var refused = new (string Name, string Text)[]
+        {
+            ("$ format clause hole closed by two braces", "{ a = $\"{y:N2}}\"; }"),
+            ("$@ format clause hole closed by two braces", "{ a = $@\"{y:N2}}\"; }"),
+            ("$ format clause hole closed by four braces", "{ a = $\"{y:N2}}}}\"; }"),
+        };
+        var taken = refused.Where(block => BlockEnd45(block.Text, 0) != -1).Select(block => block.Name).ToArray();
+        Check(taken.Length == 0, Label("BlockEnd45 reports a non-raw format clause hole followed by a lone closing brace (an even run) as unclosed"), string.Join(" | ", taken));
+    }
+
+    sealed class EchoFormat57 : IFormattable
+    {
+        public string ToString(string? format, IFormatProvider? formatProvider) => "[" + (format ?? "no format") + "]";
+        public override string ToString() => "[no format]";
+    }
+
+    // P10-57: the one reader of this file for its self-reading pins (RestoreWiring47, LockVerbsSelfTest51, WiringComments55
+    // and WiringComments57), line endings normalised to \n; null after a failed readability check.
+    static string? SelfSource57(string root, Action<bool, string, string> Check, string label)
+    {
+        try { return File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal); }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, label + ": tests/cli/DeletedCwdPathTests.cs is readable", error.Message); return null; }
+    }
+
+    // P10-57: the body (from its opening brace through its closing one) of the 'static void <declaration>(' method in source
+    // (four-space member indentation), or "" when not found or not closed.
+    static string SelfBody57(string source, string declaration)
+    {
+        var at = source.IndexOf("\n    static void " + declaration + "(", StringComparison.Ordinal);
+        var open = at < 0 ? -1 : source.IndexOf("\n    {", at, StringComparison.Ordinal);
+        var close = open < 0 ? -1 : BlockEnd45(source, open + 5);
+        return close < 0 ? "" : source[(open + 5)..(close + 1)];
+    }
+
+    // P10-57: the self-reading pins share SelfSource57: each of their bodies calls it and none reads a file itself, and this
+    // file's path is built once (in SelfSource57). RevitCommandDeadlineTests.cs reads this file on its own (other owner).
+    static void WiringComments57(string root, Action<bool, string, string> Check)
+    {
+        string Label(string what) => "P10-57 shared self reader: " + what;
+        if (SelfSource57(root, Check, Label("WiringComments57")) is not { } source) return;
+        var readers = new[] { "RestoreWiring47", "LockVerbsSelfTest51", "WiringComments55", "WiringComments57" };
+        var own = readers.Where(reader => SelfBody57(source, reader) is var body && (body.Length == 0 || !body.Contains("SelfSource57(root, Check", StringComparison.Ordinal)
+            || body.Contains("File.Read" + "AllText(", StringComparison.Ordinal))).ToArray();
+        Check(own.Length == 0, Label("RestoreWiring47, LockVerbsSelfTest51, WiringComments55 and WiringComments57 read this file through SelfSource57 only"), string.Join(", ", own));
+        var path = "\"tests\", \"cli\", \"Deleted" + "CwdPathTests.cs\"";
+        var built = System.Text.RegularExpressions.Regex.Matches(source, System.Text.RegularExpressions.Regex.Escape(path)).Count;
+        Check(built == 1, Label("this file's path is built once (in SelfSource57)"), built.ToString(CultureInfo.InvariantCulture));
+    }
+
     // P10-55: this file's wiring and comments: P10_41 calls LockVerbsSelfTest51 beside the other P10_41 self-tests (not from
     // inside RestoreWiring47), and the BlockEnd45 and CodeEnd47 header comments state the P10-51, P10-53 and P10-55 brace
-    // rules. Each header comment is the run of // lines right above the declaration.
+    // rules. Each header comment is the run of // lines right above the declaration. P10-57: read through SelfSource57 and
+    // SelfBody57.
     static void WiringComments55(string root, Action<bool, string, string> Check)
     {
         string Label(string what) => "P10-55 wiring and comments: " + what;
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
-        string Body(string declaration)
-        {
-            var at = source.IndexOf("\n    static void " + declaration + "(", StringComparison.Ordinal);
-            var open = at < 0 ? -1 : source.IndexOf("\n    {", at, StringComparison.Ordinal);
-            var close = open < 0 ? -1 : BlockEnd45(source, open + 5);
-            return close < 0 ? "" : source[(open + 5)..(close + 1)];
-        }
+        if (SelfSource57(root, Check, Label("WiringComments55")) is not { } source) return;
         string Header(string declaration)
         {
             var at = source.IndexOf("\n    static int " + declaration + "(", StringComparison.Ordinal);
@@ -1012,8 +1076,8 @@ internal static class DeletedCwdPathTests
             }
             return string.Join(" ", lines);
         }
-        var p41 = Body("P10_41");
-        var restore = Body("RestoreWiring47");
+        var p41 = SelfBody57(source, "P10_41");
+        var restore = SelfBody57(source, "RestoreWiring47");
         Check(p41.Contains("RestoreWiring47(root, Check);", StringComparison.Ordinal) && p41.Contains("LockVerbsSelfTest51(root, Check);", StringComparison.Ordinal)
             && restore.Length > 0 && !restore.Contains("LockVerbsSelfTest51(", StringComparison.Ordinal),
             Label("P10_41 calls LockVerbsSelfTest51 beside RestoreWiring47 and the other P10_41 self-tests"), p41.Length == 0 ? "P10_41 body not found" : restore.Length == 0 ? "RestoreWiring47 body not found" : p41);
@@ -1155,7 +1219,8 @@ internal static class DeletedCwdPathTests
     // Literals met here are read by LiteralEnd47, which calls back for each hole (hole: true): P10-51: a raw hole closes with
     // as many braces as dollars, the rest of the run text, so a run reaching twice the dollars is unclosed (-1); P10-53: a raw
     // content closing brace run must be shorter than the dollars (CS9007); P10-55: a lone closing brace (not }}) in non-raw
-    // interpolated content is unclosed (CS8086).
+    // interpolated content is unclosed (CS8086). P10-57: a non-raw hole's format clause ends at its first closing brace (as
+    // C# reads it, measured), so the braces right after it are content under the P10-55 rule.
     static int CodeEnd47(string source, int start, bool hole = false)
     {
         var depth = 0;
@@ -1329,9 +1394,7 @@ internal static class DeletedCwdPathTests
     static void RestoreWiring47(string root, Action<bool, string, string> Check)
     {
         string Label(string what) => "P10-47 lock verbs restore wiring: " + what;
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, Label("tests/cli/DeletedCwdPathTests.cs is readable"), error.Message); return; }
+        if (SelfSource57(root, Check, Label("RestoreWiring47")) is not { } source) return;
         Check(RestoreWiringProblem47(source) is null,
             Label("LockVerbsUnsearchable41 aggregates the reference and the locked call's restore problems into the restore check (pinned by the variable names reference, result and restoreProblem: a rename fails this pin)"),
             RestoreWiringProblem47(source) ?? "");
@@ -1356,9 +1419,7 @@ internal static class DeletedCwdPathTests
     // inside string and char parameter defaults (the name is split so this file's text holds no second declaration).
     static void LockVerbsSelfTest51(string root, Action<bool, string, string> Check)
     {
-        string source;
-        try { source = File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")); }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, "P10-51 lock verbs restore wiring (LockVerbsSelfTest51): tests/cli/DeletedCwdPathTests.cs is readable", error.Message); return; }
+        if (SelfSource57(root, Check, "P10-51 lock verbs restore wiring (LockVerbsSelfTest51)") is not { } source) return;
         var declared = "LockVerbs" + "Unsearchable41(";
         var literals = "static void " + declared + "string a = \")\", char b = '(', string c = @\"(\"\"\", string d = \"\"\" ) \"\"\") {";
         Check(LockVerbs47.IsMatch(literals) && !LockVerbs47.IsMatch("static void " + declared + "string a = \"(\" {"),
@@ -1404,7 +1465,9 @@ internal static class DeletedCwdPathTests
             && p49.Contains("variable names", StringComparison.Ordinal) && p49.Contains("green 45585771329", StringComparison.Ordinal),
             "P10-49 contract: the P10-49 paragraph states format clauses, string or char defaults, the $$ closing brace run and the wiring pin's variable names",
             section.Length == 0 ? "section not found" : p49.Length == 0 ? "P10-49 paragraph not found" : p49);
-        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47, P10-49, P10-51)", StringComparison.Ordinal), "P10-51 contract: the section heading lists P10-47, P10-49 and P10-51", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
+        // P10-57: the heading pin follows the heading (P10-51 listed P10-47, P10-49 and P10-51; P10-57 adds P10-53, P10-55, P10-57).
+        Check(section.Contains("(P10-35, P10-37, P10-39, P10-41, P10-43, P10-45, P10-47, P10-49, P10-51, P10-53, P10-55, P10-57)", StringComparison.Ordinal),
+            "P10-57 contract: the section heading lists P10-47 through P10-57", section.Length == 0 ? "section not found" : section[..section.IndexOf('\n')]);
         // P10-51: the P10-49 paragraph cites its green run and the P10-51 paragraph states the LockVerbs47 literals, the raw
         // hole brace runs and the hole-only parenthesis count.
         Check(p49.Contains("green 45665616001", StringComparison.Ordinal),
@@ -1431,6 +1494,15 @@ internal static class DeletedCwdPathTests
             && p55.Contains("header comments", StringComparison.Ordinal),
             "P10-55 contract: the P10-55 paragraph states the non-raw lone closing brace check, the LockVerbsSelfTest51 call and the header comments",
             section.Length == 0 ? "section not found" : p55.Length == 0 ? "P10-55 paragraph not found" : p55);
+        // P10-57: the P10-55 paragraph cites its red and green runs (not the branch-head placeholder), and an own paragraph
+        // states the format clause brace run rule (measured by a compiled probe) and the shared self reader.
+        Check(p55.Contains("red 45871847213", StringComparison.Ordinal) && p55.Contains("green 45873810186", StringComparison.Ordinal) && !p55.Contains("branch head", StringComparison.Ordinal),
+            "P10-57 contract: the P10-55 paragraph cites red 45871847213 and green 45873810186 instead of the branch-head placeholder", section.Length == 0 ? "section not found" : p55.Length == 0 ? "P10-55 paragraph not found" : p55);
+        var p57 = Paragraph("P10-57 (test tidy");
+        Check(p57.Contains("format clause", StringComparison.Ordinal) && p57.Contains("first closing brace", StringComparison.Ordinal) && p57.Contains("compiled probe", StringComparison.Ordinal)
+            && p57.Contains("`SelfSource57`", StringComparison.Ordinal) && p57.Contains("RevitCommandDeadlineTests.cs", StringComparison.Ordinal),
+            "P10-57 contract: the P10-57 paragraph states the format clause brace run rule, its compiled probe and the shared self reader",
+            section.Length == 0 ? "section not found" : p57.Length == 0 ? "P10-57 paragraph not found" : p57);
     }
 
     static void McpUnsearchable41(string scratch, Action<bool, string, string> Check, Action<string, string> skip)
