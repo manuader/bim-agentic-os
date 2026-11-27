@@ -173,6 +173,10 @@ using Bim.Core;
 //      becomes the guarded block), reversed, gives the P5-39 file byte for byte (the P5-39 SHA-256 kept), and sections
 //      13 and 15 read the file with it reversed first (documented delta); Run's new catch is pinned
 //      whitespace-insensitively.
+// Wording pins, stated (P5-45): this header's width (at most 125 columns) and oracle 19's wrapper sentence (P5-43)
+// are pinned from the other test executable, tests/mcp/StdoutFailureToolTests.cs RunP5_41 section d (cross-executable),
+// which also states it; so a tests/cli run alone (the macOS job) does not check them: they are measured by the core and
+// core-windows jobs, which run tests/mcp whole. They stay there, not moved into tests/cli, with the P5-43 pins.
 internal static class SkillListTests
 {
     const string Usage = "usage: skill-list [--skills skills-directory]";

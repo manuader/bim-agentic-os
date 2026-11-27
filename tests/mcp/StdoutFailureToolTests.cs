@@ -327,7 +327,16 @@ internal static class StdoutFailureToolTests
     //      reply in process; this is that reply through the real process, kept separate, not folded into P5-39 section a,
     //      because that section runs in process on every OS.
     //   d. P5-43: the wording of these headers, P5-39 section c's measured check and tests/cli/SkillListTests.cs header
-    //      (width, oracle 19 wrapper sentence) is pinned on the sources.
+    //      (width, oracle 19 wrapper sentence) is pinned on the sources. P5-45: that is a cross-executable pin (tests/mcp
+    //      reads the tests/cli header; both headers state it), so a tests/cli run alone never checks that wording. The
+    //      P5-39 and P5-41 headers of this file are pinned at most 125 columns too (width self-test on a planted header).
+    //      Comment words come from the one class-level helper CommentWords (self-tested on a planted comment);
+    //      tests/mcp/TwiceReadToolTests.cs P5-38 keeps its own inline collapse of the provenance paragraph (a stated
+    //      duplication: that file is not P5-45's to edit; it compiles into this executable, so it can call CommentWords).
+    //      Reach: section d runs only where tests/mcp runs whole, the core (ubuntu-latest) and core-windows
+    //      (windows-latest) jobs through scripts/verify.ps1; the macOS job (ifc-portable, macos-latest) runs tests/mcp
+    //      with BIM_TEST_P3_38_SECTION=9 only (P3-38 section 9), so it measures no section d check (the stated reach is
+    //      read against .github/workflows/ci.yml and scripts/verify.ps1).
     static void RunP5_41(string root, string dotnet, string mcpDll, Action<bool, string> check)
     {
         var failures = new List<string>();
@@ -422,21 +431,10 @@ internal static class StdoutFailureToolTests
 
         // ---- d. P5-43: the wording of these oracles (text-only clauses, pinned on the sources) ----
         {
-            // A comment block's words: the lines from the one starting with `first` (trimmed) up to the one containing
-            // `last`, with the comment markers removed and runs of whitespace collapsed.
-            static string Words(string source, string first, string last)
-            {
-                var lines = source.ReplaceLineEndings("\n").Split('\n');
-                var start = Array.FindIndex(lines, line => line.TrimStart().StartsWith(first, StringComparison.Ordinal));
-                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.Contains(last, StringComparison.Ordinal));
-                if (start < 0 || end < 0) return "";
-                var text = string.Join(" ", lines[start..end].Select(line => line.Trim().TrimStart('/')));
-                return string.Join(" ", text.Split(' ', StringSplitOptions.RemoveEmptyEntries));
-            }
             var herePath = Path.Combine(root, "tests", "mcp", "StdoutFailureToolTests.cs");
             var here = File.Exists(herePath) ? File.ReadAllText(herePath).ReplaceLineEndings("\n") : "";
-            var p539 = Words(here, "// P5-39: the remaining MCP stdout edges", "static void RunP5_39(");
-            var p541 = Words(here, "// P5-41: the 'mcp stdout failed' stderr line falls back", "static void RunP5_41(");
+            var p539 = CommentWords(here, "// P5-39: the remaining MCP stdout edges", "static void RunP5_39(");
+            var p541 = CommentWords(here, "// P5-41: the 'mcp stdout failed' stderr line falls back", "static void RunP5_41(");
             Check(p541.Contains("a real IOException has a readable Message, so the real run never reaches the throwing-getter fallback: only the replica (b) covers it", StringComparison.Ordinal),
                 "P5-43: the P5-41 header states that the real Bim.Mcp.dll run (c) cannot reach the throwing-getter fallback (a real IOException's Message is readable; only the replica covers it) | " + Short(p541));
             Check(p541.Contains("overlaps P5-37 b and P5-39 section a", StringComparison.Ordinal),
@@ -452,7 +450,7 @@ internal static class StdoutFailureToolTests
             Check(cli.Length > 0 && headerLines.Length < cli.Split('\n').Length && wide.Length == 0,
                 "P5-43: tests/cli/SkillListTests.cs header lines are at most 125 characters (the file's comment width) | wider: "
                 + string.Join(", ", wide.Select(entry => entry.Line.ToString(CultureInfo.InvariantCulture) + " (" + entry.Length.ToString(CultureInfo.InvariantCulture) + ")")));
-            var oracle19 = Words(cli, "//  19. P5-39", "internal static class SkillListTests");
+            var oracle19 = CommentWords(cli, "//  19. P5-39", "internal static class SkillListTests");
             Check(oracle19.Contains("the leading System.InvalidOperationException is the wrapper Run's fallback builds", StringComparison.Ordinal),
                 "P5-43: tests/cli/SkillListTests.cs oracle 19 states that the two-level diagnostic's leading System.InvalidOperationException is the wrapper Run's fallback builds | " + Short(oracle19));
 
@@ -466,11 +464,11 @@ internal static class StdoutFailureToolTests
                 + Count(here, collapseToken).ToString(CultureInfo.InvariantCulture) + " helper at " + helperAt.ToString(CultureInfo.InvariantCulture));
             const string Planted = "class Planted\n{\n    // Planted header (P5-45):   two  spaces\n\t//     indented   continuation\n///triple slash line\n"
                 + "    // last comment line\n    static void Planted(\n}\n";
-            var plantedWords = Words(Planted, "// Planted header (P5-45)", "static void Planted(");
+            var plantedWords = CommentWords(Planted, "// Planted header (P5-45)", "static void Planted(");
             Check(plantedWords == "Planted header (P5-45): two spaces indented continuation triple slash line last comment line",
                 "P5-45: the comment-word collapse self-test on a planted comment (markers removed, whitespace runs collapsed, stops before the end-marker line) | " + JsonSerializer.Serialize(plantedWords));
-            Check(Words(Planted, "// Not planted", "static void Planted(") == "" && Words(Planted, "// Planted header (P5-45)", "static void Missing(") == ""
-                && Words(Planted, "// Planted header (P5-45)", "last comment line") == "Planted header (P5-45): two spaces indented continuation triple slash line",
+            Check(CommentWords(Planted, "// Not planted", "static void Planted(") == "" && CommentWords(Planted, "// Planted header (P5-45)", "static void Missing(") == ""
+                && CommentWords(Planted, "// Planted header (P5-45)", "last comment line") == "Planted header (P5-45): two spaces indented continuation triple slash line",
                 "P5-45: the collapse self-test: a missing first or last marker gives the empty text, and the last marker's own line is excluded");
 
             // P5-45 b: the P5-39 and P5-41 headers of this file are at most 125 columns (the comment width, as P5-43 pins for tests/cli).
@@ -494,7 +492,7 @@ internal static class StdoutFailureToolTests
             // P5-45 c: the cross-executable wording pin is stated in both headers.
             Check(p541.Contains("P5-45: that is a cross-executable pin (tests/mcp reads the tests/cli header; both headers state it)", StringComparison.Ordinal),
                 "P5-45: the P5-41 header states that section d pins tests/cli/SkillListTests.cs wording from tests/mcp (cross-executable) | " + Short(p541));
-            var cliHeader = Words(cli, "// Wording pins, stated (P5-45)", "internal static class SkillListTests");
+            var cliHeader = CommentWords(cli, "// Wording pins, stated (P5-45)", "internal static class SkillListTests");
             Check(cliHeader.Contains("are pinned from the other test executable, tests/mcp/StdoutFailureToolTests.cs RunP5_41 section d (cross-executable)", StringComparison.Ordinal)
                 && cliHeader.Contains("a tests/cli run alone (the macOS job) does not check them", StringComparison.Ordinal),
                 "P5-45: the tests/cli/SkillListTests.cs header states that its width and oracle 19 wording are pinned from tests/mcp (cross-executable) and not by a tests/cli run alone | " + Short(cliHeader));
@@ -519,6 +517,19 @@ internal static class StdoutFailureToolTests
         }
 
         check(failures.Count == 0, "P5-41 mcp stderr fallback: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
+    }
+
+    // P5-45: the one comment-word collapse of RunP5_41 section d (P5-43's local Words, hoisted). A comment block's words:
+    // the lines from the one starting with `first` (trimmed) up to, not including, the one containing `last`, with the
+    // comment markers removed and runs of whitespace collapsed; the empty text when either marker is missing.
+    internal static string CommentWords(string source, string first, string last)
+    {
+        var lines = source.ReplaceLineEndings("\n").Split('\n');
+        var start = Array.FindIndex(lines, line => line.TrimStart().StartsWith(first, StringComparison.Ordinal));
+        var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.Contains(last, StringComparison.Ordinal));
+        if (start < 0 || end < 0) return "";
+        var text = string.Join(" ", lines[start..end].Select(line => line.Trim().TrimStart('/')));
+        return string.Join(" ", text.Split(' ', StringSplitOptions.RemoveEmptyEntries));
     }
 
     // P5-41 documented delta (new text, P5-39 text) of interfaces/mcp/Program.cs, "\n" line endings.
