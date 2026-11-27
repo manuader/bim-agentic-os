@@ -2035,11 +2035,10 @@ static class MirrorDriftLoopChecks
         // Comments stripped, the code of RevitCommandsService.cs names the seam exactly twice: its declaration and the one
         // read in WriteRequest. Any assignment (=, +=, -=, ??=) or other use is a third occurrence; a planted self-test
         // shows those forms are caught while a mention in a comment is not.
-        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
         const string seamDeclaration = "[ThreadStatic] internal static Action<int, int>? WriteProgress;";
         const string seamRead = "var progress = WriteProgress;";
-        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(Code(source), @"\bWriteProgress\b").Count;
-        static bool Pinned(string source) => Uses(source) == 2 && Code(source).Contains(seamDeclaration, StringComparison.Ordinal) && Code(source).Contains(seamRead, StringComparison.Ordinal);
+        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(MacCode(source), @"\bWriteProgress\b").Count;
+        static bool Pinned(string source) => Uses(source) == 2 && MacCode(source).Contains(seamDeclaration, StringComparison.Ordinal) && MacCode(source).Contains(seamRead, StringComparison.Ordinal);
         Check(Pinned(service),
             "static pin: with comments stripped the seam occurs exactly twice in " + WriteProgressService + " (its [ThreadStatic] declaration without an initializer and the one read): never assigned in production source (null unless a test sets it)",
             "code occurrences " + Uses(service));
@@ -2239,6 +2238,17 @@ static class MirrorDriftLoopChecks
         (seam is { IsError: true, Forwarded: true } && seam.Line == cliLine && reports.Count > 0 && reports[0].Written == 0 && reports.All(x => x.Total == wireBytes),
          extraLines.Count == 1 ? queued(extraLines[0]) : long.MinValue,
          reports.Count > 0 ? reports[reports.Count - 1].Written : -1);
+
+    // P2-51: the first seam run's gate fields (SeamQueued, Handed, CliQueued) as the live gate builds them on every OS
+    // (the Linux and Windows checks read the same three values): SeamQueued from the fake's second broken-after line and
+    // CliQueued from its first, both only when it logged exactly those two (long.MinValue otherwise); Handed the last
+    // write-progress report (-1 with none). The raised-lever pin in MacSelfTestPins replays a seam run that never
+    // reached its lever through it.
+    static (long SeamQueued, long Handed, long CliQueued) RaisedSeamFields(IReadOnlyList<(int Written, int Total, long Ms)> reports, IReadOnlyList<string> brokenLines,
+        Func<string, long> queued) =>
+        (brokenLines.Count == 2 ? queued(brokenLines[1]) : long.MinValue,
+         reports.Count > 0 ? reports[reports.Count - 1].Written : -1,
+         brokenLines.Count == 2 ? queued(brokenLines[0]) : long.MinValue);
 
     // P2-44/P2-45: what a pair of lever records breaks, read from the records themselves: for each lever (raised, then
     // lowered) 'calls=N' when it did not run exactly once and 'error' when it recorded one. The self-tests check it
@@ -2681,7 +2691,7 @@ static class MirrorDriftLoopChecks
         // builder) gives LoweredRun False, LoweredQueued long.MinValue and LoweredHanded -1. Replayed through it, the
         // failed-lever drift not-run line lists those three fields after the lever fields (InvariantCulture numbers, built
         // under the '~' culture) and the drift check is still the last not-run line after one red, the lever setup check.
-        // (A lowered lever that ran with an error, or a raised lever that never ran, changes other seam fields: not replayed.)
+        // (A lowered lever that ran with an error, and a raised lever that never ran, change other seam fields: P2-51 below.)
         var neverReached = MacLoweredSeamFields(null, "cli line", Array.Empty<(int Written, int Total, long Ms)>(), Array.Empty<string>(), MacRecordedCounts.WireBytes, _ => 0);
         var seamNeverRan = WithLevers(MacRecordedCounts with { LoweredRun = neverReached.Run, LoweredQueued = neverReached.Queued, LoweredHanded = neverReached.Handed }, raisedOkLever, neverRanLever);
         var seamNeverRanLine = UnderCulture(MacTildeCulture(), () => MacDriftNotRunNotice(seamNeverRan, MacRecordedCounts));
@@ -2693,6 +2703,74 @@ static class MirrorDriftLoopChecks
             "macos pin self-test (P2-50): a lowered lever that never ran, with its seam run replayed through MacLoweredSeamFields (no result, report or line), gives one red (the lever setup check) and a drift not-run line listing LoweredRun, LoweredQueued and LoweredHanded after the lever fields",
             "fields=(" + MacBool(neverReached.Run) + ", " + MacNumber(neverReached.Queued) + ", " + MacNumber(neverReached.Handed) + ") line=" + seamNeverRanLine
             + " red=[" + string.Join(" ; ", seamNeverRanLive.Red) + "] not_run=[" + string.Join(" ; ", seamNeverRanLive.NotRun) + "]");
+
+        // P2-51: MacLoweredSeamFields on a forwarded green result: the CLI's line, reports from 0 to read + lowered (10240)
+        // over the wire bytes and one extra broken-after line give LoweredRun True, the line's queued value and the last
+        // report, so the gate is the recorded counts again (no red, not-run line or drift). Each run clause (an error
+        // result, forwarded, the CLI's line, a first report of 0, every report over the wire bytes) planted off once turns
+        // LoweredRun False alone.
+        var wire = MacRecordedCounts.WireBytes;
+        static (int Written, int Total, long Ms)[] SeamReports(long last, long total) =>
+            Enumerable.Range(0, (int)(last / 1024) + 1).Select(k => (k * 1024, (int)total, (long)k)).ToArray();
+        static long LineQueued(string line) => line == "lowered line" ? 6144 : long.MinValue;
+        var greenReports = SeamReports(10240, wire);
+        var forwarded = new RevitCommandResult("cli line", true, true);
+        var extra = new[] { "lowered line" };
+        var greenSeam = MacLoweredSeamFields(forwarded, "cli line", greenReports, extra, wire, LineQueued);
+        var greenGate = WithLevers(MacRecordedCounts with { LoweredRun = greenSeam.Run, LoweredQueued = greenSeam.Queued, LoweredHanded = greenSeam.Handed }, raisedOkLever, loweredOkLever);
+        var greenLive = Live(greenGate);
+        var offRuns = new[]
+        {
+            MacLoweredSeamFields(new RevitCommandResult("cli line", false, true), "cli line", greenReports, extra, wire, LineQueued),
+            MacLoweredSeamFields(new RevitCommandResult("cli line", true, false), "cli line", greenReports, extra, wire, LineQueued),
+            MacLoweredSeamFields(forwarded, "other line", greenReports, extra, wire, LineQueued),
+            MacLoweredSeamFields(forwarded, "cli line", greenReports.Skip(1).ToArray(), extra, wire, LineQueued),
+            MacLoweredSeamFields(forwarded, "cli line", SeamReports(10240, wire - 1), extra, wire, LineQueued),
+        };
+        check(greenSeam == (true, 6144L, 10240L) && greenGate == MacRecordedCounts && MacCountsDrift(greenGate, MacRecordedCounts).Length == 0
+            && greenLive.Red.Length == 0 && greenLive.NotRun.Length == 0 && offRuns.All(x => x == (false, 6144L, 10240L)),
+            "macos pin self-test (P2-51): MacLoweredSeamFields on a forwarded green result (the CLI's line, reports from 0 to 10240 over the wire bytes, one extra line queued 6144) gives (True, 6144, 10240), the recorded counts with no red, not-run line or drift; a result that is not an error, not forwarded or another line, a first report above 0 or a report over other wire bytes each turns LoweredRun False alone",
+            "fields=(" + MacBool(greenSeam.Run) + ", " + MacNumber(greenSeam.Queued) + ", " + MacNumber(greenSeam.Handed) + ") off=[" + string.Join(" ; ", offRuns.Select(x => MacBool(x.Run) + "/" + MacNumber(x.Queued) + "/" + MacNumber(x.Handed)))
+            + "] drift=[" + string.Join(" ; ", MacCountsDrift(greenGate, MacRecordedCounts)) + "] red=[" + string.Join(" ; ", greenLive.Red) + "] not_run=[" + string.Join(" ; ", greenLive.NotRun) + "]");
+
+        // P2-51: a lowered lever that ran with an error (here before it read the socket: no default, request or read-back)
+        // leaves the second seam run at the default send buffer, and the run goes on: MacLoweredSeamFields gives LoweredRun
+        // True, queued 8192 (the default) and handed 4096 + 8192 = 12288. Replayed, the drift not-run line lists the
+        // lever's -1 fields, then LoweredQueued and LoweredHanded at the default (LoweredRun as recorded), after one red.
+        var erredLever = new LeverRecord { Calls = 1, Error = "no SafePipeHandle.PipeSocket" };
+        var erredSeam = MacLoweredSeamFields(forwarded, "cli line", SeamReports(12288, wire), extra, wire, _ => 8192);
+        var erred = WithLevers(MacRecordedCounts with { LoweredRun = erredSeam.Run, LoweredQueued = erredSeam.Queued, LoweredHanded = erredSeam.Handed }, raisedOkLever, erredLever);
+        var erredLine = UnderCulture(MacTildeCulture(), () => MacDriftNotRunNotice(erred, MacRecordedCounts));
+        var erredLive = Live(erred);
+        var erredFailures = LeverFailures(raisedOkLever, erredLever);
+        check(erredSeam == (true, 8192L, 12288L) && erredFailures.SequenceEqual(new[] { "lowered error" }, StringComparer.Ordinal)
+            && erredLine == noticeWritten + " hidden_drift=[LeversOk: live=False recorded=True ; LoweredDefault: live=-1 recorded=8192 ; Lowered: live=-1 recorded=6144 ; RequestedLowered: live=-1 recorded=6144"
+                + " ; LoweredQueued: live=8192 recorded=6144 ; LoweredHanded: live=12288 recorded=10240]"
+            && erredLive.Red.SequenceEqual(new[] { leversWritten }, StringComparer.Ordinal) && erredLive.NotRun.LastOrDefault() == driftWritten,
+            "macos pin self-test (P2-51): a lowered lever that ran with an error leaves its seam run at the default send buffer (MacLoweredSeamFields: True, 8192, 12288) and gives one red (the lever setup check) and a drift not-run line listing the lever's -1 fields, then LoweredQueued and LoweredHanded",
+            "fields=(" + MacBool(erredSeam.Run) + ", " + MacNumber(erredSeam.Queued) + ", " + MacNumber(erredSeam.Handed) + ") failures=[" + string.Join(" ; ", erredFailures) + "] line=" + erredLine
+            + " red=[" + string.Join(" ; ", erredLive.Red) + "] not_run=[" + string.Join(" ; ", erredLive.NotRun) + "]");
+
+        // P2-51: a raised lever that never ran means the first seam run never reached it (no write-progress report) and
+        // the fake logged no broken-after line for that run: RaisedSeamFields (the live gate's builder) gives SeamQueued
+        // long.MinValue and Handed -1, and CliQueued long.MinValue too (it reads the CLI's line only beside the seam run's).
+        // Replayed with the lowered lever and its run as recorded, the drift not-run line lists the raised lever's -1
+        // fields, then SeamQueued, Handed and CliQueued, after one red. On the recorded lines and reports it gives the
+        // recorded values. (A run whose lowered line takes the seam run's place in the fake's log is not replayed.)
+        var raisedGreen = RaisedSeamFields(SeamReports(20480, wire), new[] { "cli line", "seam line" }, line => line == "seam line" ? 16384 : 8192);
+        var raisedNeverReached = RaisedSeamFields(Array.Empty<(int Written, int Total, long Ms)>(), new[] { "cli line" }, _ => 8192);
+        var raisedSeamNeverRan = WithLevers(MacRecordedCounts with { SeamQueued = raisedNeverReached.SeamQueued, Handed = raisedNeverReached.Handed, CliQueued = raisedNeverReached.CliQueued },
+            neverRanLever, loweredOkLever);
+        var raisedSeamLine = UnderCulture(MacTildeCulture(), () => MacDriftNotRunNotice(raisedSeamNeverRan, MacRecordedCounts));
+        var raisedSeamLive = Live(raisedSeamNeverRan);
+        check(raisedGreen == (16384L, 20480L, 8192L) && raisedNeverReached == (long.MinValue, -1L, long.MinValue)
+            && raisedSeamLine == noticeWritten + " hidden_drift=[LeversOk: live=False recorded=True ; RaisedDefault: live=-1 recorded=8192 ; Raised: live=-1 recorded=16384"
+                + " ; SeamQueued: live=-9223372036854775808 recorded=16384 ; Handed: live=-1 recorded=20480 ; CliQueued: live=-9223372036854775808 recorded=8192]"
+            && raisedSeamLive.Red.SequenceEqual(new[] { leversWritten }, StringComparer.Ordinal) && raisedSeamLive.NotRun.LastOrDefault() == driftWritten,
+            "macos pin self-test (P2-51): a raised lever that never ran, with its seam run replayed through RaisedSeamFields (no report, only the CLI's broken-after line), gives SeamQueued long.MinValue, Handed -1 and CliQueued long.MinValue, one red (the lever setup check) and a drift not-run line listing them after the lever fields; the recorded lines give the recorded values",
+            "green=(" + MacNumber(raisedGreen.SeamQueued) + ", " + MacNumber(raisedGreen.Handed) + ", " + MacNumber(raisedGreen.CliQueued) + ") never_reached=(" + MacNumber(raisedNeverReached.SeamQueued) + ", "
+            + MacNumber(raisedNeverReached.Handed) + ", " + MacNumber(raisedNeverReached.CliQueued) + ") line=" + raisedSeamLine
+            + " red=[" + string.Join(" ; ", raisedSeamLive.Red) + "] not_run=[" + string.Join(" ; ", raisedSeamLive.NotRun) + "]");
     }
 
     // P2-44: the macOS gate's names against the recorded macOS numbers (MacRecordedCounts) written as literals: the
@@ -2824,11 +2902,10 @@ static class MirrorDriftLoopChecks
         naming.Sort(StringComparer.Ordinal);
         check(naming.SequenceEqual(new[] { WriteProgressService }), "static pin (P2-36): among the production sources only " + WriteProgressService + " names the connected-pipe seam", string.Join(",", naming));
         var service = File.ReadAllText(Path.Combine(root, WriteProgressService));
-        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source, @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
         const string seamDeclaration = "[ThreadStatic] internal static Action<PipeStream>? PipeConnected;";
         const string seamRead = "PipeConnected?.Invoke(pipe);";
-        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(Code(source), @"\bPipeConnected\b").Count;
-        static bool Pinned(string source) => Uses(source) == 2 && Code(source).Contains(seamDeclaration, StringComparison.Ordinal) && Code(source).Contains(seamRead, StringComparison.Ordinal);
+        static int Uses(string source) => System.Text.RegularExpressions.Regex.Matches(MacCode(source), @"\bPipeConnected\b").Count;
+        static bool Pinned(string source) => Uses(source) == 2 && MacCode(source).Contains(seamDeclaration, StringComparison.Ordinal) && MacCode(source).Contains(seamRead, StringComparison.Ordinal);
         check(Pinned(service),
             "static pin (P2-36): with comments stripped the connected-pipe seam occurs exactly twice in " + WriteProgressService + " (its [ThreadStatic] declaration without an initializer and the one read): never assigned in production source",
             "code occurrences " + Uses(service));
@@ -2926,15 +3003,14 @@ static class MirrorDriftLoopChecks
         var (exited, exit, error) = h.End();
         var received = h.Received();
 
-        var handed = reports.Count > 0 ? reports[^1].Written : -1;
         // The CLI process's and the first seam run's broken-after lines; on macOS a third (the lowered seam run) follows.
         var brokenLines = received.Skip(PerOsRequestsBefore.Length).Take(2).ToArray();
         var extraLines = received.Skip(PerOsRequestsBefore.Length + 2).ToArray();
         static string[] Fields(string line) { var p = line.Split(':'); return p.Length == 4 && p[0] + ":" == MidArgsLogPrefix ? p : Array.Empty<string>(); }
         static int Read(string line) => Fields(line) is { Length: 4 } p && int.TryParse(p[1], NumberStyles.None, CultureInfo.InvariantCulture, out var n) ? n : -1;
         static long Queued(string line) => Fields(line) is { Length: 4 } p && long.TryParse(p[3], NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var q) ? q : long.MinValue;
-        var cliQueued = brokenLines.Length == 2 ? Queued(brokenLines[0]) : long.MinValue;
-        var seamQueued = brokenLines.Length == 2 ? Queued(brokenLines[1]) : long.MinValue;
+        // P2-51: SeamQueued, Handed and CliQueued through RaisedSeamFields (replayed by the raised-lever pin).
+        var (seamQueued, handed, cliQueued) = RaisedSeamFields(reports, brokenLines, Queued);
         string Seen((int Exit, string Out, string Err) x) => "exit=" + x.Exit + " status=" + (Status(x.Out) ?? "<null>") + " code=" + (Text(x.Out, "code") ?? "<null>") + " field=" + (Text(x.Out, "field") ?? "<null>") + " detail=" + (Text(x.Out, "detail") ?? "<null>");
         var measured = "os=" + os + " wire_bytes=" + wireBytes + " chunk=" + RevitCommandService.WriteProgressChunk + " reports=" + reports.Count + " handed=" + handed
             + " unhanded=" + (handed < 0 ? "<none>" : (wireBytes - handed).ToString(CultureInfo.InvariantCulture))
@@ -3025,6 +3101,106 @@ static class MirrorDriftLoopChecks
         else Check(false, os + ": the bytes handed and queued at a mid-args break have not been observed by a probe on this OS", measured);
     }
 
+    // P2-51: the one comment strip of this file's static pins (RunWriteProgressLoop, PipeConnectedPinned and
+    // MacCultureHelpersPinned each kept a regex copy of it before, which cut a '//' or '/*' inside a string literal):
+    // CRLF read as LF, a line comment removed up to its newline and a block comment removed but for its newlines, every
+    // literal kept as written: regular, verbatim (@, $@, @$) and raw strings (any quote run) and char literals. An
+    // interpolated string's hole is code, read the same way (a literal or comment inside it, a brace pair kept). Limit:
+    // a raw interpolated string's holes are literal text (none in the scanned files).
+    static string MacCode(string source)
+    {
+        var s = source.Replace("\r\n", "\n");
+        var code = new StringBuilder(s.Length);
+        var i = 0;
+        MacCodeInto(s, ref i, code, hole: false);
+        return code.ToString();
+    }
+
+    // P2-51: copies s[i..] into code without its comments; in a hole, stops at the '}' that closes it (not copied).
+    static void MacCodeInto(string s, ref int i, StringBuilder code, bool hole)
+    {
+        var depth = 0;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            var next = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < s.Length && s[i] != '\n') i++; continue; }
+            if (c == '/' && next == '*')
+            {
+                var end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                var stop = end < 0 ? s.Length : end + 2;
+                for (; i < stop; i++) if (s[i] == '\n') code.Append('\n');
+                continue;
+            }
+            if (c == '\'')
+            {
+                var from = i++;
+                while (i < s.Length && s[i] != '\'' && s[i] != '\n') i += s[i] == '\\' ? 2 : 1;
+                i = Math.Min(s.Length, i + 1);
+                code.Append(s, from, i - from);
+                continue;
+            }
+            var prefix = i;
+            while (prefix < s.Length && (s[prefix] == '$' || s[prefix] == '@')) prefix++;
+            if (prefix < s.Length && s[prefix] == '"') { MacLiteralInto(s, ref i, code); continue; }
+            if (hole && c == '{') depth++;
+            if (hole && c == '}' && depth-- == 0) return;
+            code.Append(c);
+            i++;
+        }
+    }
+
+    // P2-51: copies the string literal at s[i] (its $/@ prefix, quotes and text) into code as written, the holes of an
+    // interpolated one read as code by MacCodeInto.
+    static void MacLiteralInto(string s, ref int i, StringBuilder code)
+    {
+        var (interpolated, verbatim) = (false, false);
+        for (; s[i] != '"'; i++) { interpolated |= s[i] == '$'; verbatim |= s[i] == '@'; code.Append(s[i]); }
+        var quotes = 0;
+        while (i + quotes < s.Length && s[i + quotes] == '"') quotes++;
+        if (!verbatim && quotes >= 3)
+        {
+            var end = s.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
+            var stop = end < 0 ? s.Length : end + quotes;
+            code.Append(s, i, stop - i);
+            i = stop;
+            return;
+        }
+        code.Append('"');
+        i++;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            var next = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '"' && verbatim && next == '"') { code.Append("\"\""); i += 2; continue; }
+            if (c == '"') { code.Append('"'); i++; return; }
+            if (c == '\\' && !verbatim && i + 1 < s.Length) { code.Append(s, i, 2); i += 2; continue; }
+            if (c == '\n' && !verbatim) return;
+            if (c == '{' && interpolated && next == '{') { code.Append("{{"); i += 2; continue; }
+            if (c == '{' && interpolated)
+            {
+                code.Append('{');
+                i++;
+                MacCodeInto(s, ref i, code, hole: true);
+                if (i < s.Length) { code.Append('}'); i++; }
+                continue;
+            }
+            code.Append(c);
+            i++;
+        }
+    }
+
+    // P2-51: a method body of MacCode output, found by its signature at class indentation, up to its closing brace at
+    // class indentation (exclusive), that brace followed by spaces or tabs only to its newline (a trailing comment,
+    // stripped, leaves them). Limit: an expression-bodied member has no such brace, so its body runs to the next one's.
+    static string MacBody(string code, string signature)
+    {
+        var start = code.IndexOf("\n    " + signature, StringComparison.Ordinal);
+        if (start < 0) return "";
+        var end = System.Text.RegularExpressions.Regex.Match(code[start..], @"\n    \}[ \t]*\n");
+        return end.Success ? code[start..(start + end.Index)] : code[start..];
+    }
+
     // P2-50: static pin of the macOS culture helpers in this file's code (comments stripped; the searched text is split
     // in this method so it does not match itself; a method body is found by its signature at class indentation): the '~'
     // culture is built once (MacTildeCulture) and called by both culture pins; LeverFailures is called directly from two
@@ -3034,53 +3210,68 @@ static class MirrorDriftLoopChecks
     // file's de-DE is the fake's PowerShell; in this file only UnderCulture and the P2-49 self-test's reset set the culture.
     static void MacCultureHelpersPinned(string root, Action<bool, string, string> check)
     {
-        static string Code(string source) => System.Text.RegularExpressions.Regex.Replace(source.Replace("\r\n", "\n"), @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
         static int Count(string code, string text)
         {
             var n = 0;
             for (var i = code.IndexOf(text, StringComparison.Ordinal); i >= 0; i = code.IndexOf(text, i + text.Length, StringComparison.Ordinal)) n++;
             return n;
         }
-        static string Body(string code, string signature)
-        {
-            var start = code.IndexOf("\n    " + signature, StringComparison.Ordinal);
-            if (start < 0) return "";
-            var end = code.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-            return end < 0 ? code[start..] : code[start..end];
-        }
         var directory = Path.Combine(root, "tests", "mirror-journal");
-        var loop = Code(File.ReadAllText(Path.Combine(directory, "MirrorDriftLoopChecks.cs")));
+        var loop = MacCode(File.ReadAllText(Path.Combine(directory, "MirrorDriftLoopChecks.cs")));
         var tildeSign = "NegativeSign = " + "\"~\"";
         var tildeCall = "MacTildeCulture" + "()";
-        var (tildeTotal, tildeInBuilder, tildeInPins, tildeInRequested) = (Count(loop, tildeSign), Count(Body(loop, "static CultureInfo MacTildeCulture()"), tildeSign),
-            Count(Body(loop, "static void MacSelfTestPins("), tildeCall), Count(Body(loop, "static void MacRequestedTextCulture("), tildeCall));
+        var (tildeTotal, tildeInBuilder, tildeInPins, tildeInRequested) = (Count(loop, tildeSign), Count(MacBody(loop, "static CultureInfo MacTildeCulture()"), tildeSign),
+            Count(MacBody(loop, "static void MacSelfTestPins("), tildeCall), Count(MacBody(loop, "static void MacRequestedTextCulture("), tildeCall));
         check(tildeTotal == 1 && tildeInBuilder == 1 && tildeInPins >= 1 && tildeInRequested >= 1,
             "static pin (P2-50): the '~' culture is built once, in MacTildeCulture, and MacSelfTestPins and MacRequestedTextCulture call it",
             "negative_sign_sets=" + tildeTotal + " in_builder=" + tildeInBuilder + " calls_in_self_test_pins=" + tildeInPins + " calls_in_requested_text_culture=" + tildeInRequested);
         var lookup = "GetMethod(\"" + "LeverFailures\"";
         var leverCall = "LeverFailures" + "(";
-        var (lookups, inSelfTests, inNamePins) = (Count(loop, lookup), Count(Body(loop, "static void MacSendBufferSelfTests("), leverCall), Count(Body(loop, "static void MacRecordedNamePins("), leverCall));
+        var (lookups, inSelfTests, inNamePins) = (Count(loop, lookup), Count(MacBody(loop, "static void MacSendBufferSelfTests("), leverCall), Count(MacBody(loop, "static void MacRecordedNamePins("), leverCall));
         check(lookups == 0 && inSelfTests >= 1 && inNamePins >= 1,
             "static pin (P2-50): LeverFailures is called directly from MacSendBufferSelfTests and MacRecordedNamePins (so it is class-level), with no reflection lookup of it",
             "reflection_lookups=" + lookups + " calls_in_self_tests=" + inSelfTests + " calls_in_name_pins=" + inNamePins);
         var spelled = "? \"True\" : " + "\"False\"";
-        var (spellings, inMacBool) = (Count(loop, spelled), Count(Body(loop, "static string MacBool("), spelled));
+        var (spellings, inMacBool) = (Count(loop, spelled), Count(MacBody(loop, "static string MacBool("), spelled));
         check(spellings == 1 && inMacBool == 1,
             "static pin (P2-50): the macOS detail texts write booleans through MacBool only (True/False spelled once in this file, in MacBool), the UnderCulture self-test included",
             "spellings=" + spellings + " in_mac_bool=" + inMacBool);
-        var live = Body(loop, "static void RunWriteProgressPerOsLoop(");
+        var live = MacBody(loop, "static void RunWriteProgressPerOsLoop(");
         var (seamCalls, inlineHanded) = (Count(live, "MacLoweredSeamFields" + "("), Count(live, "loweredReports" + "[^1]"));
         check(seamCalls == 1 && inlineHanded == 0,
             "static pin (P2-50): the live macOS gate builds LoweredRun, LoweredQueued and LoweredHanded through MacLoweredSeamFields (the helper the failed-lever pin replays), not inline",
             "calls=" + seamCalls + " inline_handed=" + inlineHanded);
         var german = "CultureInfo(\"de-" + "DE\")";
         var others = new[] { "MirrorDriftAdoptChecks.cs", "MirrorDriftChecks.cs", "MirrorDriftResolveChecks.cs", "MirrorDriftSelectChecks.cs" }
-            .Select(file => file + "=" + Count(Code(File.ReadAllText(Path.Combine(directory, file))), german)).ToArray();
+            .Select(file => file + "=" + Count(MacCode(File.ReadAllText(Path.Combine(directory, file))), german)).ToArray();
         var sets = System.Text.RegularExpressions.Regex.Matches(loop, @"CultureInfo\.CurrentCulture\s*=(?!=)").Count;
-        var inUnderCulture = System.Text.RegularExpressions.Regex.Matches(Body(loop, "static T UnderCulture<T>("), @"CultureInfo\.CurrentCulture\s*=(?!=)").Count;
+        var inUnderCulture = System.Text.RegularExpressions.Regex.Matches(MacBody(loop, "static T UnderCulture<T>("), @"CultureInfo\.CurrentCulture\s*=(?!=)").Count;
         check(others.All(x => x.EndsWith("=1", StringComparison.Ordinal)) && Count(loop, german) == 0 && sets == 3 && inUnderCulture == 2,
             "static pin (P2-50): out of the macOS UnderCulture scope, as listed: MirrorDriftAdoptChecks, MirrorDriftChecks, MirrorDriftResolveChecks and MirrorDriftSelectChecks each keep one de-DE swap of their own; this file builds no de-DE culture (its de-DE is the fake's PowerShell) and sets the current culture only in UnderCulture (twice) and the P2-49 self-test's reset",
             string.Join(" ", others) + " loop_de_de=" + Count(loop, german) + " culture_sets=" + sets + " in_under_culture=" + inUnderCulture);
+        // P2-51: the three static pins strip comments through MacCode (no local Code copy left) and the live gate builds
+        // SeamQueued, Handed and CliQueued through RaisedSeamFields (the helper the raised-lever pin replays), not inline.
+        var localStrips = Count(loop, "static string " + "Code(");
+        var stripCall = "MacCode" + "(";
+        var (stripsInWriteProgress, stripsInPipe, stripsHere) = (Count(MacBody(loop, "static void RunWriteProgressLoop("), stripCall), Count(MacBody(loop, "static void PipeConnectedPinned("), stripCall),
+            Count(MacBody(loop, "static void MacCultureHelpersPinned("), stripCall));
+        var (raisedCalls, inlineRaised) = (Count(live, "RaisedSeamFields" + "("), Count(live, "reports" + "[^1].Written"));
+        check(localStrips == 0 && stripsInWriteProgress >= 1 && stripsInPipe >= 1 && stripsHere >= 1 && raisedCalls == 1 && inlineRaised == 0,
+            "static pin (P2-51): RunWriteProgressLoop, PipeConnectedPinned and MacCultureHelpersPinned strip comments through the one helper MacCode (no local Code copy), and the live gate builds SeamQueued, Handed and CliQueued through RaisedSeamFields, not inline",
+            "local_strips=" + localStrips + " in_write_progress=" + stripsInWriteProgress + " in_pipe=" + stripsInPipe + " here=" + stripsHere + " raised_calls=" + raisedCalls + " inline_handed=" + inlineRaised);
+
+        // P2-51: MacCode keeps every literal as written, so a '//' or '/*' inside a regular, verbatim, interpolated (its
+        // hole too) or raw string, or a '/' char literal, starts no comment; a line comment goes up to its newline, a block
+        // comment but its newlines, CRLF read as LF. MacBody ends a body at a class-indented closing brace that a comment
+        // follows (stripped, it keeps the spaces before it), not at the next method's.
+        const string stripPlant = "a(\"//x\", @\"/*y\\\", '/', $\"{b(\"//z\")}//w\", \"\"\"q//\"r\"\"\") // cut\r\n/* gone\n */c();";
+        const string stripWritten = "a(\"//x\", @\"/*y\\\", '/', $\"{b(\"//z\")}//w\", \"\"\"q//\"r\"\"\") \n\nc();";
+        var stripped = MacCode(stripPlant);
+        const string bodyPlant = "\n    static void A()\n    {\n        a();\n    } // end of A\n    static void B()\n    {\n        b();\n    }\n";
+        var bodyA = MacBody(MacCode(bodyPlant), "static void A(");
+        check(stripped == stripWritten && bodyA == "\n    static void A()\n    {\n        a();",
+            "static pin self-test (P2-51): MacCode cuts no '//' or '/*' inside a string or char literal (regular, verbatim, interpolated with its hole, raw) and strips line and block comments; MacBody ends a body at a closing brace with a trailing comment",
+            "stripped=[" + stripped.Replace("\n", "\\n") + "] body_a=[" + bodyA.Replace("\n", "\\n") + "]");
     }
 
     // P2-25: the -ExternalEdits fake keeps at most the MirrorJournal retained-entry capacity (DefaultCapacity unless the
