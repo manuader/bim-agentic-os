@@ -787,11 +787,15 @@ internal static class RepeatedEnvelopeKeyTests
     internal const int StderrBound = 600;
     // P10-56: at most this many chars of a child's stderr are kept in memory (the rest is counted, not kept).
     internal const int StderrKeep = 4096;
+    // P10-60: the head is cut by the same rule as ReadBounded: a cut that leaves a high surrogate last drops it too
+    // (StderrBound - 1 chars), so a surrogate pair is never split; text without surrogates reads as before.
     internal static string BoundedStderr(string text, long chars = -1)
     {
         var total = Math.Max(chars, text.Length);
-        return text.Length <= StderrBound && total == text.Length ? text
-            : text[..Math.Min(StderrBound, text.Length)] + "...(" + total.ToString(CultureInfo.InvariantCulture) + " chars)";
+        if (text.Length <= StderrBound && total == text.Length) return text;
+        var cut = Math.Min(StderrBound, text.Length);
+        if (cut < total && cut > 0 && char.IsHighSurrogate(text[cut - 1])) cut--;
+        return text[..cut] + "...(" + total.ToString(CultureInfo.InvariantCulture) + " chars)";
     }
 
     // P10-56: reads a stream to its end, keeping at most keep chars (the head) and counting every char.
@@ -810,6 +814,22 @@ internal static class RepeatedEnvelopeKeyTests
         // too, so the kept head never ends on a lone high surrogate (it is then keep - 1 chars); every char is still counted.
         if (chars > kept.Length && kept.Length > 0 && char.IsHighSurrogate(kept[kept.Length - 1])) kept.Length--;
         return (kept.ToString(), chars);
+    }
+
+    // P10-60: the kept head's length as ReadBounded leaves it: all chars when they fit, else keep chars, or keep - 1
+    // when the cut fell between the halves of a surrogate pair (the high half dropped); never a lone high surrogate last.
+    internal static bool KeptHeadOk(string kept, long chars, int keep) =>
+        chars >= kept.Length && (chars > keep ? kept.Length == keep || kept.Length == keep - 1 : kept.Length == chars)
+        && !(chars > kept.Length && kept.Length > 0 && char.IsHighSurrogate(kept[^1]));
+
+    // P10-60: the declarations of a local named name in code (comments removed): every one is a using declaration
+    // (using var name =, or using with the type), and there is at least one.
+    static bool UsingDeclared(string source, string name)
+    {
+        var code = DocUpdateLinkTests.CodeOf(source);
+        var declarations = System.Text.RegularExpressions.Regex.Matches(code,
+            @"(?<using>\busing\s+)?\b(?:var|[A-Za-z_][A-Za-z0-9_]*)\s+" + System.Text.RegularExpressions.Regex.Escape(name) + @"\s*=(?![=>])");
+        return declarations.Count > 0 && declarations.All(found => found.Groups["using"].Success);
     }
 
     // P10-58: the stderr of a killed child, waited for at most waitMs. When it was not read in time the text is the
@@ -876,6 +896,8 @@ internal static class RepeatedEnvelopeKeyTests
     // P10-58: the fields (static or instance, of a type and every type nested in it, compiler closures included, so a
     // captured local counts) whose type can hold a child environment: a string-to-string map, a non-generic dictionary
     // (Hashtable, IDictionary as Environment.GetEnvironmentVariables returns), a StringDictionary or a ProcessStartInfo.
+    // P10-60: an allowlist, not a proof: only a field of one of these types is found; an environment held in any other
+    // shape (a string[] of NAME=value, a tuple, a record or class of its own, an object field) is not detected.
     internal static List<string> EnvironmentFields(Type root, Type? skip)
     {
         static bool HoldsEnvironment(Type type) => typeof(IEnumerable<KeyValuePair<string, string>>).IsAssignableFrom(type)
@@ -933,7 +955,15 @@ internal static class RepeatedEnvelopeKeyTests
     // a type (an identifier other than a keyword that can precede a call, a generic close > not part of => or ->, an
     // array ], or a nullable ? right after a type). Stated limits: a comparison a > Start( reads as a declaration (not
     // counted); new Start( is not counted (a type named Start, not Process).
-    static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal) { "return", "await", "throw", "in", "else", "case", "when", "and", "or", "not", "is", "yield" };
+    // P10-60: also a declaration only when its parameter list (to the matching close paren, string and char literals
+    // skipped) is followed by a body {, => or ; so a ternary with no space before ? (ready? Start(i) : null) is a call;
+    // ref and the LINQ query keywords (where, select, orderby, group, by, on, equals) and do also precede a call.
+    // Stated limit: a comparison a > Start(i); ending a statement still reads as a declaration (not counted).
+    static readonly HashSet<string> CallKeywords = new(StringComparer.Ordinal)
+    {
+        "return", "await", "throw", "in", "else", "case", "when", "and", "or", "not", "is", "yield",
+        "ref", "do", "where", "select", "orderby", "group", "by", "on", "equals",
+    };
     internal static bool StartDeclared(string code, int index)
     {
         static bool Word(char c) => char.IsLetterOrDigit(c) || c == '_';
@@ -941,13 +971,41 @@ internal static class RepeatedEnvelopeKeyTests
         while (at >= 0 && char.IsWhiteSpace(code[at])) at--;
         if (at < 0) return false;
         var before = code[at];
-        if (before == '?') return at > 0 && (Word(code[at - 1]) || code[at - 1] == '>' || code[at - 1] == ']');
-        if (before == ']') return true;
-        if (before == '>') return at > 0 && code[at - 1] != '=' && code[at - 1] != '-';
-        if (!Word(before)) return false;
-        var end = at + 1;
-        while (at >= 0 && Word(code[at])) at--;
-        return !CallKeywords.Contains(code[(at + 1)..end]);
+        bool typeBefore;
+        if (before == '?') typeBefore = at > 0 && (Word(code[at - 1]) || code[at - 1] == '>' || code[at - 1] == ']');
+        else if (before == ']') typeBefore = true;
+        else if (before == '>') typeBefore = at > 0 && code[at - 1] != '=' && code[at - 1] != '-';
+        else if (!Word(before)) typeBefore = false;
+        else
+        {
+            var end = at + 1;
+            while (at >= 0 && Word(code[at])) at--;
+            typeBefore = !CallKeywords.Contains(code[(at + 1)..end]);
+        }
+        return typeBefore && BodyFollows(code, code.IndexOf('(', index));
+    }
+
+    // P10-60: after the paren list opened at open (its matching close paren), the next token is a body {, => or ;.
+    static bool BodyFollows(string code, int open)
+    {
+        if (open < 0) return false;
+        var depth = 0;
+        var at = open;
+        for (; at < code.Length; at++)
+        {
+            var c = code[at];
+            if (c == '"' || c == '\'')
+            {
+                for (at++; at < code.Length && code[at] != c; at++) if (code[at] == '\\') at++;
+                continue;
+            }
+            if (c == '(') depth++;
+            else if (c == ')' && --depth == 0) break;
+        }
+        if (at >= code.Length) return false;
+        for (at++; at < code.Length && char.IsWhiteSpace(code[at]); at++) { }
+        if (at >= code.Length) return false;
+        return code[at] == '{' || code[at] == ';' || (code[at] == '=' && at + 1 < code.Length && code[at + 1] == '>');
     }
 
     static async Task ReleaseAfter(Stream input, int delayMs, CancellationToken token)
@@ -1260,6 +1318,9 @@ internal static class RepeatedEnvelopeKeyTests
             (List<string> Failing, List<string> Measured, int Launches, List<string> Labels, List<string> Stderrs, List<long> StderrChars) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
                 string[]? only = null, string? l4Label = null, string? policyText = null, bool trace = false)
             {
+                // P10-60: a plain local of Parity, read only by the Cli call in the loop below. No lambda or local function
+                // here uses it, so the compiler keeps it on the stack instead of hoisting it into a closure field (a captured
+                // environment would be a field of a nested display type, which the EnvironmentFields scan would find).
                 var environment = trace ? Traced() : null;
                 var failing = new List<string>();
                 var measured = new List<string>();
@@ -1387,7 +1448,7 @@ internal static class RepeatedEnvelopeKeyTests
             var plantedOk = plantedSinks.Count == 2 && plantedSinks[0].Ok && !plantedSinks[1].Ok && planted.Failing.Count == 1 && planted.Failing[0] == "L2"
                 && planted.Measured.Count == 1 && planted.Measured[0].StartsWith("FAIL L2 (sends 1) ", StringComparison.Ordinal)
                 && plantedErr.Contains("Tracing enabled", StringComparison.Ordinal) && plantedErr.Length <= StderrKeep
-                && plantedChars >= plantedErr.Length && (plantedChars > StderrKeep ? plantedErr.Length == StderrKeep : plantedErr.Length == plantedChars)
+                && KeptHeadOk(plantedErr, plantedChars, StderrKeep)
                 && planted.Measured[0].EndsWith(" stderr " + BoundedStderr(plantedErr, plantedChars), StringComparison.Ordinal)
                 && planted.Launches == 1;
             selfTest.Add((plantedOk ? "ok" : "FAIL") + " a send planted in L2 (failing " + string.Join(", ", planted.Failing) + "; " + string.Join(" ; ", planted.Measured.Select(entry => entry[..Math.Min(30, entry.Length)]))
@@ -1463,11 +1524,19 @@ internal static class RepeatedEnvelopeKeyTests
                 ("using static System.Diagnostics." + "Process;\nstatic void " + "Start(int x) { }", 0),
                 ("using static System.Diagnostics." + "Process;\nProcess? " + "Start(ProcessStartInfo i) => " + "Start(i);", 1),
                 ("using static System.Diagnostics." + "Process;\nIEnumerable<int> " + "Start(int n) { yield return n; } int[] " + "Start(long n) => []; var q = x ?? " + "Start(info);", 1),
+                // P10-60: a ternary with no space before ? is a call (the parameter list of a declaration is followed by a
+                // body, => or ;), and so is a Start call after ref or a LINQ query keyword; a nullable return type stays a
+                // declaration, with or without a space before ?.
+                ("using static System.Diagnostics." + "Process;\nvar p = ready? " + "Start(info) : null; var q = ready?" + "Start(info) : null;", 2),
+                ("using static System.Diagnostics." + "Process;\nint? " + "Start(int n) { return n; } int?" + "Start(long n) => null; int? " + "Start(short n);", 0),
+                ("using static System.Diagnostics." + "Process;\nref var p = ref " + "Start(info);", 1),
+                ("using static System.Diagnostics." + "Process;\nvar ps = from i in infos where " + "Start(i) != null orderby " + "Start(i).Id select " + "Start(i);", 3),
+                ("using static System.Diagnostics." + "Process;\nvar gs = from i in infos join j in infos on " + "Start(i).Id equals " + "Start(j).Id group " + "Start(i) by " + "Start(j).Id;", 4),
             };
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
             var formsOk = formsWrong.Count == 0;
-            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, also through a using alias of Process and a using static Process Start call, not ProcessStartInfo, comments or (P10-58) a declaration of a method named Start (a type, generic, array or nullable type before the name); not recognised: a namespace alias before Process in a constructor, a target-typed constructor assigned to an untyped or earlier-declared variable; over-counted: a bare Start call of another type's static method in a file with using static Process, and under-counted: a comparison a > Start call ("
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, also through a using alias of Process and a using static Process Start call, not ProcessStartInfo, comments or (P10-58) a declaration of a method named Start (a type, generic, array or nullable type before the name); not recognised: a namespace alias before Process in a constructor, a target-typed constructor assigned to an untyped or earlier-declared variable; over-counted: a bare Start call of another type's static method in a file with using static Process, and under-counted: a comparison a > Start call ending a statement; (P10-60) counted: a ternary Start call with no space before the question mark, a Start call after ref or a LINQ query keyword ("
                 + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
             // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
             // label (missing dll: no launch) that must red the same predicate.
@@ -1547,7 +1616,7 @@ internal static class RepeatedEnvelopeKeyTests
             var plantedFields = EnvironmentFields(typeof(PlantedEnvironmentHolder), null);
             var noCapturedEnvironment = environmentFields.Count == 0 && plantedFields.Count == 1 && plantedFields[0].StartsWith("PlantedEnvironmentHolder.Held ", StringComparison.Ordinal)
                 && PlantedEnvironmentHolder.Held.Count == 1;
-            selfTest.Add((noCapturedEnvironment ? "ok" : "FAIL") + " the CLI child environment is passed to Cli as an argument: no field of this file's types, closures included, holds an environment (found "
+            selfTest.Add((noCapturedEnvironment ? "ok" : "FAIL") + " the CLI child environment is passed to Cli as an argument: no field of this file's types, closures included, holds an environment (an allowlist of environment types: string-to-string maps, IDictionary, Hashtable, StringDictionary, ProcessStartInfo; found "
                 + (environmentFields.Count == 0 ? "none" : string.Join(", ", environmentFields)) + "; planted holder: " + string.Join(", ", plantedFields) + ")");
             // P10-58: the isolated copy's lifetime and key, on a cache of its own over two small source folders. A throw
             // planted after the copies are made still removes the cache's folder (a using declaration, as for the shared
@@ -1611,6 +1680,32 @@ internal static class RepeatedEnvelopeKeyTests
                 + " chars ending " + LastOf(keptCut) + " of " + charsCut.ToString(CultureInfo.InvariantCulture) + "; pair kept whole: " + keptWhole.Length.ToString(CultureInfo.InvariantCulture)
                 + " ending " + LastOf(keptWhole) + "; cut inside a read, keep 3: kept " + keptSmall.Length.ToString(CultureInfo.InvariantCulture) + " ending " + LastOf(keptSmall)
                 + " of " + charsSmall.ToString(CultureInfo.InvariantCulture) + ")");
+            // P10-60: BoundedStderr cuts at StderrBound by the same rule as ReadBounded: a cut between the halves of a
+            // surrogate pair drops the high half too (StderrBound - 1 chars kept); a pair kept whole before the cut stays;
+            // well-formed text (ASCII) reads as before. The planted-L2 check (KeptHeadOk) accepts keep - 1 kept chars when
+            // ReadBounded's cut fell on a pair (the dropped high half), and nothing shorter.
+            var boundCut = BoundedStderr(new string('e', StderrBound - 1) + SurrogatePair + "tail");
+            var boundWhole = BoundedStderr(new string('e', StderrBound - 2) + SurrogatePair + "tail");
+            var boundAscii = BoundedStderr(new string('e', 5000), 9000);
+            var boundPairOk = boundCut == new string('e', StderrBound - 1) + "...(" + (StderrBound + 5).ToString(CultureInfo.InvariantCulture) + " chars)"
+                && boundWhole == new string('e', StderrBound - 2) + SurrogatePair + "...(" + (StderrBound + 4).ToString(CultureInfo.InvariantCulture) + " chars)"
+                && boundAscii == new string('e', StderrBound) + "...(9000 chars)" && BoundedStderr(SurrogatePair) == SurrogatePair;
+            var keptHeadOk = KeptHeadOk(new string('t', StderrKeep), StderrKeep + 9L, StderrKeep) && KeptHeadOk(new string('t', StderrKeep - 1), StderrKeep + 9L, StderrKeep)
+                && !KeptHeadOk(new string('t', StderrKeep - 2), StderrKeep + 9L, StderrKeep) && !KeptHeadOk(new string('t', StderrKeep - 1) + "\ud83d", StderrKeep + 9L, StderrKeep)
+                && KeptHeadOk("short", 5, StderrKeep) && !KeptHeadOk("shor", 5, StderrKeep);
+            static string Tail(string text) => text.Length <= 24 ? text : "..." + text[^24..];
+            selfTest.Add((boundPairOk && keptHeadOk ? "ok" : "FAIL") + " the bounded stderr never splits a surrogate pair at " + StderrBound.ToString(CultureInfo.InvariantCulture)
+                + " (cut on a pair: " + Tail(boundCut) + " ending at " + LastOf(boundCut[..boundCut.IndexOf("...(", StringComparison.Ordinal)]) + "; pair kept whole: " + Tail(boundWhole)
+                + "; ASCII: " + Tail(boundAscii) + "), the planted-L2 kept-length check accepts keep - 1 after a pair cut and nothing shorter: " + keptHeadOk);
+            // P10-60: the shared isolated cache stays a using declaration (structural pin on this file's source: every
+            // declaration of that local is using var), self-tested on a planted plain declaration and a planted using one.
+            var isolatedPinned = UsingDeclared(ownSource, "isolated" + "Roots");
+            var plainPlanted = UsingDeclared("var " + "isolatedRoots = new IsolatedCliCache(\"x\");", "isolated" + "Roots");
+            var usingPlanted = UsingDeclared("using var " + "isolatedRoots = new IsolatedCliCache(\"x\");", "isolated" + "Roots");
+            var bothPlanted = UsingDeclared("using var " + "isolatedRoots = a; IsolatedCliCache " + "isolatedRoots = b;", "isolated" + "Roots");
+            var usingPinOk = isolatedPinned && !plainPlanted && usingPlanted && !bothPlanted;
+            selfTest.Add((usingPinOk ? "ok" : "FAIL") + " the shared isolated cache stays a using declaration (this file: " + isolatedPinned + "; planted plain declaration: " + plainPlanted
+                + ", planted using declaration: " + usingPlanted + ", using then plain: " + bothPlanted + ")");
             // P10-58: a killed child's stderr not read in time is the marker with no written char counted (the timeout
             // message then shows the marker alone, no char count); stderr read in time is returned as read.
             var notRead = KilledStderr(new TaskCompletionSource<(string Kept, long Chars)>().Task, 50);
@@ -1620,11 +1715,12 @@ internal static class RepeatedEnvelopeKeyTests
             selfTest.Add((markerOk ? "ok" : "FAIL") + " a killed child's unread stderr counts no written chars (not read: " + notRead.Text + " " + notRead.Chars.ToString(CultureInfo.InvariantCulture)
                 + " chars; read in time: " + readInTime.Text + " " + readInTime.Chars.ToString(CultureInfo.InvariantCulture) + " chars)");
             Check(missingOk && plantedOk && absentTimeoutOk && timeoutRun.Ok && oneLauncher && formsOk && l4Named && boundOk && failedOk && normalOk && malformedOk && noCapturedEnvironment && keepOk
-                    && lifetimeOk && cutOk && markerOk,
+                    && lifetimeOk && cutOk && markerOk && boundPairOk && keptHeadOk && usingPinOk,
                 "P10-48/P10-50/P10-52/P10-54/P10-56/P10-58 parity/Cli self-tests: a missing Release Bim.Cli.dll fails the precondition once and launches nothing; a planted send fails its parity case (L2 only launched, stderr listed); a missing timeout-child Bim.Mcp.dll is one named precondition failure; Cli kills a child at its timeout, its stdin release task ends with it and the message carries its stderr; one launcher (all start forms); the L4 case's own label names its policy-file dependence (a plain L4 label reds); stderr bounded and reported on a failed launch; release task cancelled after a normal exit; L4 isolated from a malformed policy file"
                 + "; P10-54: the planted and timeout runs carry the captured host trace text (COREHOST_TRACE), a target-typed Process constructor counted, the copy time listed"
                 + "; P10-56: stderr kept to StderrKeep chars with its full size stated, a using alias and a using static Start counted, one isolated copy reused with its planted policy file removed, the environment an argument of Cli"
-                + "; P10-58: the isolated copy removed in a finally (planted throw) and keyed by source dll, no lone high surrogate at the kept cut, a method declaration named Start not counted, an unread killed stderr counts no chars, no field or closure holds an environment (structural) | "
+                + "; P10-58: the isolated copy removed in a finally (planted throw) and keyed by source dll, no lone high surrogate at the kept cut, a method declaration named Start not counted, an unread killed stderr counts no chars, no field or closure holds an environment (structural)"
+                + "; P10-60: the bounded stderr keeps surrogate pairs whole, the planted-L2 kept length accepts a pair cut, a ternary, ref or LINQ Start call counted, the shared isolated cache a using declaration (structural) | "
                 + string.Join(" ; ", selfTest));
             // P10-48: the repository root comes from Program.cs FindRoot (root), not a second walk in this file.
             Check(!ownSource.Contains("AppContext." + "BaseDirectory", StringComparison.Ordinal),
