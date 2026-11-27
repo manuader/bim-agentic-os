@@ -1089,21 +1089,27 @@ internal static class DeletedCwdPathTests
     }
 
     // P10-57: the one reader of this file for its self-reading pins (RestoreWiring47, LockVerbsSelfTest51, WiringComments55
-    // and WiringComments57), line endings normalised to \n; null after a failed readability check.
+    // and WiringComments57), line endings normalised to \n; null after a failed readability check. P10-59: this CRLF
+    // normalisation is new to RestoreWiring47 and LockVerbsSelfTest51 (they read the raw text before P10-57); their mutant
+    // and planted strings hold no line break and RestoreWiringProblem47 collapses whitespace, so their results do not
+    // depend on the checkout's line endings.
     static string? SelfSource57(string root, Action<bool, string, string> Check, string label)
     {
         try { return File.ReadAllText(Path.Combine(root, "tests", "cli", "DeletedCwdPathTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal); }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException) { Check(false, label + ": tests/cli/DeletedCwdPathTests.cs is readable", error.Message); return null; }
     }
 
-    // P10-57: the body (from its opening brace through its closing one) of the 'static void <declaration>(' method in source
-    // (four-space member indentation), or "" when not found or not closed.
+    // P10-57: the body (from its opening brace through its closing one) of the 'static void <declaration>(' method in source,
+    // or "" when not found or not closed. P10-59: relaxed: any indentation (spaces or tabs), lowercase modifiers before
+    // static, the parameter list read as Parameters51 and the opening brace on the same or a later line (SelfBodySelfTest59).
+    // Stated assumptions kept: the method is static void, block-bodied (not =>), declared at the start of its line (no
+    // attribute on that line), and the first such declaration is taken.
     static string SelfBody57(string source, string declaration)
     {
-        var at = source.IndexOf("\n    static void " + declaration + "(", StringComparison.Ordinal);
-        var open = at < 0 ? -1 : source.IndexOf("\n    {", at, StringComparison.Ordinal);
-        var close = open < 0 ? -1 : BlockEnd45(source, open + 5);
-        return close < 0 ? "" : source[(open + 5)..(close + 1)];
+        var match = System.Text.RegularExpressions.Regex.Match(source, @"(?m)^[ \t]*(?:[a-z]+[ \t]+)*?static\s+void\s+" + System.Text.RegularExpressions.Regex.Escape(declaration)
+            + @"\s*\(" + Parameters51 + @"\s*\{", System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        var close = match.Success ? BlockEnd45(source, match.Index + match.Length - 1) : -1;
+        return close < 0 ? "" : source[(match.Index + match.Length - 1)..(close + 1)];
     }
 
     // P10-57: the self-reading pins share SelfSource57: each of their bodies calls it and none reads a file itself, and this
@@ -1288,8 +1294,9 @@ internal static class DeletedCwdPathTests
     // as many braces as dollars, the rest of the run text, so a run reaching twice the dollars is unclosed (-1); P10-53: a raw
     // content closing brace run must be shorter than the dollars (CS9007); P10-55: a lone closing brace (not }}) in non-raw
     // interpolated content is unclosed (CS8086). P10-57: a non-raw hole's format clause ends at its first closing brace (as
-    // C# reads it, measured), so the braces right after it are content under the P10-55 rule.
-    static int CodeEnd47(string source, int start, bool hole = false)
+    // C# reads it, measured), so the braces right after it are content under the P10-55 rule. P10-59: the format clause is
+    // read by FormatEnd59 with the literal's kind (verbatim, raw), so a quote or backslash there follows C#.
+    static int CodeEnd47(string source, int start, bool hole = false, bool verbatim = false, bool raw = false)
     {
         var depth = 0;
         var parens = 0;
@@ -1327,9 +1334,31 @@ internal static class DeletedCwdPathTests
             // P10-51: parentheses and brackets are counted only inside holes, where they guard the format clause ':'.
             else if (hole && (c == '(' || c == '[')) parens++;
             else if (hole && (c == ')' || c == ']') && parens > 0) parens--;
-            else if (hole && c == ':' && depth == 0 && parens == 0) return source.IndexOf('}', i + 1);
+            else if (hole && c == ':' && depth == 0 && parens == 0) return FormatEnd59(source, i + 1, verbatim, raw);
             else if (c == '{') depth++;
             else if (c == '}' && depth-- == 0) return i;
+        }
+        return -1;
+    }
+
+    // P10-59: index of the closing brace ending the format clause that starts at source[start], or -1 (C#, measured by the
+    // ScopingSelfTest59 probes): the clause ends at its first closing brace. In a regular (non-verbatim, non-raw) literal a
+    // backslash escapes the next character (\" is a quote in the format); in a verbatim one "" is a quote; in either a lone
+    // quote ends the literal inside the hole, so the hole is unclosed (-1). Stated limit: a raw clause is read to its first
+    // closing brace without a quote check (a raw literal's quote run is not compared with its opening one there).
+    static int FormatEnd59(string source, int start, bool verbatim, bool raw)
+    {
+        if (raw) return source.IndexOf('}', start);
+        for (var i = start; i < source.Length; i++)
+        {
+            var c = source[i];
+            if (c == '\\' && !verbatim) i++;
+            else if (c == '"')
+            {
+                if (!verbatim || i + 1 >= source.Length || source[i + 1] != '"') return -1;
+                i++;
+            }
+            else if (c == '}') return i;
         }
         return -1;
     }
@@ -1355,7 +1384,7 @@ internal static class DeletedCwdPathTests
                     if (run < dollars) { i += run - 1; continue; }
                     // P10-51: of a brace run at a hole, n (the dollars) open or close it and the rest, fewer than n, are text.
                     if (run >= 2 * dollars) return -1;
-                    var close = CodeEnd47(source, i + run, hole: true);
+                    var close = CodeEnd47(source, i + run, hole: true, raw: true);
                     if (close < 0 || Run(close, '}') < dollars || Run(close, '}') >= 2 * dollars) return -1;
                     i = close + dollars - 1;
                 }
@@ -1382,7 +1411,7 @@ internal static class DeletedCwdPathTests
             if (dollars > 0 && c == '{')
             {
                 if (i + 1 < source.Length && source[i + 1] == '{') { i++; continue; }
-                var close = CodeEnd47(source, i + 1, hole: true);
+                var close = CodeEnd47(source, i + 1, hole: true, verbatim: verbatim);
                 if (close < 0) return -1;
                 i = close;
             }
@@ -1580,8 +1609,8 @@ internal static class DeletedCwdPathTests
         Check(p59.Contains("raw", StringComparison.Ordinal) && p59.Contains("format clause", StringComparison.Ordinal) && p59.Contains("compiled probe", StringComparison.Ordinal)
             && p59.Contains("backslash", StringComparison.Ordinal) && p59.Contains("lone quote", StringComparison.Ordinal) && p59.Contains("`SelfBody57`", StringComparison.Ordinal)
             && p59.Contains("`static void`", StringComparison.Ordinal) && p59.Contains("CRLF", StringComparison.Ordinal) && p59.Contains("`RestoreWiring47`", StringComparison.Ordinal)
-            && p59.Contains("`LockVerbsSelfTest51`", StringComparison.Ordinal),
-            "P10-59 contract: the P10-59 paragraph states the raw format clause probe, the non-raw format clause quote and backslash rule, the SelfBody57 assumptions and the CRLF normalisation",
+            && p59.Contains("`LockVerbsSelfTest51`", StringComparison.Ordinal) && p59.Contains("red 45978008183", StringComparison.Ordinal),
+            "P10-59 contract: the P10-59 paragraph states the raw format clause probe, the non-raw format clause quote and backslash rule, the SelfBody57 assumptions and the CRLF normalisation, and cites red 45978008183",
             section.Length == 0 ? "section not found" : p59.Length == 0 ? "P10-59 paragraph not found" : p59);
     }
 
