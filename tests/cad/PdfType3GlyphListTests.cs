@@ -787,7 +787,10 @@ internal static class PdfType3GlyphListTests
                 .Select(f => (f.Name, Count: StripperDefinitions(CodePins.StripCommentsAndLiterals(f.Source))))
                 .Where(f => f.Count > 0)
                 .Select(f => f.Count == 1 ? f.Name : f.Name + " x" + I(f.Count)).Order(StringComparer.Ordinal));
-            var scanned = Directory.GetFiles(cadTestsDir, "*.cs").Select(f => (Name: Path.GetFileName(f), Source: File.ReadAllText(f))).OrderBy(f => f.Name, StringComparer.Ordinal).ToArray();
+            // P6-57: StripperHomes orders its own output, so the ordinal sort of the scan is redundant for the aggregate; it
+            // is kept so the planted loop below runs, and lists what it missed, in one order on every OS (the order of
+            // Directory.GetFiles is unspecified).
+            var scanned =Directory.GetFiles(cadTestsDir, "*.cs").Select(f => (Name: Path.GetFileName(f), Source: File.ReadAllText(f))).OrderBy(f => f.Name, StringComparer.Ordinal).ToArray();
             var stripperHomes = StripperHomes(scanned);
             var forwarder = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n");
             var forwarderSplit = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source)\n        => CodePins.StripCommentsAndLiterals(source);\n");
@@ -803,18 +806,19 @@ internal static class PdfType3GlyphListTests
                 "defined in [" + stripperHomes + "], MinsertEzdxfTests calls CodePins x" + I(Occurrences(minsertCode, "CodePins.StripCommentsAndLiterals(")) + ", typeof(PdfType3GlyphListTests) x" + I(Occurrences(minsertCode, "typeof(PdfType3GlyphListTests)")));
             // P6-53 planted second stripper: a forwarder appended (in memory, no file written) to a scanned tests/cad file
             // makes that file a second home, so the stripperHomes aggregate the p6-49 check compares with CodePins.cs is red.
-            // P6-55: the planted target is the first scanned file other than CodePins.cs (ordinal name order), not a named one.
+            // P6-57: the forwarder is planted into every scanned file other than CodePins.cs, one at a time, and each result
+            // is compared with "CodePins.cs" plus that file's own name, so a scanned file the aggregate skipped is red (the
+            // P6-55 single target, the first other file, was compared with itself and could not fail); the names include
+            // this file, a literal known independently of the scan.
             const string plantedForwarder = "\ninternal static class PlantedStripper\n{\n    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n}\n";
-            var firstOther = scanned.Select(f => f.Name).FirstOrDefault(n => n != "CodePins.cs") ?? "";
-            var plantedTarget = firstOther;
-            var plantedHomes = StripperHomes(scanned.Select(f => f.Name == plantedTarget ? (f.Name, f.Source + plantedForwarder) : (f.Name, f.Source)));
-            var plantedWant = string.Join(",", new[] { "CodePins.cs", plantedTarget }.Order(StringComparer.Ordinal));
-            C(firstOther.Length > 0 && plantedTarget == firstOther,
-                "p6-55 planted target: the planted-stripper self-test plants into the first scanned tests/cad file other than CodePins.cs (ordinal name order)",
-                "target " + plantedTarget + ", first other " + firstOther);
-            C(stripperHomes == "CodePins.cs" && plantedHomes == plantedWant,
-                "p6-53 one stripper self-test: a second StripCommentsAndLiterals definition planted in a scanned file (the first other than CodePins.cs, in memory; P6-55) turns the stripperHomes aggregate red",
-                "real [" + stripperHomes + "] planted in " + plantedTarget + " [" + plantedHomes + "]");
+            var others = scanned.Select(f => f.Name).Where(n => n != "CodePins.cs").ToArray();
+            var plantMisses = others
+                .Select(target => (target, got: StripperHomes(scanned.Select(f => f.Name == target ? (f.Name, f.Source + plantedForwarder) : (f.Name, f.Source)))))
+                .Where(p => p.got != string.Join(",", new[] { "CodePins.cs", p.target }.Order(StringComparer.Ordinal)))
+                .Select(p => p.target + " gave [" + p.got + "]").ToArray();
+            C(stripperHomes == "CodePins.cs" && others.Length >= 2 && others.Contains("PdfType3GlyphListTests.cs") && plantMisses.Length == 0,
+                "p6-53 one stripper self-test: a second StripCommentsAndLiterals definition planted in each scanned tests/cad file other than CodePins.cs (one at a time, in memory; P6-57) turns the stripperHomes aggregate red with that file named",
+                "real [" + stripperHomes + "], " + I(others.Length) + " other files (" + string.Join(",", others) + "), missed: " + (plantMisses.Length == 0 ? "none" : string.Join("; ", plantMisses)));
             // P6-55 per-file count: a second definition planted inside CodePins.cs itself (in memory) lists it as
             // "CodePins.cs x2", so the aggregate is red; two definitions in one snippet count 2, a call or comment 0.
             const string plantedInPins = "\ninternal static class PlantedPinsStripper\n{\n    internal static string StripCommentsAndLiterals(string source)\n    {\n        return source;\n    }\n}\n";
@@ -825,6 +829,34 @@ internal static class PdfType3GlyphListTests
             C(StripperDefinitions(forwarder + blockBodied) == 2 && StripperDefinitions(forwarder) == 1 && StripperDefinitions(callOnly) == 0,
                 "p6-55 per-file stripper count self-test: a forwarder and a block-bodied definition in one source count 2, one forwarder 1, a call or a commented definition 0",
                 "both " + I(StripperDefinitions(forwarder + blockBodied)) + " forwarder " + I(StripperDefinitions(forwarder)) + " call " + I(StripperDefinitions(callOnly)));
+            // P6-57 'name xN' with two multi-definition files: in the real scan, CodePins.cs with a second definition and
+            // this file with two give "CodePins.cs x2,PdfType3GlyphListTests.cs x2"; on synthetic files, two and three
+            // definitions give "A.cs x2,B.cs x3" (entries in ordinal order), one the bare name, none no entry.
+            var twoFiles = StripperHomes(scanned.Select(f => f.Name == "CodePins.cs" ? (f.Name, f.Source + plantedInPins)
+                : f.Name == "PdfType3GlyphListTests.cs" ? (f.Name, f.Source + plantedForwarder + plantedForwarder) : (f.Name, f.Source)));
+            var synthetic = StripperHomes(new[] { ("B.cs", plantedForwarder + plantedInPins + plantedForwarder), ("C.cs", "class C { }\n"), ("A.cs", plantedInPins + plantedForwarder), ("D.cs", plantedForwarder) });
+            C(twoFiles == "CodePins.cs x2,PdfType3GlyphListTests.cs x2" && synthetic == "A.cs x2,B.cs x3,D.cs",
+                "p6-57 per-file stripper count self-test: two files with two or more StripCommentsAndLiterals definitions are both listed as 'name xN' (ordinal order)",
+                "real [" + twoFiles + "] synthetic [" + synthetic + "]");
+            // P6-57 definition forms: a generic definition (with or without a where clause), a string? return, a second
+            // parameter and a non-static (local) function each count 1. Not counted (stated limits): a declaration without
+            // a body (delegate, abstract, partial), a return type written String or System.String or other than string,
+            // and a parameter list holding parentheses (a default value such as a call).
+            foreach (var (form, snippet, want) in new[]
+            {
+                ("generic", "    static string StripCommentsAndLiterals<T>(string source) => source;\n", 1),
+                ("generic with a where clause", "    static string StripCommentsAndLiterals<T>(string source) where T : class\n    {\n        return source;\n    }\n", 1),
+                ("string? return", "    internal static string? StripCommentsAndLiterals(string source) => source;\n", 1),
+                ("second parameter", "    internal static string StripCommentsAndLiterals(string source, bool keepLiterals)\n    {\n        return source;\n    }\n", 1),
+                ("non-static local function", "        string StripCommentsAndLiterals(string source) => source;\n", 1),
+                ("string? generic with two parameters", "    private static string? StripCommentsAndLiterals<TOptions>(string source, TOptions options) where TOptions : new() => source;\n", 1),
+                ("delegate declaration (no body)", "    internal delegate string StripCommentsAndLiterals(string source);\n", 0),
+                ("call assigned to a string", "        string code = StripCommentsAndLiterals(source);\n", 0),
+            })
+            {
+                var got = StripperDefinitions(CodePins.StripCommentsAndLiterals(snippet));
+                C(got == want, "p6-57 stripper definition forms self-test: a " + form + " counts " + I(want), "got " + I(got));
+            }
             // P6-53 CodePins direct self-tests on squeezed snippets. Assignments counts = and the compound operators (longest
             // first, so >>= and >>>= are read whole) to an identifier at its boundaries, not ==, !=, <=, >= or =>; ++ and --
             // are not counted (stated limit: squeezed, x - -1 reads as x--1, so they cannot be told apart from a subtraction).
@@ -853,42 +885,60 @@ internal static class PdfType3GlyphListTests
             // P6-55: the comment is found from the one signature occurrence that is code (it survives stripping), not from
             // LastIndexOf of the signature text, and is the text after the previous blank line that strips to whitespace;
             // null when the signature is not code exactly once or the text above it is not comment only.
-            static string? CommentAbove(string source, string signature)
+            // P6-57: why names the branch taken: "code xN" (raw occurrences that are code), "stripped xN" (occurrences in
+            // the stripped source; it differs when a block comment joins the signature, as in static/**/string?, which
+            // is code but not raw text), "code above" or "comment". A whitespace-only line counts as blank, and attribute
+            // lines (each a [...] on its own line) between the comment and the signature are skipped. Stated limits: a
+            // comment split by a blank line gives only the part below it, a block comment holding a blank line gives
+            // "code above", and an attribute on the signature line itself is code above.
+            static string? CommentAbove(string source, string signature, out string why)
             {
                 var code = new List<int>();
                 for (var at = source.IndexOf(signature, StringComparison.Ordinal); at >= 0; at = source.IndexOf(signature, at + 1, StringComparison.Ordinal))
                 {
                     if (CodePins.StripCommentsAndLiterals(source[..(at + signature.Length)]).EndsWith(signature, StringComparison.Ordinal)) code.Add(at);
                 }
-                if (code.Count != 1 || Occurrences(CodePins.StripCommentsAndLiterals(source), signature) != 1) return null;
+                var stripped = Occurrences(CodePins.StripCommentsAndLiterals(source), signature);
+                if (code.Count != 1) { why = "code x" + I(code.Count); return null; }
+                if (stripped != 1) { why = "stripped x" + I(stripped); return null; }
                 var blank = source.LastIndexOf("\n\n", code[0], StringComparison.Ordinal);
                 var comment = source[(blank < 0 ? 0 : blank + 2)..code[0]];
-                return CodePins.StripCommentsAndLiterals(comment).Trim().Length == 0 ? comment : null;
+                if (CodePins.StripCommentsAndLiterals(comment).Trim().Length != 0) { why = "code above"; return null; }
+                why = "comment";
+                return comment;
             }
             const string guardSignature = "private static string? SwallowGuard(";
             var selfSource = File.ReadAllText(Path.Combine(cadTestsDir, "PdfType3GlyphListTests.cs")).Replace("\r\n", "\n", StringComparison.Ordinal);
-            var guardComment = CommentAbove(selfSource, guardSignature);
+            var guardComment = CommentAbove(selfSource, guardSignature, out var guardWhy);
             C(entryLabel.Contains("zero-count", StringComparison.Ordinal) && entryLabel.Contains("substring", StringComparison.Ordinal),
                 "p6-53 wording: the p6-41 entry label states that zero-count pins are counted as substrings", entryLabel);
             C(guardComment is not null && guardComment.Contains("CodePins.StripCommentsAndLiterals", StringComparison.Ordinal),
-                "p6-53 wording: the comment above SwallowGuard names CodePins.StripCommentsAndLiterals", guardComment?.Trim() ?? "signature not code exactly once, or code above it");
+                "p6-53 wording: the comment above SwallowGuard names CodePins.StripCommentsAndLiterals", guardComment?.Trim() ?? guardWhy);
             // P6-55 anchored self-tests: the signature text repeated in a later string literal (where LastIndexOf lands) or
             // in a comment still finds the comment above the code definition; a signature only in a comment or a literal,
-            // or one with code between it and the blank line above, gives null.
+            // or one with code between it and the blank line above, gives null. P6-57: each case also pins the branch
+            // (why), and the whitespace-only line, attribute, blank-line split and joined-signature cases are added.
             const string guardDefinition = "    private static string? SwallowGuard(string s) => s;\n";
             const string literalLater = "\n    private static string Later() => \"private static string? SwallowGuard(\";\n}\n";
-            foreach (var (what, sample, want) in new (string, string, string?)[]
+            foreach (var (what, sample, want, wantWhy) in new (string, string, string?, string)[]
             {
-                ("repeated in a later string literal", "class S\n{\n\n    // the guard comment\n" + guardDefinition + literalLater, "    // the guard comment\n    "),
-                ("repeated in a later comment", "class S\n{\n\n    /* the guard\n       comment */\n" + guardDefinition + "\n    // see private static string? SwallowGuard( above\n}\n", "    /* the guard\n       comment */\n    "),
-                ("only in a comment", "class S\n{\n    // private static string? SwallowGuard(string s) => s;\n}\n", null),
-                ("only in a string literal", "class S\n{" + literalLater, null),
-                ("with code above it", "class S\n{\n    // a comment\n    private int x;\n" + guardDefinition + "}\n", null),
+                ("repeated in a later string literal", "class S\n{\n\n    // the guard comment\n" + guardDefinition + literalLater, "    // the guard comment\n    ", "comment"),
+                ("repeated in a later comment", "class S\n{\n\n    /* the guard\n       comment */\n" + guardDefinition + "\n    // see private static string? SwallowGuard( above\n}\n", "    /* the guard\n       comment */\n    ", "comment"),
+                ("only in a comment", "class S\n{\n    // private static string? SwallowGuard(string s) => s;\n}\n", null, "code x0"),
+                ("only in a string literal", "class S\n{" + literalLater, null, "code x0"),
+                ("with code above it", "class S\n{\n    // a comment\n    private int x;\n" + guardDefinition + "}\n", null, "code above"),
+                ("defined twice", "class S\n{\n\n    // the guard comment\n" + guardDefinition + guardDefinition + "}\n", null, "code x2"),
+                ("also joined by a block comment (code once raw, twice stripped)", "class S\n{\n\n    // the guard comment\n    private static/* joined */string? SwallowGuard(int s) => s;\n" + guardDefinition + "}\n", null, "stripped x2"),
+                ("after a whitespace-only line", "class S\n{\n    private int x;\n    \n    // the guard comment\n" + guardDefinition + "}\n", "    // the guard comment\n    ", "comment"),
+                ("under attribute lines", "class S\n{\n\n    // the guard comment\n    [Obsolete]\n    [MethodImpl(MethodImplOptions.NoInlining)] // why\n" + guardDefinition + "}\n", "    // the guard comment\n    ", "comment"),
+                ("with an attribute on the signature line (stated: code above)", "class S\n{\n\n    // the guard comment\n    [Obsolete] private static string? SwallowGuard(string s) => s;\n}\n", null, "code above"),
+                ("under a comment split by a blank line (stated: the part below it)", "class S\n{\n\n    // part one\n\n    // part two\n" + guardDefinition + "}\n", "    // part two\n    ", "comment"),
+                ("under a block comment holding a blank line (stated: code above)", "class S\n{\n\n    /* part one\n\n       part two */\n" + guardDefinition + "}\n", null, "code above"),
             })
             {
-                var got = CommentAbove(sample, guardSignature);
-                C(got == want, "p6-55 anchored wording self-test: the signature " + what + " gives " + (want is null ? "no comment" : "the comment above the code definition"),
-                    got is null ? "null" : "'" + got.Replace("\n", "\\n", StringComparison.Ordinal) + "'");
+                var got = CommentAbove(sample, guardSignature, out var gotWhy);
+                C(got == want && gotWhy == wantWhy, "p6-55 anchored wording self-test: the signature " + what + " gives " + (want is null ? "no comment (" + wantWhy + ")" : "the comment above the code definition"),
+                    (got is null ? "null" : "'" + got.Replace("\n", "\\n", StringComparison.Ordinal) + "'") + " (" + gotWhy + ")");
             }
             C(!selfSource.Contains("\n\n\n", StringComparison.Ordinal),
                 "p6-53 wording: PdfType3GlyphListTests.cs has no doubled blank line", "at " + I(selfSource.IndexOf("\n\n\n", StringComparison.Ordinal)));
