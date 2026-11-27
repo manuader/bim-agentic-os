@@ -1540,44 +1540,70 @@ internal static class SkillListTests
         Check(killed.Copy.IsCompleted && rawExpected.AsSpan().StartsWith(killed.Out) && (!exitedFirst || killed.Out.AsSpan().SequenceEqual(rawExpected)),
             "P5-44: after RawChild returns from the zero-timeout case its stdout copy has finished and the buffer read after that wait is a prefix of the pinned line",
             killedDetail);
+        // P5-46: the zero-timeout case's measured outcome is the name of a passing check (killed at the zero wait or exited
+        // first), so a green run's log shows which path ran on each OS.
+        Check(exitedFirst ? killed.Exit == 1 : killed.Exit == -1, "P5-46: the zero-timeout case's " + outcome + " (exit " + killed.Exit.ToString(CultureInfo.InvariantCulture) + ")",
+            killedDetail);
         // P5-44: Drain's early-return mutant self-test over an in-process anonymous pipe, the same fixture for both: a
-        // writer sends a first chunk, a second one 300 ms later and closes; the copy runs on the pool into a buffer that
-        // is disposed right after the drain returns (as RawChild's using does). Drain returns both chunks and the copy
+        // writer sends a first chunk, then a second one and closes; the copy runs on the pool into a buffer that is
+        // disposed right after the drain returns (as RawChild's using does). Drain returns both chunks and the copy
         // finished first; the mutant returns before the second chunk and the copy then faults on the disposed buffer.
+        // P5-46: the second chunk waits on a gate (a SemaphoreSlim) instead of P5-44's 300 ms sleep. The drain runs on its
+        // own thread and the gate opens once that thread has returned (its buffer is then disposed before the second
+        // chunk is sent) or is blocked in a wait (WaitSleepJoin: Drain waits for the copy, which needs the second chunk),
+        // so neither outcome rests on a timing margin; Opened names which state opened it, pinned below (blocked for
+        // Drain, returned for the mutant). The watch loop's 30 s cap only bounds a hang.
         var pipeFirst = Encoding.ASCII.GetBytes("P5-44 first chunk;");
         var pipeSecond = Encoding.ASCII.GetBytes("P5-44 second chunk.");
-        (byte[] Out, bool Copied, bool Faulted) PipeProbe(Func<Task, MemoryStream, int, (byte[] Out, bool Copied)> drain)
+        (byte[] Out, bool Copied, bool Faulted, string Opened) PipeProbe(Func<Task, MemoryStream, int, (byte[] Out, bool Copied)> drain)
         {
             using var server = new System.IO.Pipes.AnonymousPipeServerStream(System.IO.Pipes.PipeDirection.Out);
             using var client = new System.IO.Pipes.AnonymousPipeClientStream(System.IO.Pipes.PipeDirection.In, server.ClientSafePipeHandle);
+            using var gate = new SemaphoreSlim(0, 1);
             var sink = new MemoryStream();
             var writer = Task.Run(() =>
             {
                 server.Write(pipeFirst);
                 server.Flush();
-                Thread.Sleep(300);
+                gate.Wait(30000);
                 server.Write(pipeSecond);
                 server.Dispose();
             });
             var copy = Task.Run(() => client.CopyTo(sink));
-            var drained = drain(copy, sink, 30000);
+            (byte[] Out, bool Copied) drained = (Array.Empty<byte>(), false);
+            var drainer = new Thread(() => drained = drain(copy, sink, 30000)) { IsBackground = true };
+            drainer.Start();
+            var opened = "<not opened: 30 s cap>";
+            var watch = Stopwatch.StartNew();
+            while (watch.ElapsedMilliseconds < 30000)
+            {
+                if (!drainer.IsAlive) { sink.Dispose(); opened = "returned"; break; }
+                if ((drainer.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0) { opened = "blocked"; break; }
+                Thread.Yield();
+            }
+            gate.Release();
+            drainer.Join(30000);
             sink.Dispose();
             var faulted = false;
             try { copy.Wait(30000); } catch (AggregateException) { faulted = true; }
             try { writer.Wait(30000); } catch (AggregateException) { }
-            return (drained.Out, drained.Copied, faulted);
+            return (drained.Out, drained.Copied, faulted, opened);
         }
         var whole = pipeFirst.Concat(pipeSecond).ToArray();
         var drainedReal = PipeProbe(Drain);
         var drainedEarly = PipeProbe(EarlyDrain);
-        string Shown((byte[] Out, bool Copied, bool Faulted) probe) =>
-            Encoding.ASCII.GetString(probe.Out) + " | copied " + probe.Copied.ToString(CultureInfo.InvariantCulture) + " faulted " + probe.Faulted.ToString(CultureInfo.InvariantCulture);
+        string Shown((byte[] Out, bool Copied, bool Faulted, string Opened) probe) =>
+            Encoding.ASCII.GetString(probe.Out) + " | copied " + probe.Copied.ToString(CultureInfo.InvariantCulture) + " faulted " + probe.Faulted.ToString(CultureInfo.InvariantCulture)
+            + " gate " + probe.Opened;
         Check(drainedReal.Out.AsSpan().SequenceEqual(whole) && drainedReal.Copied && !drainedReal.Faulted,
             "P5-44: Drain returns the whole copied buffer after the copy's wait (pipe self-test: both chunks, the copy finished before the buffer is disposed)",
             Shown(drainedReal));
         Check(drainedEarly.Out.Length < whole.Length && whole.AsSpan().StartsWith(drainedEarly.Out) && !drainedEarly.Copied && drainedEarly.Faulted,
             "P5-44: an early-return Drain mutant (no wait before the buffer is read and disposed) misses the second chunk and its copy faults on the disposed buffer",
             Shown(drainedEarly));
+        Check(drainedReal.Opened == "blocked" && drainedEarly.Opened == "returned",
+            "P5-46: the PipeProbe gate opened on the drain's state, not a sleep: blocked in its wait for Drain, returned for the early-return mutant",
+            "Drain: " + Shown(drainedReal) + " | mutant: " + Shown(drainedEarly));
 
         Check(AppContext.BaseDirectory == originalBase, "AppContext.BaseDirectory is restored after the in-process runs", AppContext.BaseDirectory + " != " + originalBase);
     }
