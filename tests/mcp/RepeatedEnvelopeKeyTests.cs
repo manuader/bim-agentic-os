@@ -808,7 +808,7 @@ internal static class RepeatedEnvelopeKeyTests
         }
         // P10-58: a cut between the two halves of a surrogate pair (inside one read or between reads) drops the high half
         // too, so the kept head never ends on a lone high surrogate (it is then keep - 1 chars); every char is still counted.
-        // P10-58 red: no cut adjustment yet.
+        if (chars > kept.Length && kept.Length > 0 && char.IsHighSurrogate(kept[kept.Length - 1])) kept.Length--;
         return (kept.ToString(), chars);
     }
 
@@ -818,7 +818,7 @@ internal static class RepeatedEnvelopeKeyTests
     internal static (string Text, long Chars) KilledStderr(Task<(string Kept, long Chars)> errors, int waitMs)
     {
         try { if (errors.Wait(waitMs)) return errors.Result; } catch (AggregateException) { }
-        return (StderrNotRead, StderrNotRead.Length);
+        return (StderrNotRead, 0);
     }
 
     // P10-58: the temporary repository roots the L4 parity case runs from (P10-52: a copy of the Release CLI folder under
@@ -845,7 +845,7 @@ internal static class RepeatedEnvelopeKeyTests
             var key = Path.GetFullPath(dll);
             if (copies.TryGetValue(key, out var known)) return (known, true);
             var clock = System.Diagnostics.Stopwatch.StartNew();
-            var root = Path.Combine(Work, "repo");
+            var root = Path.Combine(Work, "copy-" + copies.Count.ToString(CultureInfo.InvariantCulture), "repo");
             var folder = Path.Combine(root, "cli");
             var source = Path.GetDirectoryName(key)!;
             foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
@@ -862,7 +862,7 @@ internal static class RepeatedEnvelopeKeyTests
 
         public void Dispose()
         {
-            // P10-58 red: removal still outside, after the malformed run.
+            try { if (Directory.Exists(Work)) Directory.Delete(Work, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
         }
     }
 
@@ -925,7 +925,7 @@ internal static class RepeatedEnvelopeKeyTests
                 + System.Text.RegularExpressions.Regex.Matches(code, @"\bnew\s+" + System.Text.RegularExpressions.Regex.Escape(name) + @"\s*[({]").Count
                 + System.Text.RegularExpressions.Regex.Matches(code, word + @"\s*\??\s+[A-Za-z_@][A-Za-z0-9_]*\s*=\s*new\s*[({]").Count;
         }
-        if (UsingStaticProcess.IsMatch(code)) count += BareStart.Matches(code).Count;
+        if (UsingStaticProcess.IsMatch(code)) count += BareStart.Matches(code).Count(found => !StartDeclared(code, found.Index));
         return count;
     }
 
@@ -1209,7 +1209,7 @@ internal static class RepeatedEnvelopeKeyTests
             // (ReadBounded, StderrKeep) and its full size stated.
             // P10-58: a new map at each use (Traced()), so no local, field or closure holds the environment (structural
             // check below: EnvironmentFields over this file's types, compiler closures included).
-            var traced = new Dictionary<string, string?> { ["COREHOST_TRACE"] = "1", ["COREHOST_TRACEFILE"] = null };
+            static Dictionary<string, string?> Traced() => new(StringComparer.Ordinal) { ["COREHOST_TRACE"] = "1", ["COREHOST_TRACEFILE"] = null };
             (string Stdout, int Exit, string Stderr, TaskStatus Release, long StderrChars) Cli(string dll, IReadOnlyDictionary<string, string?>? environment, int timeoutMs, int releaseStdinMs, params string[] arguments)
             {
                 launches++;
@@ -1260,7 +1260,7 @@ internal static class RepeatedEnvelopeKeyTests
             (List<string> Failing, List<string> Measured, int Launches, List<string> Labels, List<string> Stderrs, List<long> StderrChars) Parity(string dll, Func<string, string> handle, Action<bool, string> sink,
                 string[]? only = null, string? l4Label = null, string? policyText = null, bool trace = false)
             {
-                var environment = trace ? traced : null;
+                var environment = trace ? Traced() : null;
                 var failing = new List<string>();
                 var measured = new List<string>();
                 var stderrs = new List<string>();
@@ -1403,7 +1403,7 @@ internal static class RepeatedEnvelopeKeyTests
                 if (!exists) return (false, true, "not run: no " + dll);
                 var clock = System.Diagnostics.Stopwatch.StartNew();
                 string timeout;
-                try { var (stdout, exit, _, _, _) = Cli(dll, traced, 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
+                try { var (stdout, exit, _, _, _) = Cli(dll, Traced(), 3000, 30000); timeout = "returned exit " + exit.ToString(CultureInfo.InvariantCulture) + " stdout " + stdout; }
                 catch (TimeoutException error) { timeout = error.Message; }
                 var waited = clock.ElapsedMilliseconds;
                 // P10-52: the timeout message ends with the killed child's stderr (bounded). P10-54: the text itself: the child
@@ -1467,7 +1467,7 @@ internal static class RepeatedEnvelopeKeyTests
             var formsWrong = startForms.Where(form => ProcessStarts(form.Snippet) != form.Expected)
                 .Select(form => form.Snippet + " => " + ProcessStarts(form.Snippet).ToString(CultureInfo.InvariantCulture) + " (expected " + form.Expected.ToString(CultureInfo.InvariantCulture) + ")").ToList();
             var formsOk = formsWrong.Count == 0;
-            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, also through a using alias of Process and a using static Process Start call, not ProcessStartInfo, comments or (P10-58) a declaration of a method named Start (a type, generic, array or nullable type before the name); not recognised: a namespace alias before Process in a constructor, a target-typed constructor assigned to an untyped or earlier-declared variable; over-counted: a bare Start call of another type's static method in a file with using static Process; under-counted: a comparison a > Start call ("
+            selfTest.Add((formsOk ? "ok" : "FAIL") + " the start count recognises both start forms (the Start call and the constructor, also target-typed into a declared Process variable) with and without the namespace, also through a using alias of Process and a using static Process Start call, not ProcessStartInfo, comments or (P10-58) a declaration of a method named Start (a type, generic, array or nullable type before the name); not recognised: a namespace alias before Process in a constructor, a target-typed constructor assigned to an untyped or earlier-declared variable; over-counted: a bare Start call of another type's static method in a file with using static Process, and under-counted: a comparison a > Start call ("
                 + startForms.Length.ToString(CultureInfo.InvariantCulture) + " snippets; wrong: " + string.Join(" ; ", formsWrong) + ")");
             // P10-52: the L4 label the parity case actually uses (from the case table), and a mutant table with a plain L4
             // label (missing dll: no launch) that must red the same predicate.
@@ -1527,7 +1527,6 @@ internal static class RepeatedEnvelopeKeyTests
             // P10-56: one copy for both runs, and the planted policy file removed after the malformed run.
             var policyRemoved = isolatedRoots.Made.All(copy => !File.Exists(PolicyOf(copy)));
             var oneCopy = isolatedRoots.Copies == 1;
-            try { Directory.Delete(isolatedRoots.Work, true); } catch (IOException) { } catch (UnauthorizedAccessException) { }
             malformedOk = malformedOk && policyRemoved && oneCopy;
             selfTest.Add((malformedOk ? "ok" : "FAIL") + " a malformed .bim/revit-enabled-roots.txt in L4's temporary root answers allowlist_invalid there, the copy time listed in the entry, the full run's copy reused (copies "
                 + isolatedRoots.Copies.ToString(CultureInfo.InvariantCulture) + ", policy file removed after the run: " + policyRemoved + ") (" + string.Join(" ; ", malformed.Measured.Select(entry => BoundedStderr(entry) + " ..." + entry[Math.Max(0, entry.Length - 120)..])) + ")");
