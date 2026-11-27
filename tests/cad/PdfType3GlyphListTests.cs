@@ -781,16 +781,19 @@ internal static class PdfType3GlyphListTests
             var cadTestsDir = Path.Combine(root, "tests", "cad");
             // P6-53: the aggregate is one function over (file name, source) pairs, so the planted self-test below runs it too.
             // P6-55: definitions are counted per file, so a file with two is listed as "name xN" (a second definition
-            // inside CodePins.cs is red too); the scanned files are in ordinal name order.
-            static int StripperDefinitions(string code) => System.Text.RegularExpressions.Regex.Count(code, @"\bstring\s*\??\s+StripCommentsAndLiterals\s*(<[^<>]*>)?\s*\([^()]*\)\s*(where\s[^{;=]*)?(\{|=>)");
+            // inside CodePins.cs is red too); the scanned files are in ordinal name order. P6-59: the type parameter list
+            // may nest (<T, U<V>>, any depth, by a balancing group), and the entries are ordered by file name before the
+            // " xN" suffix is added, so "A.cs x2" stays before "A.cs b.cs" (self-test).
+            static int StripperDefinitions(string code) => System.Text.RegularExpressions.Regex.Count(code, @"\bstring\s*\??\s+StripCommentsAndLiterals\s*(<(?>[^<>]+|<(?<d>)|>(?<-d>))*(?(d)(?!))>)?\s*\([^()]*\)\s*(where\s[^{;=]*)?(\{|=>)");
             static string StripperHomes(IEnumerable<(string Name, string Source)> files) => string.Join(",", files
                 .Select(f => (f.Name, Count: StripperDefinitions(CodePins.StripCommentsAndLiterals(f.Source))))
                 .Where(f => f.Count > 0)
-                .Select(f => f.Count == 1 ? f.Name : f.Name + " x" + I(f.Count)).Order(StringComparer.Ordinal));
+                .OrderBy(f => f.Name, StringComparer.Ordinal)
+                .Select(f => f.Count == 1 ? f.Name : f.Name + " x" + I(f.Count)));
             // P6-57: StripperHomes orders its own output, so the ordinal sort of the scan is redundant for the aggregate; it
             // is kept so the planted loop below runs, and lists what it missed, in one order on every OS (the order of
             // Directory.GetFiles is unspecified).
-            var scanned =Directory.GetFiles(cadTestsDir, "*.cs").Select(f => (Name: Path.GetFileName(f), Source: File.ReadAllText(f))).OrderBy(f => f.Name, StringComparer.Ordinal).ToArray();
+            var scanned = Directory.GetFiles(cadTestsDir, "*.cs").Select(f => (Name: Path.GetFileName(f), Source: File.ReadAllText(f))).OrderBy(f => f.Name, StringComparer.Ordinal).ToArray();
             var stripperHomes = StripperHomes(scanned);
             var forwarder = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n");
             var forwarderSplit = CodePins.StripCommentsAndLiterals("    private static string StripCommentsAndLiterals(string source)\n        => CodePins.StripCommentsAndLiterals(source);\n");
@@ -809,7 +812,9 @@ internal static class PdfType3GlyphListTests
             // P6-57: the forwarder is planted into every scanned file other than CodePins.cs, one at a time, and each result
             // is compared with "CodePins.cs" plus that file's own name, so a scanned file the aggregate skipped is red (the
             // P6-55 single target, the first other file, was compared with itself and could not fail); the names include
-            // this file, a literal known independently of the scan.
+            // this file, a literal known independently of the scan. P6-59: the others.Length >= 2 floor is the two files
+            // known to need the stripper besides CodePins.cs, this file and MinsertEzdxfTests.cs (the DXF reader-option pin);
+            // a scan that found only this file (a wrong directory or filter) would leave the loop one target and is red.
             const string plantedForwarder = "\ninternal static class PlantedStripper\n{\n    private static string StripCommentsAndLiterals(string source) => CodePins.StripCommentsAndLiterals(source);\n}\n";
             var others = scanned.Select(f => f.Name).Where(n => n != "CodePins.cs").ToArray();
             var plantMisses = others
@@ -838,6 +843,12 @@ internal static class PdfType3GlyphListTests
             C(twoFiles == "CodePins.cs x2,PdfType3GlyphListTests.cs x2" && synthetic == "A.cs x2,B.cs x3,D.cs",
                 "p6-57 per-file stripper count self-test: two files with two or more StripCommentsAndLiterals definitions are both listed as 'name xN' (ordinal order)",
                 "real [" + twoFiles + "] synthetic [" + synthetic + "]");
+            // P6-59 shared-prefix names: "A.cs" (two definitions) sorts before "A.cs b.cs" by file name, although the entry
+            // "A.cs x2" sorts after "A.cs b.cs" as text ('x' > 'b'), so the entries are ordered by name, not by their text.
+            var sharedPrefix = StripperHomes(new[] { ("A.cs b.cs", plantedForwarder), ("A.cs", plantedInPins + plantedForwarder) });
+            C(sharedPrefix == "A.cs x2,A.cs b.cs",
+                "p6-59 'name xN' ordering self-test: entries are in ordinal file-name order, so A.cs x2 comes before A.cs b.cs",
+                "got [" + sharedPrefix + "]");
             // P6-57 definition forms: a generic definition (with or without a where clause), a string? return, a second
             // parameter and a non-static (local) function each count 1. Not counted (stated limits): a declaration without
             // a body (delegate, abstract, partial), a return type written String or System.String or other than string,
@@ -849,6 +860,8 @@ internal static class PdfType3GlyphListTests
                 ("string? return", "    internal static string? StripCommentsAndLiterals(string source) => source;\n", 1),
                 ("second parameter", "    internal static string StripCommentsAndLiterals(string source, bool keepLiterals)\n    {\n        return source;\n    }\n", 1),
                 ("non-static local function", "        string StripCommentsAndLiterals(string source) => source;\n", 1),
+                ("nested generic parameter list (P6-59)", "    static string StripCommentsAndLiterals<T, U<V>>(string source) => source;\n", 1),
+                ("deeper nested generic with a where clause (P6-59)", "    static string StripCommentsAndLiterals<T, U<V<W>>, X>(string source) where T : IList<U<V<W>>>\n    {\n        return source;\n    }\n", 1),
                 ("string? generic with two parameters", "    private static string? StripCommentsAndLiterals<TOptions>(string source, TOptions options) where TOptions : new() => source;\n", 1),
                 ("delegate declaration (no body)", "    internal delegate string StripCommentsAndLiterals(string source);\n", 0),
                 ("call assigned to a string", "        string code = StripCommentsAndLiterals(source);\n", 0),
@@ -891,6 +904,28 @@ internal static class PdfType3GlyphListTests
             // lines (each a [...] on its own line) between the comment and the signature are skipped. Stated limits: a
             // comment split by a blank line gives only the part below it, a block comment holding a blank line gives
             // "code above", and an attribute on the signature line itself is code above.
+            // P6-59: a line is an attribute only as code in context (the last line of the stripped source up to it equals
+            // the line stripped alone, so a [...] line inside a block comment or a multi-line literal is not one), when the
+            // lines from it to the signature hold whole [...] sections only (brackets balanced, so a multi-line attribute
+            // is skipped whole), and when the code before it ends in ;, {, } or ] or is empty (so a collection-expression
+            // line after =, ( or , is code). Stated limit: a collection-expression line right after ;, {, } or ] reads
+            // as an attribute. "no comment" is the branch for a signature directly under a blank line (or at the top).
+            static string LastLine(string text) => text[(text.LastIndexOf('\n') + 1)..];
+            // Read from the end: 1 when the text is one or more whole [...] sections, 0 when a section is still open
+            // (its [ is on a line above), -1 otherwise.
+            static int AttributeSections(string text)
+            {
+                var depth = 0;
+                var sections = 0;
+                for (var k = text.Length - 1; k >= 0; k--)
+                {
+                    var c = text[k];
+                    if (c == ']') depth++;
+                    else if (c == '[') { if (--depth < 0) return -1; if (depth == 0) sections++; }
+                    else if (depth == 0 && !char.IsWhiteSpace(c)) return -1;
+                }
+                return depth > 0 ? 0 : sections > 0 ? 1 : -1;
+            }
             static int LineStart(string text, int at) => at <= 0 ? 0 : text.LastIndexOf('\n', at - 1) + 1;
             static string? CommentAbove(string source, string signature, out string why)
             {
@@ -904,13 +939,23 @@ internal static class PdfType3GlyphListTests
                 if (stripped != 1) { why = "stripped x" + I(stripped); return null; }
                 // Attribute lines directly above the signature line are skipped: the comment ends at the first one's text.
                 var end = code[0];
+                var group = "";
                 for (var line = LineStart(source, end); line > 0;)
                 {
                     var above = LineStart(source, line - 1);
                     var text = source[above..(line - 1)];
-                    var bare = CodePins.StripCommentsAndLiterals(text).Trim();
-                    if (!(bare.StartsWith('[') && bare.EndsWith(']'))) break;
-                    end = above + (text.Length - text.TrimStart().Length);
+                    var bare = CodePins.StripCommentsAndLiterals(text);
+                    if (LastLine(CodePins.StripCommentsAndLiterals(source[..(line - 1)])) != bare) break;
+                    group = bare + "\n" + group;
+                    var sections = AttributeSections(group);
+                    if (sections < 0) break;
+                    if (sections > 0)
+                    {
+                        if (bare.Trim().Length == 0) break;
+                        var before = CodePins.StripCommentsAndLiterals(source[..above]).TrimEnd();
+                        if (before.Length > 0 && before[^1] is not (';' or '{' or '}' or ']')) break;
+                        end = above + (text.Length - text.TrimStart().Length);
+                    }
                     line = above;
                 }
                 // The comment starts on the line after the nearest line above it that is empty or whitespace only.
@@ -922,6 +967,7 @@ internal static class PdfType3GlyphListTests
                     start = above;
                 }
                 var comment = source[start..end];
+                if (comment.Trim().Length == 0) { why = "no comment"; return null; }
                 if (CodePins.StripCommentsAndLiterals(comment).Trim().Length != 0) { why = "code above"; return null; }
                 why = "comment";
                 return comment;
@@ -953,6 +999,10 @@ internal static class PdfType3GlyphListTests
                 ("with an attribute on the signature line (stated: code above)", "class S\n{\n\n    // the guard comment\n    [Obsolete] private static string? SwallowGuard(string s) => s;\n}\n", null, "code above"),
                 ("under a comment split by a blank line (stated: the part below it)", "class S\n{\n\n    // part one\n\n    // part two\n" + guardDefinition + "}\n", "    // part two\n    ", "comment"),
                 ("under a block comment holding a blank line (stated: code above)", "class S\n{\n\n    /* part one\n\n       part two */\n" + guardDefinition + "}\n", null, "code above"),
+                ("under a [...] line inside a block comment (P6-59: not an attribute)", "class S\n{\n\n    /* the guard comment\n    [Obsolete]\n    */ private static string? SwallowGuard(string s) => s;\n}\n", "    /* the guard comment\n    [Obsolete]\n    */ ", "comment"),
+                ("under a collection-expression line (P6-59: not an attribute)", "class S\n{\n    private int[] xs =\n\n    // the guard comment\n    [1, 2]\n" + guardDefinition + "}\n", null, "code above"),
+                ("under a multi-line attribute (P6-59)", "class S\n{\n\n    // the guard comment\n    [MethodImpl(\n        MethodImplOptions.NoInlining)]\n" + guardDefinition + "}\n", "    // the guard comment\n    ", "comment"),
+                ("directly under a blank line (P6-59)", "class S\n{\n    private int x;\n\n" + guardDefinition + "}\n", null, "no comment"),
             })
             {
                 var got = CommentAbove(sample, guardSignature, out var gotWhy);
