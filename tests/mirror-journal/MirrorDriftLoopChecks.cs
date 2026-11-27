@@ -3102,17 +3102,103 @@ static class MirrorDriftLoopChecks
     }
 
     // P2-51: the one comment strip of this file's static pins (RunWriteProgressLoop, PipeConnectedPinned and
-    // MacCultureHelpersPinned each kept a regex copy of it before), CRLF read as LF.
-    static string MacCode(string source) => System.Text.RegularExpressions.Regex.Replace(source.Replace("\r\n", "\n"), @"/\*.*?\*/|//[^\n]*", "", System.Text.RegularExpressions.RegexOptions.Singleline);
+    // MacCultureHelpersPinned each kept a regex copy of it before, which cut a '//' or '/*' inside a string literal):
+    // CRLF read as LF, a line comment removed up to its newline and a block comment removed but for its newlines, every
+    // literal kept as written: regular, verbatim (@, $@, @$) and raw strings (any quote run) and char literals. An
+    // interpolated string's hole is code, read the same way (a literal or comment inside it, a brace pair kept). Limit:
+    // a raw interpolated string's holes are literal text (none in the scanned files).
+    static string MacCode(string source)
+    {
+        var s = source.Replace("\r\n", "\n");
+        var code = new StringBuilder(s.Length);
+        var i = 0;
+        MacCodeInto(s, ref i, code, hole: false);
+        return code.ToString();
+    }
+
+    // P2-51: copies s[i..] into code without its comments; in a hole, stops at the '}' that closes it (not copied).
+    static void MacCodeInto(string s, ref int i, StringBuilder code, bool hole)
+    {
+        var depth = 0;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            var next = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '/' && next == '/') { while (i < s.Length && s[i] != '\n') i++; continue; }
+            if (c == '/' && next == '*')
+            {
+                var end = s.IndexOf("*/", i + 2, StringComparison.Ordinal);
+                var stop = end < 0 ? s.Length : end + 2;
+                for (; i < stop; i++) if (s[i] == '\n') code.Append('\n');
+                continue;
+            }
+            if (c == '\'')
+            {
+                var from = i++;
+                while (i < s.Length && s[i] != '\'' && s[i] != '\n') i += s[i] == '\\' ? 2 : 1;
+                i = Math.Min(s.Length, i + 1);
+                code.Append(s, from, i - from);
+                continue;
+            }
+            var prefix = i;
+            while (prefix < s.Length && (s[prefix] == '$' || s[prefix] == '@')) prefix++;
+            if (prefix < s.Length && s[prefix] == '"') { MacLiteralInto(s, ref i, code); continue; }
+            if (hole && c == '{') depth++;
+            if (hole && c == '}' && depth-- == 0) return;
+            code.Append(c);
+            i++;
+        }
+    }
+
+    // P2-51: copies the string literal at s[i] (its $/@ prefix, quotes and text) into code as written, the holes of an
+    // interpolated one read as code by MacCodeInto.
+    static void MacLiteralInto(string s, ref int i, StringBuilder code)
+    {
+        var (interpolated, verbatim) = (false, false);
+        for (; s[i] != '"'; i++) { interpolated |= s[i] == '$'; verbatim |= s[i] == '@'; code.Append(s[i]); }
+        var quotes = 0;
+        while (i + quotes < s.Length && s[i + quotes] == '"') quotes++;
+        if (!verbatim && quotes >= 3)
+        {
+            var end = s.IndexOf(new string('"', quotes), i + quotes, StringComparison.Ordinal);
+            var stop = end < 0 ? s.Length : end + quotes;
+            code.Append(s, i, stop - i);
+            i = stop;
+            return;
+        }
+        code.Append('"');
+        i++;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            var next = i + 1 < s.Length ? s[i + 1] : '\0';
+            if (c == '"' && verbatim && next == '"') { code.Append("\"\""); i += 2; continue; }
+            if (c == '"') { code.Append('"'); i++; return; }
+            if (c == '\\' && !verbatim && i + 1 < s.Length) { code.Append(s, i, 2); i += 2; continue; }
+            if (c == '\n' && !verbatim) return;
+            if (c == '{' && interpolated && next == '{') { code.Append("{{"); i += 2; continue; }
+            if (c == '{' && interpolated)
+            {
+                code.Append('{');
+                i++;
+                MacCodeInto(s, ref i, code, hole: true);
+                if (i < s.Length) { code.Append('}'); i++; }
+                continue;
+            }
+            code.Append(c);
+            i++;
+        }
+    }
 
     // P2-51: a method body of MacCode output, found by its signature at class indentation, up to its closing brace at
-    // class indentation (exclusive).
+    // class indentation (exclusive), that brace followed by spaces or tabs only to its newline (a trailing comment,
+    // stripped, leaves them). Limit: an expression-bodied member has no such brace, so its body runs to the next one's.
     static string MacBody(string code, string signature)
     {
         var start = code.IndexOf("\n    " + signature, StringComparison.Ordinal);
         if (start < 0) return "";
-        var end = code.IndexOf("\n    }\n", start, StringComparison.Ordinal);
-        return end < 0 ? code[start..] : code[start..end];
+        var end = System.Text.RegularExpressions.Regex.Match(code[start..], @"\n    \}[ \t]*\n");
+        return end.Success ? code[start..(start + end.Index)] : code[start..];
     }
 
     // P2-50: static pin of the macOS culture helpers in this file's code (comments stripped; the searched text is split
