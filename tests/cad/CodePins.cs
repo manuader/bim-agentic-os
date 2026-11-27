@@ -13,7 +13,9 @@ using System.Text;
 // P6-55: that aggregate counts StripCommentsAndLiterals definitions per file, so a second definition inside this file is
 // red too (self-test). P6-57: the planted self-test plants into every scanned file other than this one, one at a time,
 // and a definition also counts when generic, returning string?, with a second parameter or as a non-static local
-// function (self-test; the forms not counted are stated there).
+// function (self-test; the forms not counted are stated there). P6-59: the definition count takes a nested
+// type parameter list (<T, U<V>>), "name xN" entries are in file-name order, and the comment finder skips only
+// attribute lines that are code in context, whole multi-line attributes included (self-tests there).
 internal static class CodePins
 {
     // P6-27: C# source with // and /* */ comments removed and every string, verbatim, interpolated, raw and char literal
