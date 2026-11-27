@@ -998,12 +998,17 @@ internal static class GenerateTypologyToolTests
                 var frames = new Stack<char>();
                 var heredocs = new List<string>();
                 open = false;
+                var wordJoin = false;
                 for (var i = 0; i < line.Length; i++)
                 {
                     var c = line[i];
                     var next = i + 1 < line.Length ? line[i + 1] : '\0';
                     var quoted = frames.Count > 0 && frames.Peek() == '"';
-                    if (c == '\\' && next == '\n' && !quoted) { i++; continue; }
+                    // P3-54: a backslash-newline right after a word joins the next line to that word, so a `#` first on
+                    // that line (after its indentation) is no comment.
+                    var joined = wordJoin;
+                    if (c is not (' ' or '\t')) wordJoin = false;
+                    if (c == '\\' && next == '\n' && !quoted) { wordJoin = i > 0 && !char.IsWhiteSpace(line[i - 1]); i++; continue; }
                     if (c == '\\' && i + 1 < line.Length) { masked[i] = masked[i + 1] = '_'; i++; continue; }
                     if (c == '\n' && !quoted && heredocs.Count > 0)
                     {
@@ -1027,6 +1032,7 @@ internal static class GenerateTypologyToolTests
                     if (quoted)
                     {
                         if (c == '"') frames.Pop();
+                        else if (c == '$' && next == '(' && i + 2 < line.Length && line[i + 2] == '(') { frames.Push('a'); i += 2; }
                         else if (c == '$' && next == '(') { frames.Push('('); i++; }
                         else if (c == '$' && next == '{') { frames.Push('{'); masked[i + 1] = '_'; i++; }
                         else masked[i] = '_';
@@ -1045,11 +1051,13 @@ internal static class GenerateTypologyToolTests
                     {
                         if (c == '}') { frames.Pop(); masked[i] = '_'; }
                         else if (c == '"') frames.Push('"');
+                        else if (c == '$' && next == '(' && i + 2 < line.Length && line[i + 2] == '(') { frames.Push('a'); i += 2; }
                         else if (c == '$' && next == '(') { frames.Push('('); i++; }
                         else masked[i] = '_';
                         continue;
                     }
-                    if (c == '<' && next == '<' && (i + 2 >= line.Length || line[i + 2] != '<') && (i == 0 || line[i - 1] != '<'))
+                    if (c == '<' && next == '<' && (i + 2 >= line.Length || line[i + 2] != '<') && (i == 0 || line[i - 1] != '<')
+                        && !frames.Contains('a'))
                     {
                         var word = Regex.Match(line[i..], @"^<<-?[ \t]*([^\s;|&<>()]+)").Groups[1].Value.Replace("'", "", StringComparison.Ordinal)
                             .Replace("\"", "", StringComparison.Ordinal).Replace("\\", "", StringComparison.Ordinal);
@@ -1057,7 +1065,7 @@ internal static class GenerateTypologyToolTests
                         i++;
                         continue;
                     }
-                    if (c == '#' && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+                    if (c == '#' && !joined && (i == 0 || char.IsWhiteSpace(line[i - 1])))
                     {
                         var end = line.IndexOf('\n', i);
                         if (end < 0) end = line.Length;
@@ -1066,6 +1074,9 @@ internal static class GenerateTypologyToolTests
                         continue;
                     }
                     if (c == '"') frames.Push('"');
+                    // P3-54: `((` (also `$((`) opens an arithmetic frame up to its `))`; a `<<` inside it is a shift.
+                    else if (c == '(' && next == '(') { frames.Push('a'); i++; }
+                    else if (c == ')' && next == ')' && frames.Count > 0 && frames.Peek() == 'a') { frames.Pop(); i++; }
                     else if (c == '(') frames.Push('(');
                     else if (c == ')' && frames.Count > 0) frames.Pop();
                 }
@@ -1075,12 +1086,16 @@ internal static class GenerateTypologyToolTests
             // P3-52: only the lines of a YAML `run: |` block are shell: when the text holds such a header, every other line
             // (the `name`, `if`, `id` and later YAML keys) is blanked before masking, so an apostrophe there cannot mask
             // the run lines. The block runs from its header to the first non-blank line indented no deeper than the `run`
-            // key. A text without a header (the self-tests) is shell throughout; a single-line `run:` is not recognized.
+            // key. A text without a header (the self-tests) is shell throughout.
+            // P3-54: a `run: |`, `|-`, `|+` or `>` line opens a block (a folded `>` block is read line by line, not
+            // folded), and a single-line `run:` value is kept as shell with its key blanked (a quoted or multi-line plain
+            // value is not unquoted or folded).
             static string ShellOnly(string text)
             {
                 var lines = text.Split('\n');
-                const string Header = @"^\s*(?:-\s+)?run:\s*\|$";
-                if (!lines.Any(l => Regex.IsMatch(l.TrimEnd(), Header))) return text;
+                const string Header = @"^\s*(?:-\s+)?run:\s*[|>][-+]?$";
+                const string SingleLine = @"^\s*(?:-\s+)?run:[ \t]+(?=[^\s|>])";
+                if (!lines.Any(l => Regex.IsMatch(l.TrimEnd(), Header) || Regex.IsMatch(l, SingleLine))) return text;
                 var inBlock = false;
                 var keyIndent = 0;
                 for (var k = 0; k < lines.Length; k++)
@@ -1089,6 +1104,8 @@ internal static class GenerateTypologyToolTests
                     if (inBlock && lines[k].Trim().Length > 0 && indent <= keyIndent) inBlock = false;
                     if (inBlock) continue;
                     if (Regex.IsMatch(lines[k].TrimEnd(), Header)) { inBlock = true; keyIndent = lines[k].IndexOf("run:", StringComparison.Ordinal); continue; }
+                    var single = Regex.Match(lines[k], SingleLine);
+                    if (single.Success) { lines[k] = new string(' ', single.Length) + lines[k][single.Length..]; continue; }
                     lines[k] = "";
                 }
                 return string.Join('\n', lines);
@@ -1099,9 +1116,9 @@ internal static class GenerateTypologyToolTests
                 // P3-48: masked lines are joined into logical lines first: a trailing backslash (dropped) or a trailing
                 // `|`, `|&` or `&&` (bare pipe, or-list, and-list; `||` included) continues onto the next line, except a
                 // YAML block scalar header (`run: |`). A continuation left open at the end of the text is marked open.
-                // P3-50: the text is masked whole (quoting across lines); only a YAML `run: |` line is a block header (the
-                // workflow uses no `|-` or `|+` chomping, so none is matched); and a line that leaves a `{`, `(` or `$(` group
-                // open is joined up to the group's closing line, each newline inside it read as `;` (none after a line
+                // P3-50: the text is masked whole (quoting across lines); only a YAML `run: |` line is excluded from the
+                // join (P3-54: the `|-`, `|+` and `>` headers ShellOnly recognises do not end in `|`); and a line that
+                // leaves a `{`, `(` or `$(` group open is joined up to the group's closing line, each newline inside it read as `;` (none after a line
                 // already ending in `;`, `{` or `(`), so a pipe or guard on the closing line counts. A `case` pattern's `)`
                 // is not parsed (the step has none).
                 var logical = new List<(string Line, bool Open)>();
@@ -1140,22 +1157,32 @@ internal static class GenerateTypologyToolTests
                     {
                         var before = line[..grep.Index];
                         var groups = new Stack<bool>();
+                        // P3-54: enclosing counts the groups still open around the grep.
+                        var enclosing = 0;
                         for (var i = 0; i < before.Length; i++)
                         {
                             if (before[i] == '(') groups.Push(i > 0 && before[i - 1] == '$');
                             else if (before[i] == ')' && groups.Count > 0) groups.Pop();
+                            if (before[i] is '(' or '{') enclosing++;
+                            else if (before[i] is ')' or '}' && enclosing > 0) enclosing--;
                         }
                         var substituted = groups.Contains(true);
                         var piped = Regex.IsMatch(before, @"(?<!\|)\|&?\s*(?:(?<!\$)\(\s*|\{\s*)*$");
                         var guarded = false;
                         var depth = 0;
+                        var skipping = false;
                         for (var i = grep.Index + 4; i < line.Length; i++)
                         {
                             var c = line[i];
                             var next = i + 1 < line.Length ? line[i + 1] : '\0';
                             if (c is '(' or '{') { depth++; continue; }
-                            if (c is ')' or '}') { if (depth > 0) depth--; continue; }
-                            if (depth > 0) continue;
+                            if (c is ')' or '}')
+                            {
+                                if (depth > 0) depth--;
+                                else { if (enclosing > 0) enclosing--; skipping = false; }
+                                continue;
+                            }
+                            if (depth > 0 || skipping) continue;
                             // P3-48: `|| :` guards as `|| true` does; any other or-list does not.
                             if (c == '|' && next == '|') { guarded = Regex.IsMatch(line[(i + 2)..], @"^\s*(?:true(?![\w-])|:(?![^\s;)}&|]))"); break; }
                             if (c == '|') { piped = true; if (next == '&') i++; continue; }
@@ -1164,7 +1191,10 @@ internal static class GenerateTypologyToolTests
                             if (c == '&' && next == '>') continue;
                             if (c == '&') break;
                             // P3-50: `;` before a group's closing `)` continues as before a `}` (a joined multi-line group).
-                            if (c == ';') { var rest = line[(i + 1)..].TrimStart(); if (rest.StartsWith('}') || rest.StartsWith(')')) continue; break; }
+                            // P3-54: a `;` inside an enclosing group skips the group's later commands up to its closing
+                            // `)` or `}` and walks on from there: under bash -e and pipefail the group stops at the failing
+                            // grep, so its pipe or guard is the grep's; outside any group a `;` ends the command.
+                            if (c == ';') { if (enclosing > 0) { skipping = true; continue; } break; }
                         }
                         if (open) guarded = false;
                         if (!guarded && (piped || substituted || open)) bare++;
