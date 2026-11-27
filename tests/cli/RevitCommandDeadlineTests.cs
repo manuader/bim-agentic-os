@@ -1827,7 +1827,9 @@ internal static class RevitCommandDeadlineTests
         var code = StripCode(self.ReplaceLineEndings("\n"));
         var writes = System.Text.RegularExpressions.Regex.Matches(code, @"\bConsole\s*\.\s*(?:(?:Out|Error)\s*\.\s*)?Write(?:Line)?\s*\(").Count;
         var flat = string.Concat(code.Where(c => !char.IsWhiteSpace(c)));
-        var known = new[] { "Console.WriteLine(notice);", "Console.WriteLine(skipWarning);", "Console.WriteLine(FailSummary(names));" };
+        // P1-52: the known list is DeadlineWrites, whose length is DeadlineWarningLines (WriteListProblem).
+        var known = DeadlineWrites;
+        if (WriteListProblem(known, DeadlineWarningLines) is { Length: > 0 } listProblem) problems.Add(listProblem);
         if (writes != known.Length || known.Any(write => CountOf(flat, write) != 1))
             problems.Add(N(writes) + " console writes in RevitCommandDeadlineTests.cs, not the runtime warning, the link-skip warning and FailSummary once each");
         var mirrorSites = warningCounts.Where(entry => entry.Key.StartsWith("tests/mirror-journal/", StringComparison.Ordinal)).Sum(entry => entry.Value);
@@ -1869,7 +1871,37 @@ internal static class RevitCommandDeadlineTests
         var code = Flat(self);
         return (program.Contains("internalstaticstringEscape(stringtext)=>", StringComparison.Ordinal) ? "" : "CliInputsSummary.Escape is not internal static string Escape(string text); ")
             + (code.Contains("staticstringSummaryEscape(stringtext)=>CliInputsSummary.Escape(text);", StringComparison.Ordinal) ? "" : "SummaryEscape does not call CliInputsSummary.Escape directly; ")
-            + (code.Contains("GetMethod(", StringComparison.Ordinal) || code.Contains("System.Reflection", StringComparison.Ordinal) ? "reflection is left in RevitCommandDeadlineTests.cs" : "");
+            + ReflectionNearSummary(self);
+    }
+
+    // P1-52: the reflection ban is scoped to SummaryEscape and CliInputsSummary: a reflection token (GetMethod(s),
+    // GetMember(s), GetField(s), InvokeMember, GetRuntimeMethod(s), BindingFlags, MethodInfo, System.Reflection) in code
+    // (CodeMask) is flagged when the unit around it names CliInputsSummary or SummaryEscape in code: the method block it
+    // sits in (DeadlineSourceScan.ContextAt; its header and body), or else its statement (from the previous ';', '{' or
+    // '}' to the next). A GetMethod elsewhere (another type, a JSON GetProperty) is not flagged. Limit: a type named only
+    // in a string literal (Type.GetType("CliInputsSummary")) is not seen; SummaryEscape's own text is pinned above.
+    static readonly System.Text.RegularExpressions.Regex ReflectionToken = new(@"\b(?:GetMethods?|GetMembers?|GetFields?|InvokeMember|GetRuntimeMethods?|BindingFlags|MethodInfo)\b|\bSystem\s*\.\s*Reflection\b");
+    static readonly char[] StatementEnds = { ';', '{', '}' };
+    static string ReflectionNearSummary(string source)
+    {
+        var mask = CodeMask(source.ReplaceLineEndings("\n"));
+        var blocks = DeadlineSourceScan.SourceBlocks(mask);
+        var found = new List<string>();
+        foreach (System.Text.RegularExpressions.Match token in ReflectionToken.Matches(mask))
+        {
+            var context = DeadlineSourceScan.ContextAt(blocks, token.Index);
+            string unit;
+            if (context.MemberBlock is { } member) unit = member.Header + " " + mask[member.Open..(member.Close + 1)];
+            else
+            {
+                var from = token.Index == 0 ? 0 : mask.LastIndexOfAny(StatementEnds, token.Index - 1) + 1;
+                var to = mask.IndexOfAny(StatementEnds, token.Index);
+                unit = mask[from..(to < 0 ? mask.Length : to)];
+            }
+            if (System.Text.RegularExpressions.Regex.IsMatch(unit, @"\b(?:CliInputsSummary|SummaryEscape)\b"))
+                found.Add(token.Value + " at line " + N(mask[..token.Index].Count(c => c == '\n') + 1));
+        }
+        return found.Count == 0 ? "" : "reflection next to CliInputsSummary or SummaryEscape in RevitCommandDeadlineTests.cs (" + string.Join(", ", found) + ")";
     }
 
     // P1-50: the cli-inputs step's worst-case warning position in a failing run. This file writes its three lines first
@@ -1879,6 +1911,9 @@ internal static class RevitCommandDeadlineTests
     // Program.cs's step summary comes last. Counted from the source, the sum is a bound for every runner: Windows skips
     // both probes (3 + 1 = 4 today) and Linux/macOS write neither Windows-only line (1 + 15 + 2 + 1 = 19 today). Past
     // GitHub's WarningsPerStep the step summary is in the log only; the deadline summary stays at most the 3rd.
+    // P1-52: the two per-OS positions are pinned too (WindowsSummaryWarning, UnixSummaryWarning, PerOsSummary, with the
+    // Windows returns of RunCases and RunUnsearchable and the Windows-only writes here checked); this summed 21 is kept
+    // as the cross-OS bound, so the P1-50 check and its mutants read as before.
     const int DeadlineWarningLines = 3;
     const int StepSummaryWorstWarning = 21;
 
@@ -1931,212 +1966,17 @@ internal static class RevitCommandDeadlineTests
             + N(verbs) + " P10-30 verbs, " + N(modes) + " P10-32 modes), not the pinned " + N(StepSummaryWorstWarning);
     }
 
-    // P1-50: how often the tests/mirror-journal ::warning:: sites can print in one run, read from the call chains on
-    // CodeMask output (comments and literals blanked in place). A brace block's header is the code since the previous
-    // '{', '}' or ';' outside parentheses ("if (x)", "static void M(int a)", "static class C").
-    readonly record struct SourceBlock(int Open, int Close, string Header);
-    readonly record struct SourceContext(string? Type, string? Member, SourceBlock? MemberBlock, List<SourceBlock> Inner, string Problem);
-    static readonly System.Text.RegularExpressions.Regex TypeHeader = new(@"^(?:\[[^\]]*\]\s*)*(?:(?:public|internal|private|protected|static|sealed|abstract|partial|readonly|file|unsafe|new|ref)\s+)*(?:class|struct|interface|record(?:\s+class|\s+struct)?)\s+(\w+)");
-    static readonly System.Text.RegularExpressions.Regex ControlHeader = new(@"^(?:else\s+)?(?:if|for|foreach|while|switch|catch|using|lock|fixed|do|try|finally|else|checked|unchecked|unsafe|get|set|init)\b");
-    static readonly System.Text.RegularExpressions.Regex LoopOrLambda = new(@"\b(?:for|foreach|while|do)\b|=>");
-    static readonly System.Text.RegularExpressions.Regex IfHeader = new(@"^(?:else\s+)?if\b|^else\b");
-
-    static string Collapsed(string text) => System.Text.RegularExpressions.Regex.Replace(text, @"\s+", " ").Trim();
-
-    static List<SourceBlock> SourceBlocks(string mask)
-    {
-        var blocks = new List<SourceBlock>();
-        var open = new Stack<(int At, string Header, int Parens)>();
-        var last = -1;
-        var parens = 0;
-        for (var k = 0; k < mask.Length; k++)
-        {
-            var c = mask[k];
-            if (c == '(') parens++;
-            else if (c == ')') { if (parens > 0) parens--; }
-            else if (c == ';') { if (parens == 0) last = k; }
-            else if (c == '{') { open.Push((k, Collapsed(mask[(last + 1)..k]), parens)); parens = 0; last = k; }
-            else if (c == '}')
-            {
-                if (open.Count > 0) { var (at, header, outer) = open.Pop(); blocks.Add(new SourceBlock(at, k, header)); parens = outer; }
-                if (parens == 0) last = k;
-            }
-        }
-        blocks.Sort((a, b) => a.Open.CompareTo(b.Open));
-        return blocks;
-    }
-
-    // The name of a method or local function whose header this is (ends with its parameter list, no control keyword,
-    // no '=' before the list, no '=>'); null otherwise.
-    static string? FunctionName(string header)
-    {
-        if (header.Length == 0 || header[^1] != ')' || ControlHeader.IsMatch(header) || header.Contains("=>", StringComparison.Ordinal)) return null;
-        var depth = 0;
-        var k = header.Length - 1;
-        for (; k >= 0; k--)
-        {
-            if (header[k] == ')') depth++;
-            else if (header[k] == '(' && --depth == 0) break;
-        }
-        if (k <= 0) return null;
-        var head = header[..k].TrimEnd();
-        if (head.Contains('=')) return null;
-        var name = System.Text.RegularExpressions.Regex.Match(head, @"(\w+)\s*(?:<[^<>]*>)?$");
-        return name.Success ? name.Groups[1].Value : null;
-    }
-
-    // The statement text from the last '{', '}' or ';' (outside parentheses) after position from up to position at.
-    static string StatementBefore(string mask, int from, int at)
-    {
-        var last = from;
-        var depth = 0;
-        var parens = 0;
-        for (var k = from + 1; k < at; k++)
-        {
-            var c = mask[k];
-            if (c == '{') depth++;
-            else if (c == '}') { depth--; if (depth == 0 && parens == 0) last = k; }
-            else if (depth > 0) continue;
-            else if (c == '(') parens++;
-            else if (c == ')') { if (parens > 0) parens--; }
-            else if (c == ';' && parens == 0) last = k;
-        }
-        return Collapsed(mask[(last + 1)..at]);
-    }
-
-    // The last statement of the block open..close ("{block}" when a nested block ends it).
-    static string LastStatement(string mask, int open, int close)
-    {
-        var last = open;
-        var depth = 0;
-        var parens = 0;
-        var statement = "";
-        for (var k = open + 1; k < close; k++)
-        {
-            var c = mask[k];
-            if (c == '{') depth++;
-            else if (c == '}') { depth--; if (depth == 0 && parens == 0) { statement = "{block}"; last = k; } }
-            else if (depth > 0) continue;
-            else if (c == '(') parens++;
-            else if (c == ')') { if (parens > 0) parens--; }
-            else if (c == ';' && parens == 0) { statement = Collapsed(mask[(last + 1)..k]); last = k; }
-        }
-        var rest = Collapsed(mask[(last + 1)..close]);
-        return rest.Length > 0 ? rest : statement;
-    }
-
-    // The type and method a position sits in (no type: top-level statements) and the blocks inside that method.
-    static SourceContext ContextAt(List<SourceBlock> blocks, int at)
-    {
-        var enclosing = blocks.Where(b => b.Open < at && at < b.Close).ToList();
-        var typeIndex = enclosing.FindLastIndex(b => TypeHeader.IsMatch(b.Header));
-        if (typeIndex < 0) return new SourceContext(null, null, null, enclosing, "");
-        var type = TypeHeader.Match(enclosing[typeIndex].Header).Groups[1].Value;
-        if (typeIndex + 1 >= enclosing.Count) return new SourceContext(type, null, null, new List<SourceBlock>(), "outside a method body");
-        var member = enclosing[typeIndex + 1];
-        var name = FunctionName(member.Header);
-        if (name is null) return new SourceContext(type, null, null, new List<SourceBlock>(), "in a member that is not a method (" + member.Header + ")");
-        return new SourceContext(type, name, member, enclosing.Skip(typeIndex + 2).ToList(), "");
-    }
-
-    // "" when the position runs at most once per run of its method: no loop, lambda or local function around it there.
-    static string ChainProblem(string path, string mask, SourceContext context, int at, string what)
-    {
-        var where = what + " at " + path + ":" + N(mask[..at].Count(c => c == '\n') + 1);
-        if (context.Problem.Length > 0) return where + " is " + context.Problem;
-        foreach (var block in context.Inner)
-        {
-            if (FunctionName(block.Header) is not null) return where + " is inside a local function";
-            if (LoopOrLambda.IsMatch(block.Header)) return where + " is in a loop or lambda (" + block.Header + ")";
-        }
-        var from = context.Inner.Count > 0 ? context.Inner[^1].Open : context.MemberBlock?.Open ?? -1;
-        var statement = StatementBefore(mask, from, at);
-        return LoopOrLambda.IsMatch(statement) ? where + " is in a loop or lambda (" + statement + ")" : "";
-    }
-
-    // How many times type.member can run in one run: the sum over its callers (qualified type.member( anywhere, or an
-    // unqualified member( inside type that is no local function's) of the calls per run of the caller times the caller's
-    // own runs (top-level statements run once). Per caller run the calls are the most of: those outside a branch that
-    // ends with return, or for such a branch, those before its end that are not in an earlier such branch. A call in a
-    // loop, lambda or local function, a method group use and a recursive chain are problems.
-    static long CallRuns(Dictionary<string, (string Mask, List<SourceBlock> Blocks)> files, string type, string member, HashSet<string> visiting, List<string> problems)
-    {
-        var key = type + "." + member;
-        if (!visiting.Add(key)) { problems.Add("a recursive call chain through " + key); return 0; }
-        var callers = new Dictionary<(string Path, int Open), (string? Type, string? Member, List<(int At, List<SourceBlock> Returning)> Sites)>();
-        foreach (var file in files.OrderBy(entry => entry.Key, StringComparer.Ordinal))
-        {
-            var path = file.Key;
-            var (mask, blocks) = file.Value;
-            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(mask, @"\b" + member + @"\b"))
-            {
-                var at = match.Index;
-                var k = at - 1;
-                while (k >= 0 && char.IsWhiteSpace(mask[k])) k--;
-                var qualified = k >= 0 && mask[k] == '.';
-                if (qualified)
-                {
-                    var q = k - 1;
-                    while (q >= 0 && char.IsWhiteSpace(mask[q])) q--;
-                    var qualifier = System.Text.RegularExpressions.Regex.Match(mask[..(q + 1)], @"(\w+)$");
-                    if (!qualifier.Success || qualifier.Groups[1].Value != type) continue;
-                }
-                var context = ContextAt(blocks, at);
-                if (!qualified && context.Type != type) continue;
-                var line = N(mask[..at].Count(c => c == '\n') + 1);
-                var p = at + match.Length;
-                while (p < mask.Length && char.IsWhiteSpace(mask[p])) p++;
-                if (p >= mask.Length || mask[p] != '(')
-                {
-                    var before = k >= 0 ? mask[k] : '\0';
-                    if (p < mask.Length && (mask[p] is ';' or ',' or ')') && (qualified || before is '=' or '(' or ',' or '+' or '?' or ':' || System.Text.RegularExpressions.Regex.IsMatch(mask[..(k + 1)], @"\breturn$")))
-                        problems.Add(key + " is used without a call at " + path + ":" + line + " (a method group is not counted)");
-                    continue;
-                }
-                var depth = 0;
-                var close = p;
-                for (; close < mask.Length; close++)
-                {
-                    if (mask[close] == '(') depth++;
-                    else if (mask[close] == ')' && --depth == 0) break;
-                }
-                var r = close + 1;
-                while (r < mask.Length && char.IsWhiteSpace(mask[r])) r++;
-                if (r >= mask.Length || mask[r] == '{' || mask.AsSpan(r).StartsWith("=>", StringComparison.Ordinal) || mask.AsSpan(r).StartsWith("where", StringComparison.Ordinal)) continue; // a declaration
-                if (!qualified && context.MemberBlock is { } own && blocks.Any(b => own.Open < b.Open && b.Open < own.Close && FunctionName(b.Header) == member)) continue;
-                var problem = ChainProblem(path, mask, context, at, "a call of " + key);
-                if (problem.Length > 0) { problems.Add(problem); continue; }
-                var returning = context.Inner.Where(b => IfHeader.IsMatch(b.Header) && System.Text.RegularExpressions.Regex.IsMatch(LastStatement(mask, b.Open, b.Close), @"^return\b")).ToList();
-                var slot = (path, context.MemberBlock?.Open ?? -1);
-                if (!callers.TryGetValue(slot, out var caller)) callers[slot] = caller = (context.Type, context.Member, new List<(int At, List<SourceBlock> Returning)>());
-                caller.Sites.Add((at, returning));
-            }
-        }
-        long total = 0;
-        foreach (var caller in callers.Values)
-        {
-            var sites = caller.Sites;
-            var count = sites.Count(site => site.Returning.Count == 0);
-            foreach (var branch in sites.SelectMany(site => site.Returning).Distinct())
-                count = Math.Max(count, sites.Count(site => site.At < branch.Close && !site.Returning.Any(earlier => earlier.Close < branch.Open)));
-            var runs = caller.Type is null || caller.Member is null ? 1 : CallRuns(files, caller.Type, caller.Member, visiting, problems);
-            total += count * runs;
-        }
-        visiting.Remove(key);
-        return total;
-    }
-
     // P1-50: the ::warning:: sites (in code or literals, comments blanked) of sources (repository path to text) and the
     // most times they can print in one run, the sum of their methods' CallRuns; problems as CallRuns names them.
     static (int Sites, long Bound, string Problems) MirrorWarningBound(IReadOnlyDictionary<string, string> sources)
     {
-        var files = new Dictionary<string, (string Mask, List<SourceBlock> Blocks)>(StringComparer.Ordinal);
+        var files = new Dictionary<string, (string Mask, List<DeadlineSourceScan.SourceBlock> Blocks)>(StringComparer.Ordinal);
         var blanked = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (var (path, source) in sources)
         {
             var text = source.ReplaceLineEndings("\n");
             var mask = DeadlineSourceScan.CodeMask(text);
-            files[path] = (mask, SourceBlocks(mask));
+            files[path] = (mask, DeadlineSourceScan.SourceBlocks(mask));
             blanked[path] = DeadlineSourceScan.CommentsBlanked(text);
         }
         var problems = new List<string>();
@@ -2149,10 +1989,10 @@ internal static class RevitCommandDeadlineTests
             for (var at = text.IndexOf("::warning::", StringComparison.Ordinal); at >= 0; at = text.IndexOf("::warning::", at + 1, StringComparison.Ordinal))
             {
                 sites++;
-                var context = ContextAt(blocks, at);
-                var problem = ChainProblem(path, mask, context, at, "the ::warning:: site");
+                var context = DeadlineSourceScan.ContextAt(blocks, at);
+                var problem = DeadlineSourceScan.ChainProblem(path, mask, context, at, "the ::warning:: site");
                 if (problem.Length > 0) { problems.Add(problem); continue; }
-                bound += context.Type is null || context.Member is null ? 1 : CallRuns(files, context.Type, context.Member, new HashSet<string>(StringComparer.Ordinal), problems);
+                bound += context.Type is null || context.Member is null ? 1 : DeadlineSourceScan.CallRuns(files, context.Type, context.Member, new HashSet<string>(StringComparer.Ordinal), problems);
             }
         }
         return (sites, bound, string.Join("; ", problems));
@@ -2351,11 +2191,83 @@ internal static class RevitCommandDeadlineTests
     const int WindowsSummaryWarning = 4;
     const int UnixSummaryWarning = 19;
 
-    static string WriteListProblem(string[] writes, int lines) => "";
+    // P1-52: "" when the known write list has DeadlineWarningLines entries.
+    static string WriteListProblem(string[] writes, int lines) =>
+        writes.Length == lines ? "" : N(writes.Length) + " known console writes (DeadlineWrites), not DeadlineWarningLines (" + N(lines) + ")";
 
-    static (int Windows, int Unix, string Problems) PerOsSummary(string deleted, string self) => (0, 0, "not counted per OS yet");
+    // P1-52: the failing-run position of the step summary on each OS. Windows: RunCases and RunUnsearchable return before
+    // their probe warning (WindowsSkipProblem), so the step summary follows this file's DeadlineWarningLines. Linux and
+    // macOS: the WindowsOnlyWrites are not written here (WindowsOnlyWriteProblems), every P10-30 verb and P10-32 mode
+    // may print its probe (ProbeWarnings), then the summary.
+    static (int Windows, int Unix, string Problems) PerOsSummary(string deleted, string self)
+    {
+        var (verbs, modes, probes) = ProbeWarnings(deleted);
+        var text = DeadlineSourceScan.CommentsBlanked(deleted.ReplaceLineEndings("\n"));
+        var problems = new[]
+        {
+            probes, WindowsSkipProblem(text, "RunCases"), WindowsSkipProblem(text, "RunUnsearchable"), WindowsOnlyWriteProblems(self),
+            WindowsOnlyWrites.All(write => Array.IndexOf(DeadlineWrites, write) >= 0) ? "" : "a Windows-only write is not in DeadlineWrites",
+        }.Where(problem => problem.Length > 0);
+        return (DeadlineWarningLines + 1, DeadlineWarningLines - WindowsOnlyWrites.Length + verbs + modes + 1, string.Join("; ", problems));
+    }
 
-    static string PerOsSummaryProblems(string deleted, string self) => PerOsSummary(deleted, self).Problems;
+    static string PerOsSummaryProblems(string deleted, string self)
+    {
+        var (windows, unix, problems) = PerOsSummary(deleted, self);
+        if (problems.Length > 0) return problems;
+        return (windows == WindowsSummaryWarning ? "" : "the Windows step summary can be warning " + N(windows) + ", not the pinned " + N(WindowsSummaryWarning) + "; ")
+            + (unix == UnixSummaryWarning ? "" : "the Linux/macOS step summary can be warning " + N(unix) + ", not the pinned " + N(UnixSummaryWarning));
+    }
+
+    // P1-52: "" when name's body (text: DeletedCwdPathTests.cs, comments blanked) opens, as a statement of its own body
+    // and before any console write, an if (OperatingSystem.IsWindows()) { .. return; } block, and its one ::warning::
+    // site comes after that block.
+    static string WindowsSkipProblem(string text, string name)
+    {
+        var body = DeadlineSourceScan.MemberBody(text, "static void " + name + "(", raw: true);
+        if (body is null) return "no " + name + " block";
+        var mask = CodeMask(body);
+        var open = mask.IndexOf('{', StringComparison.Ordinal);
+        var guard = System.Text.RegularExpressions.Regex.Match(mask, @"\bif\s*\(\s*OperatingSystem\s*\.\s*IsWindows\s*\(\s*\)\s*\)\s*\{");
+        if (open < 0 || !guard.Success) return name + " has no if (OperatingSystem.IsWindows()) { block";
+        var depth = 0;
+        for (var k = open; k < guard.Index; k++) depth += mask[k] == '{' ? 1 : mask[k] == '}' ? -1 : 0;
+        if (depth != 1) return name + "'s Windows block is not a statement of its own body";
+        var blockOpen = guard.Index + guard.Length - 1;
+        var close = -1;
+        var level = 0;
+        for (var k = blockOpen; k < mask.Length && close < 0; k++)
+        {
+            if (mask[k] == '{') level++;
+            else if (mask[k] == '}' && --level == 0) close = k;
+        }
+        if (close < 0) return name + "'s Windows block is not closed";
+        var inner = DeadlineSourceScan.Collapsed(mask[(blockOpen + 1)..close]);
+        if (!inner.EndsWith("return;", StringComparison.Ordinal)) return name + "'s Windows block does not end with return;";
+        if (System.Text.RegularExpressions.Regex.IsMatch(mask[open..close], @"\bConsole\s*\.")) return name + " writes to the console before or in its Windows return";
+        var sites = new List<int>();
+        for (var at = body.IndexOf("::warning::", StringComparison.Ordinal); at >= 0; at = body.IndexOf("::warning::", at + 1, StringComparison.Ordinal)) sites.Add(at);
+        return sites.Count == 1 && sites[0] > close ? "" : name + " has " + N(sites.Count) + " ::warning:: sites, not one after its Windows return";
+    }
+
+    // P1-52: "" when the WindowsOnlyWrites are written on Windows only: the runtime warning under OperatingSystem.IsWindows()
+    // and the link-skip warning only from a LinkOutcome given OperatingSystem.IsWindows(), which warns only when windows.
+    static string WindowsOnlyWriteProblems(string self)
+    {
+        var code = StripCode(self.ReplaceLineEndings("\n"));
+        var flat = string.Concat(code.Where(c => !char.IsWhiteSpace(c)));
+        var problems = new List<string>();
+        if (CountOf(flat, "if(OperatingSystem.IsWindows()&&RuntimeNotice(framework,os)is{}notice)Console.WriteLine(notice);") != 1)
+            problems.Add("the runtime warning is not written under OperatingSystem.IsWindows() once");
+        if (CountOf(flat, "varlink=LinkOutcome(linkCreated,resolvedThroughLink,OperatingSystem.IsWindows(),skipReason);if(link.Warningis{}skipWarning)Console.WriteLine(skipWarning);") != 1)
+            problems.Add("the link-skip warning is not written once from a LinkOutcome given OperatingSystem.IsWindows()");
+        var outcome = MemberBody(code, LinkOutcomeSignature);
+        var outcomeFlat = outcome is null ? "" : string.Concat(outcome.Where(c => !char.IsWhiteSpace(c)));
+        if (!outcomeFlat.Contains("returnwindows?(true,", StringComparison.Ordinal) || !outcomeFlat.EndsWith(":(false,null,record);}", StringComparison.Ordinal)
+            || CountOf(outcomeFlat, "return") != 2)
+            problems.Add("LinkOutcome can warn off Windows");
+        return string.Join("; ", problems);
+    }
 
     // P1-52: "" when the call-chain reader is declared in DeadlineSourceScan.cs alone and its limits are stated there.
     static string CallChainHomeProblems(string self, string scan)
