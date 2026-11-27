@@ -522,3 +522,7 @@ Relay310 (Claude, cloud scheduled) closed 2026-11-27; LOCK FREE. Merged P3-56, P
 ## Relay311 (2026-11-27)
 
 Relay311 (Claude, cloud scheduled) closed 2026-11-27; LOCK FREE. Merged P10-60, P6-59, P7-60 (test-only; review approve, 0 blockers). Progress 462/481 (96.0 %). main = bd5bc425 (CI 46011283295 green). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21, git pull).
+
+## Relay312 (2026-11-27)
+
+Relay312 (Claude, cloud scheduled) closed 2026-11-27; LOCK FREE. Merged P1-52, P5-46, P2-51 (test-only; review approve, 0 blockers). Progress 465/484 (96.1 %). main = 46affdf3 (CI 46029549202 green). No new owner action required; pending items above unchanged (ADR0010, ADR0011, -Catalogue run, N21, git pull).
