@@ -404,6 +404,13 @@ internal static class TwiceReadToolTests
     // escaped '+' is also checked on the code-route request; a provenance addendum names the P5-38 runs. P5-42: Span
     // masks with the shared DeadlineSourceScan.CodeMask (no lexer of its own; raw-string edge self-test: a comment in a
     // raw-string hole, a longer quote run); the RawChild comment and the contract's P5-40 sentence are checked here.
+    // P5-44: section 16's RawChild timeout buffer is read through Drain (early-return mutant there) and its P5-38 encoder
+    // comment names the plus sign without the character (checked here); the no-own-lexer rule also flags code walking
+    // quote runs (QuoteRunWalks: renamed plants caught, comment and string copies not counted). P5-46: this file's P5-38
+    // encoder comment names the sign the same way; the QuoteRunWalks comment lists its four spellings and a '\x22' plant
+    // is caught; QuoteRunWalks also reads tests/cli/SkillListTests.cs, whose quote-run walks all lie in its StripComments;
+    // section 16's PipeProbe gates its second chunk on the drain's state (no sleep) and the zero-timeout outcome is the
+    // name of a passing check (pinned on the source here).
     static void Ambiguity(string root, string work, string dotnet, string cliDll, string mcpDll, Func<string, JsonObject> call, Action<bool, string> check)
     {
         void Check(bool condition, string name) => check(condition, "P5-34 ambiguity twice-read: " + name);
@@ -604,12 +611,14 @@ internal static class TwiceReadToolTests
             }
             // P5-44: the no-own-lexer check catches a renamed copy. OwnLexer is the rule: a declaration named like the
             // removed P5-40 lexer (static string Blank / static int Token, read on CodeMask) or (P5-44) any code that
-            // walks quote runs, i.e. a char literal of the double quote ('"' or the escapes \" \x22 ") in code.
-            // Literals and comments are read through CommentsBlanked and CodeMask, so a quote char inside a string or a
-            // comment (as in the planted lines below) does not count. LIMIT (stated): a lexer that compares against the
-            // quote by another spelling ((char)34, a string such as "\"" or its [0]) is not caught. Self-test: this file
-            // as it is has no own lexer; three planted copies of a quote-run walk under a new name (Scan) are caught,
-            // where the P5-42 name rule alone misses them; the same walk inside a comment or a string literal is not.
+            // walks quote runs, i.e. a char literal of the double quote in code, in one of four spellings: '"', '\"',
+            // '\x22' or '\u0022'. Literals and comments are read through CommentsBlanked and CodeMask, so a quote char
+            // inside a string or a comment (as in the planted lines below) does not count. LIMIT (stated): a lexer that
+            // compares against the quote by another spelling ((char)34, a string such as "\"" or its [0]) is not caught.
+            // Self-test: this file as it is has no own lexer; four planted copies of a quote-run walk under a new name
+            // (Scan), one per spelling (P5-46 adds '\x22'), are caught, where the P5-42 name rule alone misses them; the
+            // same walk inside a comment or a string literal is not. REACH (P5-46): this file, and tests/cli/
+            // SkillListTests.cs, whose quote-run walks must all lie inside its own StripComments (checked below).
             static string[] QuoteRunWalks(string source)
             {
                 var text = source.ReplaceLineEndings("\n");
@@ -664,11 +673,11 @@ internal static class TwiceReadToolTests
                     Check(planted.Length > 0 && !OwnLexer(planted),
                         "P5-44: the same quote-run walk inside " + name + " is not counted as an own lexer");
                 }
-                // P5-46: QuoteRunWalks' reach extended to tests/cli/SkillListTests.cs. There every quote-run walk lies inside
-                // its own StripComments (the comment stripper of its read-violation scans, a second lexer that predates
-                // CodeMask; stated, not moved by this task), so no other code in that file walks quote runs; a walk planted
-                // anywhere else in that file is caught. First and Last are StripComments' 1-based lines (brace matched on
-                // CodeMask), the numbers QuoteRunWalks reports.
+                // P5-46: QuoteRunWalks' reach extended to tests/cli/SkillListTests.cs. There every quote-run walk lies
+                // inside its own StripComments (the comment stripper of its read-violation scans, a second lexer that
+                // predates CodeMask; stated, not moved by this task), so no other code in that file walks quote runs; a
+                // walk planted anywhere else in that file is caught. First and Last are StripComments' 1-based lines
+                // (brace matched on CodeMask), the numbers QuoteRunWalks reports.
                 static (string[] Walks, string[] Outside, int First, int Last) CliWalks(string source)
                 {
                     var text = source.ReplaceLineEndings("\n");
@@ -720,8 +729,8 @@ internal static class TwiceReadToolTests
                 Check(comment.Contains("u002B", StringComparison.Ordinal) && comment.Contains("JavaScriptEncoder.Default", StringComparison.Ordinal) && !comment.Contains('+'),
                     "P5-44: the P5-38 encoder comment in tests/cli/SkillListTests.cs section 16 names the plus sign with no literal plus | " + Short(comment));
             }
-            // P5-46: this file's P5-38 encoder comment (above the two-drift Suffix check) and the other comments of its block
-            // through the end of Ambiguity name the plus sign without the character itself, like section 16's.
+            // P5-46: this file's P5-38 encoder comment (above the two-drift Suffix check) and the other comments of its
+            // block through the end of Ambiguity name the plus sign without the character itself, like section 16's.
             {
                 var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
                 var at = Array.FindIndex(lines, line => line.TrimStart().StartsWith("// P5-38: the escaped", StringComparison.Ordinal));
@@ -1030,11 +1039,12 @@ internal static class TwiceReadToolTests
             ("code selection", Args(("code", DuplicateCode)), ["--code", DuplicateCode, "--lock", lockPath], TwoDriftLine, false),
         });
 
-        // P5-38: the escaped '+' is the current encoder behaviour, pinned (no encoder change without a product task). The
-        // refusal detail holds a raw '+'; the verb serializes the envelope with JsonSerializer defaults
-        // (JavaScriptEncoder.Default escapes '+' as \u002B), so the tool text carries the six characters \u002B and no
-        // '+'; McpServer's envelope (UnsafeRelaxedJsonEscaping) writes that text's backslash as \\, so the raw packaged
-        // server line carries \\u002B and no '+'. Twice in process and twice on one packaged server.
+        // P5-38: the escaped plus sign is the current encoder behaviour, pinned (no encoder change without a product task).
+        // The refusal detail holds a raw plus sign (byte 0x2B); the verb serializes the envelope with JsonSerializer
+        // defaults (JavaScriptEncoder.Default escapes the sign as \u002B), so the tool text carries the six characters
+        // \u002B and no plus sign; McpServer's envelope (UnsafeRelaxedJsonEscaping) writes that text's backslash as \\, so
+        // the raw packaged server line carries \\u002B and no plus sign. Twice in process and twice on one packaged
+        // server. P5-46: this comment and the later ones of this block name the sign without the character (checked above).
         {
             const string Suffix = " (+1 more lock issue(s))";
             var refusal = JurisdictionRegistry.LoadLocked(skills, lockPath).Refusal;
@@ -1054,8 +1064,8 @@ internal static class TwiceReadToolTests
             Check(raw.Length == 2 && raw.All(l => l.Contains("(\\\\u002B1 more", StringComparison.Ordinal) && !l.Contains('+')
                     && JsonNode.Parse(l) is JsonObject parsed && Text(parsed) == TwoDriftLine),
                 "P5-38: two drifted packs on one packaged server, twice: each raw line carries \\\\u002B and no '+', its text is the pinned line | " + Short(string.Join(" / ", raw)));
-            // P5-40: the same on the code route (code xx.p534md over the two drifted packs): twice in process (text +,
-            // no '+') and twice on one packaged server (raw line \\u002B, no '+', text the pinned line).
+            // P5-40: the same on the code route (code xx.p534md over the two drifted packs): twice in process (text \u002B,
+            // no plus sign) and twice on one packaged server (raw line \\u002B, no plus sign, text the pinned line).
             var codeRequest = Args(("code", DuplicateCode));
             for (var turn = 1; turn <= 2; turn++)
             {
