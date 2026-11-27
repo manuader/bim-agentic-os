@@ -2444,3 +2444,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay309
 - 2026-11-27T07:53:27Z lock taken (session_014pxpsSgvcupKJgun1kNzHq relay309; was FREE, relay308 released 2026-11-27T07:39:03Z)
+- 2026-11-27T07:54:04Z picked P3-55 (phase 3), P4-44 (phase 4), P6-58 (phase 6) — oldest-touched (relay305); P7-59 serializes with P4-44 and P6-59 with P6-58 (left); disjoint files (tests/cli/InternalErrorDelegationTests.cs P3-29 section; tests/packaging/test-package.ps1 P4-31..P4-43 section; ci.yml P6-46 step + tests/cad/tools/minsert_ezdxf_centres.py + tests/cad/MinsertEzdxfTests.cs). Workers spawned; heartbeat loop in background.
