@@ -2471,3 +2471,4 @@ Finalsource287014c plusd159594 evidence pushed. CI39904073090 all4jobs success, 
 
 ## Relay312
 - 2026-11-27T14:53:52Z lock taken (session_014pxpsUF9dEHZeupL5aEjKi relay312; was FREE, relay311 released 2026-11-27T14:23:49Z)
+- 2026-11-27T14:54:10Z picked P1-52 (phase 1), P5-46 (phase 5), P2-51 (phase 2) — oldest-touched (relay308); P1-53 serializes with P1-52 and P5-47 with P5-46 (left); disjoint files (tests/cli/RevitCommandDeadlineTests.cs + DeadlineSourceScan.cs call-chain helpers; tests/mcp/TwiceReadToolTests.cs + tests/cli/SkillListTests.cs PipeProbe; tests/mirror-journal macOS helpers). Workers spawned; heartbeat loop in background.
