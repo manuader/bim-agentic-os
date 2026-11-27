@@ -648,7 +648,7 @@ internal static class TwiceReadToolTests
                 };
                 Check(classAt >= 0 && !OwnLexer(hereSource) && QuoteRunWalks(hereSource).Length == 0,
                     "P5-44: tests/mcp/TwiceReadToolTests.cs as it is has no own lexer (no Blank or Token declaration, no code walking quote runs) | " + string.Join(", ", QuoteRunWalks(hereSource)));
-                foreach (var quote in new[] { "'\"'", "'\\\"'", "'\\u0022'" })
+                foreach (var quote in new[] { "'\"'", "'\\\"'", "'\\x22'", "'\\u0022'" })
                 {
                     var planted = Planted(Walk(quote));
                     Check(planted.Length > 0 && OwnLexer(planted) && !NamedLexer(planted),
@@ -664,6 +664,40 @@ internal static class TwiceReadToolTests
                     Check(planted.Length > 0 && !OwnLexer(planted),
                         "P5-44: the same quote-run walk inside " + name + " is not counted as an own lexer");
                 }
+                // P5-46: QuoteRunWalks' reach extended to tests/cli/SkillListTests.cs. There every quote-run walk lies inside
+                // its own StripComments (the comment stripper of its read-violation scans, a second lexer that predates
+                // CodeMask; stated, not moved by this task), so no other code in that file walks quote runs; a walk planted
+                // anywhere else in that file is caught. First and Last are StripComments' 1-based lines (brace matched on
+                // CodeMask), the numbers QuoteRunWalks reports.
+                static (string[] Walks, string[] Outside, int First, int Last) CliWalks(string source)
+                {
+                    var text = source.ReplaceLineEndings("\n");
+                    var mask = DeadlineSourceScan.CodeMask(text);
+                    var header = mask.IndexOf("static string StripComments(string text)", StringComparison.Ordinal);
+                    var open = header < 0 ? -1 : mask.IndexOf('{', header);
+                    var close = -1;
+                    for (int at = open, depth = 0; open >= 0 && at < mask.Length; at++)
+                    {
+                        if (mask[at] == '{') depth++;
+                        else if (mask[at] == '}' && --depth == 0) { close = at; break; }
+                    }
+                    var first = header < 0 ? -1 : text[..header].Count(c => c == '\n') + 1;
+                    var last = close < 0 ? -1 : text[..close].Count(c => c == '\n') + 1;
+                    var walks = QuoteRunWalks(source);
+                    var outside = walks.Where(walk => int.Parse(walk.Split(' ')[1], CultureInfo.InvariantCulture) is var line && (line < first || line > last)).ToArray();
+                    return (walks, outside, first, last);
+                }
+                var cliWalks = CliWalks(thereSource);
+                Check(cliWalks.First > 0 && cliWalks.Last > cliWalks.First && cliWalks.Walks.Length > 0 && cliWalks.Outside.Length == 0,
+                    "P5-46: QuoteRunWalks reads tests/cli/SkillListTests.cs too: its " + cliWalks.Walks.Length.ToString(CultureInfo.InvariantCulture)
+                    + " quote-run walks all lie inside its own StripComments (lines " + cliWalks.First.ToString(CultureInfo.InvariantCulture) + ".."
+                    + cliWalks.Last.ToString(CultureInfo.InvariantCulture) + ") | outside: " + string.Join(", ", cliWalks.Outside));
+                var cliLines = thereSource.ReplaceLineEndings("\n").Split('\n');
+                var cliClassAt = Array.FindIndex(cliLines, line => line == "internal static class SkillListTests");
+                var cliPlanted = cliClassAt < 0 ? "" : string.Join("\n", cliLines[..(cliClassAt + 2)].Concat(Walk("'\\x22'")).Concat(cliLines[(cliClassAt + 2)..]));
+                var cliPlantedWalks = CliWalks(cliPlanted);
+                Check(cliPlanted.Length > 0 && cliPlantedWalks.Outside.Length == 1 && cliPlantedWalks.Walks.Length == cliWalks.Walks.Length + 1,
+                    "P5-46: a quote-run walk with '\\x22' planted in tests/cli/SkillListTests.cs outside StripComments is caught | outside: " + string.Join(", ", cliPlantedWalks.Outside));
             }
             // P5-44: tests/cli/SkillListTests.cs section 16's RawChild timeout path reads its buffer through Drain after the
             // copy's wait (not only an Awaited flag): the helper whose early-return mutant the section's pipe self-test reds.
@@ -685,6 +719,51 @@ internal static class TwiceReadToolTests
                 var comment = at < 0 ? "" : string.Join("\n", lines[at..(last + 1)]);
                 Check(comment.Contains("u002B", StringComparison.Ordinal) && comment.Contains("JavaScriptEncoder.Default", StringComparison.Ordinal) && !comment.Contains('+'),
                     "P5-44: the P5-38 encoder comment in tests/cli/SkillListTests.cs section 16 names the plus sign with no literal plus | " + Short(comment));
+            }
+            // P5-46: this file's P5-38 encoder comment (above the two-drift Suffix check) and the other comments of its block
+            // through the end of Ambiguity name the plus sign without the character itself, like section 16's.
+            {
+                var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
+                var at = Array.FindIndex(lines, line => line.TrimStart().StartsWith("// P5-38: the escaped", StringComparison.Ordinal));
+                var end = at < 0 ? -1 : Array.FindIndex(lines, at, line => line.StartsWith("    static void CopyDirectory(", StringComparison.Ordinal));
+                var comment = at < 0 || end < 0 ? "" : string.Join("\n", lines[at..end].Where(line => line.TrimStart().StartsWith("//", StringComparison.Ordinal)));
+                Check(comment.Contains("u002B", StringComparison.Ordinal) && comment.Contains("JavaScriptEncoder.Default", StringComparison.Ordinal)
+                    && comment.Contains("P5-46: ", StringComparison.Ordinal) && !comment.Contains('+'),
+                    "P5-46: the P5-38 encoder comment in tests/mcp/TwiceReadToolTests.cs (and the later comments of its block) names the plus sign with no literal plus | " + Short(comment));
+            }
+            // P5-46: the Ambiguity header (the comment above its declaration) carries a P5-44 and a P5-46 sentence.
+            {
+                var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
+                var at = Array.FindIndex(lines, line => line.StartsWith("    static void Ambiguity(", StringComparison.Ordinal));
+                var first = at;
+                while (first > 0 && lines[first - 1].TrimStart().StartsWith("//", StringComparison.Ordinal)) first--;
+                var header = at < 0 ? "" : string.Join("\n", lines[first..at]);
+                Check(header.StartsWith("    // P5-34: jurisdiction_resolve under lock_path", StringComparison.Ordinal)
+                    && header.Contains("P5-44: ", StringComparison.Ordinal) && header.Contains("P5-46: ", StringComparison.Ordinal),
+                    "P5-46: the Ambiguity header in tests/mcp/TwiceReadToolTests.cs carries a P5-44 and a P5-46 sentence | " + Short(header));
+            }
+            // P5-46: the QuoteRunWalks comment lists the four spellings it searches, each as a char literal.
+            {
+                var lines = hereSource.ReplaceLineEndings("\n").Split('\n');
+                var at = Array.FindIndex(lines, line => line.TrimStart().StartsWith("static string[] QuoteRunWalks(string source)", StringComparison.Ordinal));
+                var first = at;
+                while (first > 0 && lines[first - 1].TrimStart().StartsWith("//", StringComparison.Ordinal)) first--;
+                var comment = at < 0 ? "" : string.Join("\n", lines[first..at]);
+                var spellings = new[] { "'\"'", "'\\\"'", "'\\x22'", "'\\u0022'" };
+                Check(comment.Contains("P5-44: the no-own-lexer check", StringComparison.Ordinal) && spellings.All(spelling => comment.Contains(spelling, StringComparison.Ordinal)),
+                    "P5-46: the QuoteRunWalks comment lists the four spellings " + string.Join(" ", spellings) + " | missing: "
+                    + string.Join(" ", spellings.Where(spelling => !comment.Contains(spelling, StringComparison.Ordinal))) + " | " + Short(comment));
+            }
+            // P5-46: section 16's PipeProbe sends its second chunk behind a gate (a SemaphoreSlim, no sleep) and pins which
+            // drain state opened it; the zero-timeout case's measured outcome is a passing check's name.
+            {
+                var cli = thereSource.ReplaceLineEndings("\n");
+                var probe = DeadlineSourceScan.MemberBody(cli, "PipeProbe(Func<Task, MemoryStream, int, (byte[] Out, bool Copied)> drain)", raw: true) ?? "";
+                Check(probe.Contains("new SemaphoreSlim(", StringComparison.Ordinal) && !probe.Contains("Sleep(", StringComparison.Ordinal)
+                    && cli.Contains("\"P5-46: the PipeProbe gate opened on the drain's state", StringComparison.Ordinal)
+                    && cli.Contains("\"P5-46: the zero-timeout case's \" + outcome", StringComparison.Ordinal),
+                    "P5-46: SkillListTests.cs PipeProbe gates its second chunk with a SemaphoreSlim (no sleep) and pins the drain state that opened it; the zero-timeout outcome is a passing check's name | PipeProbe "
+                    + Short(probe));
             }
             // P5-38 mutant self-test: a copy of tests/cli/SkillListTests.cs whose section-16 builder grew by one line (the
             // terminating ';' moved to an added `+ "..."` line) must fail the pin, for the Sidecar and for the Manifest.
