@@ -3205,6 +3205,45 @@ internal static class GeneratePrototypesTests
         return n < end && code[n] == ':' && !(n + 1 < end && code[n + 1] == ':');
     }
 
+    // P7-60: how many readings of code parse as conditionals: each depth-0 ?[ starting a collection branch
+    // (ConditionalQuestion with collections) is read either as a nested conditional or as an element access, and a reading
+    // parses when its depth-0 conditional ? and : (not ?? ?. :: nor a nullable type's ?) pair up as brackets do (every :
+    // closes an open ?, none is left open). It checks the conditional structure only (operands are not parsed); -1 beyond
+    // 16 such ?[.
+    static int ConditionalReadings(string code)
+    {
+        var marks = new List<(bool Colon, bool Choice)>();
+        var depth = 0;
+        for (var i = 0; i < code.Length; i++)
+        {
+            var c = code[i];
+            if (c is '(' or '[' or '{') depth++;
+            else if (c is ')' or ']' or '}') depth--;
+            else if (depth > 0) continue;
+            else if (c == '?' && i + 1 < code.Length && code[i + 1] == '?') i++;
+            else if (c == '?' && ConditionalQuestion(code, i, code.Length, false)) marks.Add((false, false));
+            else if (c == '?' && ConditionalQuestion(code, i, code.Length, true)) marks.Add((false, true));
+            else if (c == ':' && !(i + 1 < code.Length && code[i + 1] == ':') && !(i > 0 && code[i - 1] == ':')) marks.Add((true, false));
+        }
+        var choices = marks.Count(m => m.Choice);
+        if (choices > 16) return -1;
+        var readings = 0;
+        for (var set = 0; set < 1 << choices; set++)
+        {
+            var open = 0;
+            var k = 0;
+            var parses = true;
+            foreach (var (colon, choice) in marks)
+            {
+                if (colon) { if (--open < 0) { parses = false; break; } }
+                else if (!choice) open++;
+                else if (((set >> k++) & 1) == 1) open++;
+            }
+            if (parses && open == 0) readings++;
+        }
+        return readings;
+    }
+
     // P7-54: whether the + or - after the character at last is an exponent's sign: last is e / E ending a decimal numeric
     // literal (1e-5, 2.5E+3, 1_0e-5; not a name nor a hex 0x1e, whose - is a subtraction).
     // P7-56: the walk back crosses letters, digits, _ and . (so 2.5e and .5e are whole), and the walked token must then be a
@@ -4738,6 +4777,53 @@ internal static class GeneratePrototypesTests
             Check(mutated is not null && (named ? problems.Any(p => p.Contains(LambdaCalled, StringComparison.Ordinal)) : !problems.Any(p => p.Contains("reaches test", StringComparison.Ordinal))),
                 "P7-58 reach self-test: " + label + (named ? " is rejected for " + LambdaCalled : " names no problem of test"),
                 (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-60 (ag): a null-forgiven call test!(0) (also spaced test! (0), test !(0)) of a lambda's parameter is a call
+        // and is named, while (test)!(0) stays the stated gap above (a cast of !(0)).
+        var forgivenCallMutants = new (string Label, (string Pattern, string Replacement)[] Edits)[]
+        {
+            ("(ag) a lambda's parameter called null-forgiven test!(0)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test!(0); run(() => 0); } static void RequireUnixRegular(") }),
+            ("(ag) a lambda's parameter called null-forgiven spaced test! (0)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test! (0); run(() => 0); } static void RequireUnixRegular(") }),
+            ("(ag) a lambda's parameter called null-forgiven spaced test !(0)", new[] { (ReadBytesCall, Poke),
+                (RequireRegular, "static void Poke(string path) { Func<Func<int>, int> run = test => test !(0); run(() => 0); } static void RequireUnixRegular(") }),
+        };
+        foreach (var (label, edits) in forgivenCallMutants)
+        {
+            var mutated = Mutate(followed, edits);
+            var problems = mutated is null ? new List<string>() : ExecuteWriteProblems(write, command, mutated);
+            Check(mutated is not null && problems.Any(p => p.Contains(LambdaCalled, StringComparison.Ordinal)), "P7-60 reach self-test: " + label + " is rejected for " + LambdaCalled,
+                (mutated is null ? "an anchor does not match once; " : "") + Problems(problems));
+        }
+
+        // P7-60 (ag): a collection branch first, c ? b ?[x] : a?[0] : d, is pinned as Values reads it: counting both ?[
+        // as nested leaves the outer : unmatched, so the branch is read with both as element accesses, b ?[x] is the true
+        // branch and a?[0] : d the false one, a nested conditional (c ? b?[x] : (a ? [0] : d)). Claim (not checked against
+        // the compiler here): this is Roslyn's reading too, since its parser nests a ?[ whose bracket is followed by : and,
+        // when a conditional's : is then not left, reparses that conditional's true branch with every ?[ an element access.
+        var firstCollectionTexts = new (string Label, string Code, string[] Expected)[]
+        {
+            ("a collection branch first c ? b ?[x] : a?[0] : d reads b ?[x] as an element access", "c ? b ?[x] : a?[0] : d",
+                new[] { "c ? b ?[x] : a?[0] : d", "b ?[x]", "a?[0] : d", "[0]", "d" }),
+        };
+        ValueSelfTests("P7-60 value self-test", firstCollectionTexts.Select(r => (r.Label, r.Code, (bool?)null, (string[]?)r.Expected)));
+        // Checked, not claimed: ConditionalReadings counts the nested / element-access choices of every ?[ under which the
+        // conditional ? and : pair up. The P7-58 mixed branch parses only with both ?[ nested; the collection-first branch
+        // above and section ae's c ? a?[0] : b ?[x] : test parse two ways each (Values pins one of them).
+        var readingTexts = new (string Label, string Code, int Readings)[]
+        {
+            ("the mixed branch c ? a?[0] : b ?[x] : test : d", "c ? a?[0] : b ?[x] : test : d", 1),
+            ("the collection-first branch c ? b ?[x] : a?[0] : d", "c ? b ?[x] : a?[0] : d", 2),
+            ("the element access before a nested conditional c ? a?[0] : b ?[x] : test", "c ? a?[0] : b ?[x] : test", 2),
+            ("a plain conditional c ? a : test", "c ? a : test", 1),
+            ("an unmatched colon c ? a : b : test", "c ? a : b : test", 0),
+        };
+        foreach (var (label, text, readings) in readingTexts)
+        {
+            var counted = ConditionalReadings(text);
+            Check(counted == readings, "P7-60 reading self-test: " + label + " parses " + readings + " way(s)", "counted " + counted);
         }
 
         // b. The one-copy ForcedRun pin through delegates, the caller's lambda, generic, qualified and method-group calls.
