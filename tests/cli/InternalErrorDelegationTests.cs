@@ -441,13 +441,14 @@ internal static class InternalErrorDelegationTests
         // case the checker already caught when it was added carries no mark, and a clean control ("is clean") never does.
         // P3-51: the marks are pinned per row (plantedByRow below, asserted): each pinned label is a visible failure
         // annotation of its row's red run. Evidence runs, one line per row (below the cap note).
-        // P3-55: named limit AnnotationCap: GitHub shows at most 10 error, 10 warning and 10 notice annotations per step (and 50 per job)
-        // (P3-53 said 10 per job; the 10 is the constant AnnotationCap below, checked against this line). Each ci.yml
-        // job runs tests/cli from one step (checked below), so a job shows at most AnnotationCap of its FAIL errors, and
-        // a run's annotations are the only failure evidence (its logs cannot be downloaded). A caught case past the cap
-        // (its row's red run failed more than AnnotationCap checks in that step and its label is not among those shown)
-        // is not marked: it carries "(planted)" only once a red run with at most AnnotationCap failures shows it. Every
-        // row below fits the cap (each at most AnnotationCap labels; the largest, P3-35, pins 8; both asserted).
+        // P3-55: named limit AnnotationCap: GitHub shows at most 10 error, 10 warning and 10 notice annotations per step
+        // (and 50 per job; P3-53 said 10 per job; the 10 is the constant AnnotationCap below, checked against this note).
+        // Each ci.yml job runs tests/cli from one step (checked below, by the textual keys of named limit
+        // CliInvocationKeys), so a job shows at most AnnotationCap of its FAIL errors, and a run's annotations are the
+        // only failure evidence (its logs cannot be downloaded). A caught case past the cap (its row's red run failed more
+        // than AnnotationCap checks in that step and its label is not among those shown) is not marked: it carries
+        // "(planted)" only once a red run with at most AnnotationCap failures shows it. Every row below fits the cap (each
+        // at most AnnotationCap labels; the largest, P3-35, pins 8; both asserted).
         //   P3-29 red 44882607530: stored block lambda; nested in a block inside a stored block lambda; stored anonymous
         //         method; stored anonymous method with parameters (WorkProbe). "passed as an argument" is not among its
         //         visible failures, so its mark is dropped (P3-51).
@@ -758,7 +759,7 @@ internal static class InternalErrorDelegationTests
             // `dotnet test` with --project naming tests/cli (also ./tests/cli, a trailing slash or tests/cli/Bim.Cli.Tests.csproj,
             // either slash), or scripts/verify.ps1 (also ./scripts/verify.ps1). The keys are textual: a step reaching tests/cli
             // through a variable, another script, a solution or a command split over lines is not counted (self-tests below).
-            static int CliSteps(string text) => System.Text.RegularExpressions.Regex.Matches(text, @"dotnet run --project tests/cli\b|\./scripts/verify\.ps1\b").Count;
+            static int CliSteps(string text) => System.Text.RegularExpressions.Regex.Matches(text, @"\bdotnet\s+(?:run|test)\b[^\n]*?\s--project\s+[""']?(?:\./)?tests[/\\]cli(?:[/\\](?:Bim\.Cli\.Tests\.csproj)?)?(?![\w/\\.-])|(?<![\w/.-])(?:\./)?scripts/verify\.ps1\b").Count;
             var testSteps = jobStarts.Select((job, i) => (job.Name, Count: CliSteps(workflow[job.At..(i + 1 < jobStarts.Count ? jobStarts[i + 1].At : workflow.Length)]))).ToArray();
             var verifyRuns = System.Text.RegularExpressions.Regex.Matches(File.ReadAllText(Path.Combine(root, "scripts", "verify.ps1")), @"""\$root/tests/cli""").Count;
             var stepCounts = string.Join(", ", testSteps.Select(j => j.Name + ": " + j.Count.ToString(CultureInfo.InvariantCulture)));
