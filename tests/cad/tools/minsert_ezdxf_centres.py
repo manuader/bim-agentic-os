@@ -65,6 +65,7 @@ import io
 import math
 import os
 import re
+import subprocess
 import sys
 
 import ezdxf
@@ -1136,14 +1137,21 @@ def _nudged(source, generated, names):
     return found[0].group(0), found[0].group(1) + repr(math.nextafter(values[0], math.inf)) + ", "
 
 
+# P6-58: the prefix of the stale line, defined once: _stale_line and the self-tests use it, and `--check --stale-prefix`
+# prints it for the CI step, which greps for it.
+STALE_PREFIX = "pinned C-extension drift rows no longer drifting: "
+
+
 def _stale_line(names):
     # P6-56: the line naming pinned rows that stopped drifting; check_main prints it and `--check --stale-line NAME...`
     # prints it alone, for the CI step's planted stale line.
-    return "pinned C-extension drift rows no longer drifting: " + ", ".join(names) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")"
+    return STALE_PREFIX + ", ".join(names) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")"
 
 
 def _listed(line, marker):
-    # P6-56: the names listed after marker in line, up to the next "; " or " (" (any position in the list).
+    # P6-56: the names listed after marker in line, up to the next "; " or " (" (any position in the list). P6-58:
+    # the list is cut at " (" and "; " and split at ", ", a limit: a name containing one is cut there; no C_EXT_DRIFT
+    # name contains one (self-tested in _self_tests).
     return line.split(marker, 1)[1].split(" (")[0].split("; ")[0].split(", ") if marker in line else []
 
 
@@ -1199,11 +1207,12 @@ def _self_tests(generated, source, cs_path):
         ("an unused row committed under the C extensions", '        ("K2", "TG", ', '        ' + str(unused_line) + '\n        ("K2", "TG", ', 1, "kept under the C extensions: listed as unused but committed: ", None),
         # P6-54: this plant discriminates only under the C extensions: in the pure-Python run (c_ext forced) no pinned
         # row drifts, so C1>NB is named as no longer drifting with or without the plant.
-        ("a pinned row that stops drifting under the C extensions", pinned_old[0] if len(pinned_old) == 1 else "<C1>NB row>", '        ' + str(pinned_line), 0, "pinned C-extension drift rows no longer drifting: ", None),
+        ("a pinned row that stops drifting under the C extensions", pinned_old[0] if len(pinned_old) == 1 else "<C1>NB row>", '        ' + str(pinned_line), 0, STALE_PREFIX, None),
         # P6-54: a pinned row that drifts and is committed twice is not a drifting row (two committed rows not produced):
         # its failures are kept and fail, and it is listed as kept as failures, not as no longer drifting.
         ("a pinned row drifting and committed twice under the C extensions", twice_old, twice_new + "\n" + twice_new, 1, "kept under the C extensions: committed twice: ", None),
     ]
+    stale_printed = None
     for label, old, new, status, line, unnamed in c_plants:
         if source.count(old) != 1 or unused_line is None or pinned_line is None:
             failures.append("self-test " + label + ": the planted text is not found exactly once: " + old)
@@ -1215,8 +1224,9 @@ def _self_tests(generated, source, cs_path):
         printed = [l for l in lines if l.startswith(line)]
         if label.startswith("a pinned row that stops"):
             printed = [l for l in printed if "C1>NB" in _listed(l, "no longer drifting: ")]
+            stale_printed = printed[0] if len(printed) == 1 else None
         if label.startswith("a pinned row drifting"):
-            stale = [l for l in lines if l.startswith("pinned C-extension drift rows no longer drifting: ")]
+            stale = [l for l in lines if l.startswith(STALE_PREFIX)]
             # P6-56: C1>NB anywhere in the kept-as-failures list (not only first in C_EXT_DRIFT).
             listed = [l for l in lines if l.startswith("C-extension drift: ") and "C1>NB" in _listed(l, "; kept as failures: ")]
             printed = printed if listed and not any("C1>NB" in _listed(l, "no longer drifting: ") for l in stale) else []
@@ -1225,6 +1235,26 @@ def _self_tests(generated, source, cs_path):
         print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(got) + ")")
         if not caught:
             failures.append("self-test " + label + ": not caught as exit " + str(status) + " with " + line + "; got exit " + str(got) + ": " + " | ".join(lines[-6:]))
+    # P6-58: the --stale-line and --stale-prefix modes, run as the CI step runs them (a child Python, -I): the stale line
+    # must equal the one check_main printed for the stop-drifting plant above (the names _listed reads from it) and
+    # start with STALE_PREFIX, which --stale-prefix must print alone.
+    stale_names = _listed(stale_printed, "no longer drifting: ") if stale_printed else []
+    cli = [
+        ("the --stale-line mode", ["--stale-line"] + stale_names, stale_printed),
+        ("the --stale-prefix mode", ["--stale-prefix"], STALE_PREFIX),
+    ]
+    for label, args, want in cli:
+        run = subprocess.run([sys.executable, "-I", os.path.abspath(__file__), "--check"] + args, capture_output=True, text=True)
+        got = run.stdout[:-1] if run.stdout.endswith("\n") else run.stdout
+        caught = want is not None and run.returncode == 0 and got == want and got.startswith(STALE_PREFIX)
+        print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(run.returncode) + ")")
+        if not caught:
+            failures.append("self-test " + label + ": not caught as exit 0 printing " + repr(want) + "; got exit " + str(run.returncode) + ": " + repr(got) + " " + repr(run.stderr[-300:]))
+    # P6-58: _listed cuts a list at " (" and "; " and splits it at ", "; a C_EXT_DRIFT name containing one would be cut.
+    cut = [d for d in C_EXT_DRIFT for sep in (" (", "; ", ", ") if sep in d]
+    print("self-test planted the _listed separator limit on the C_EXT_DRIFT names: " + ("caught" if not cut else "NOT caught") + " (" + str(len(cut)) + " names)")
+    if cut:
+        failures.append("self-test _listed limit: C_EXT_DRIFT names containing a separator: " + ", ".join(cut))
     return failures
 
 
@@ -1275,6 +1305,9 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--check"]:
         if sys.argv[2:3] == ["--stale-line"]:
             print(_stale_line(sys.argv[3:]))
+            sys.exit(0)
+        if sys.argv[2:3] == ["--stale-prefix"]:
+            print(STALE_PREFIX)
             sys.exit(0)
         sys.exit(check_main(sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "MinsertEzdxfTests.cs")))
     main()
