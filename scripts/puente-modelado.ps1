@@ -58,11 +58,11 @@ $originFile = Join-Path $bim 'puente-origenes.txt'
 if (!(Test-Path -LiteralPath $originFile)) {
     Set-Content -LiteralPath $originFile -Value @(
         '# Orígenes web que pueden usar el puente (uno por línea).'
-        'https://oficina-virtual-ezequiel-ader.vercel.app'
-        'https://oficina-virtual-indol.vercel.app'
-        'http://localhost:3000')
+        'http://localhost:5180')
 }
-$allowed = @(Get-Content -LiteralPath $originFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and !$_.StartsWith('#') }) + $Origins
+# La oficina virtual (local en el 5180 y el Site central) siempre está permitida, aunque el archivo sea de una versión vieja.
+$defaultOrigins = @('http://localhost:5180', 'http://127.0.0.1:5180', 'https://oficina-virtual-ezequiel-ader.vercel.app', 'https://oficina-virtual-indol.vercel.app')
+$allowed = @(Get-Content -LiteralPath $originFile | ForEach-Object { $_.Trim() } | Where-Object { $_ -and !$_.StartsWith('#') }) + $defaultOrigins + $Origins
 
 $extensions = @('.pdf', '.dxf', '.dwg', '.png', '.jpg', '.jpeg', '.webp', '.txt', '.md')
 
