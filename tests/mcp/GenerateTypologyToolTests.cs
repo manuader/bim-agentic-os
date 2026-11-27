@@ -1340,6 +1340,34 @@ internal static class GenerateTypologyToolTests
                 (Pad + "- name: Bob's step\n" + Pad + "  run: |+\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- name: Bob's step\n" + Pad + "  run: >\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
                 (Pad + "- name: Bob's step\n" + Pad + "  run: |-\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
+                // P3-56: a block header followed by a YAML # comment is a block header; the folded >- and >+ headers open a block.
+                (Pad + "- name: Bob's step\n" + Pad + "  run: | # note\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |- # don't\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: > # note\n" + Pad + "    grep PASS \"$out\" | cut -c1-9 || true", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: | # note\n" + Pad + "    grep -q PASS \"$out\"\n" + Pad + "  env: { P: grep x | cut }", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: >-\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: >+\n" + Pad + "    grep PASS \"$out\" | cut -c1-9", 1),
+                // P3-56: a grep followed by && inside a group piped onward counts when its and-list ends the group (bash -e
+                // ignores the failure inside the and-list; the group's status carries it); a ; and another command after
+                // the and-list drop it (checked against bash -eo pipefail).
+                (Pad + "{ grep PASS \"$out\" && echo; } | cut -c1-9", 1),
+                (Pad + "( grep PASS \"$out\" && echo ) | cut -c1-9", 1),
+                (Pad + "{ echo; grep PASS \"$out\" && echo; } | cut -c1-9", 1),
+                (Pad + "{\n" + Pad + "  grep PASS \"$out\" &&\n" + Pad + "    echo\n" + Pad + "} | cut -c1-9", 1),
+                (Pad + "{ grep PASS \"$out\" && echo; } | cut -c1-9 || true", 0),
+                (Pad + "{ grep PASS \"$out\" && echo || true; } | cut -c1-9", 0),
+                (Pad + "{ grep PASS \"$out\" && echo; echo; } | cut -c1-9", 0),
+                (Pad + "{ grep PASS \"$out\" && echo | cat; echo; } | cut -c1-9", 0),
+                (Pad + "{ grep -q PASS \"$out\" && echo; }", 0),
+                // P3-56: the YAML block indentation is removed first, so a # after blanks on a continued line is a comment
+                // (as in bash: a quote or guard there is inert) and a # first on it is text (a quote there opens).
+                (Pad + "echo a\\\n" + Pad + "  # don't\n" + Pad + "tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS\\\n" + Pad + "  # || true", 1),
+                (Pad + "tail -n 5 \"$out\" | grep PASS\\\n" + Pad + "# || true", 0),
+                (Pad + "echo a\\\n" + Pad + "#b'x | y' | grep PASS", 1),
+                (Pad + "echo a\\\n" + Pad + "#b'\n" + Pad + "grep x | cut'", 0),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |\n" + Pad + "    echo a\\\n" + Pad + "      # don't\n" + Pad + "    tail -n 5 \"$out\" | grep PASS", 1),
+                (Pad + "- name: Bob's step\n" + Pad + "  run: |\n" + Pad + "    echo a\\\n" + Pad + "    #b'x | y' | grep PASS", 1),
             };
             var failedSelfTests = selfTests.Where(t => BareGrepPipes(t.Line) != t.Bare).Select(t => t.Line.Trim().Replace("\n", " <NL> ", StringComparison.Ordinal)).ToList();
             Check(macTail.Contains("set -o pipefail", StringComparison.Ordinal) && macStepText.Contains(NoticeGrep, StringComparison.Ordinal)
@@ -1384,13 +1412,26 @@ internal static class GenerateTypologyToolTests
                 && !paragraph.Contains("a single-line `run:` is not recognized", StringComparison.Ordinal)
                 && !paragraph.Contains("is read as a comment (bash joins it to the previous word)", StringComparison.Ordinal),
                 "P3-54 docs/contracts P3-34 paragraph: piped groups, # after a continued word, arithmetic shift, run header forms, the P3-52 runs (P3-52 limits superseded) | " + Short(paragraph));
+            // P3-56: the contract states the block header forms (with a YAML comment, the folded >- and >+), the reconciled
+            // block-header sentence, the && rule in a piped group, the removed block indentation (a quote after a # read
+            // as text), and cites the P3-54 runs; the superseded P3-48/P3-50 and P3-54 wordings are negatively pinned.
+            Check(paragraph.Contains("only a YAML `run:` block header is a block header, never joined (any other line ending in `|` is joined)", StringComparison.Ordinal)
+                && paragraph.Contains("a `run: |`, `run: |-`, `run: |+`, `run: >`, `run: >-` or `run: >+` line, also with a YAML `#` comment after the indicator, opens a block (a folded `>`, `>-` or `>+` block is scanned line by line, not folded)", StringComparison.Ordinal)
+                && paragraph.Contains("a grep followed by `&&` inside a group piped onward counts when its and-list ends the group (`{ grep x && echo; } | cut`): bash -e ignores the failure inside the and-list, so only the group's status carries it; an and-list followed by `;` and another command in its group is not counted (`{ grep x && echo; echo; } | cut`: the failure is dropped), unless the grep was already piped or substituted or the and-list ends an inner group (both counted, safe side)", StringComparison.Ordinal)
+                && paragraph.Contains("the YAML block indentation is removed first (the block's first non-blank line sets it; a text without a run header loses its least indentation), so a `#` after blanks on a continued line is a comment as in bash, and a quote opened after a `#` read as text opens as in bash (a quote in a comment opens nothing)", StringComparison.Ordinal)
+                && paragraph.Contains("P3-54 relay306 CI red 45925602540, green 45925705461", StringComparison.Ordinal)
+                && !paragraph.Contains("only a YAML `run: |` line is a block header", StringComparison.Ordinal)
+                && !paragraph.Contains("a `run: |`, `run: |-`, `run: |+` or `run: >` line opens a block", StringComparison.Ordinal)
+                && !paragraph.Contains("the YAML block indentation is kept", StringComparison.Ordinal),
+                "P3-56 docs/contracts P3-34 paragraph: block header forms with a comment and >-/>+, reconciled header sentence, && in a piped group, block indentation removed, the P3-54 runs (P3-54 wordings superseded) | " + Short(paragraph));
             // P3-50: the contract states the multi-line groups, the quoting across lines, the trailing-; rule and the run
             // block header, cites the P3-48 runs, and pins the number of checks this section runs (the last check is this
             // one; the macOS step's notice counts them as PASS lines).
             // P3-52: must equal the number in the contract's "section 9 runs N checks" sentence (docs/contracts/module-contracts.md,
             // P3-34 paragraph); a new section-9 check bumps both together.
             // P3-54: 43 → 44 (the P3-54 contract check).
-            const int SectionNineChecks = 44;
+            // P3-56: 44 → 45 (the P3-56 contract check).
+            const int SectionNineChecks = 45;
             Check(paragraph.Contains("quoting is followed across lines (a single- or double-quoted string, or a backslash-newline inside double quotes, spanning lines stays one masked word)", StringComparison.Ordinal)
                 && paragraph.Contains("a `{ ... }`, `( ... )` or `$( ... )` group left open at a line end is joined up to its closing line (each newline inside it read as `;`), so a pipe or guard on the closing line counts", StringComparison.Ordinal)
                 && paragraph.Contains("a line ending in `;` is joined inside a group and ends the command outside one", StringComparison.Ordinal)
