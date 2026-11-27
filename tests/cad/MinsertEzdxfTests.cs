@@ -128,9 +128,11 @@ using Point2 = Bim.Cad.Point2;
 // kept beside the drift failures, after "kept under the C extensions: ", and fails; a pinned row that stops drifting is
 // named after "pinned C-extension drift rows no longer drifting: ", which the step turns into a warning annotation;
 // check_main's C-extension path is self-tested on planted files (a new drift row, a missing table, an extra row, an
-// unused row committed, a pinned row that stops drifting). The step's notice prints the CPU model (from /proc/cpuinfo)
-// and the exact Python version (all of sys.version). This paragraph and its copy in the other file are compared whole
-// by RunJustified (comment markers, line breaks and the lead-in parenthetical aside).
+// unused row committed, a pinned row that stops drifting). P6-54: a pinned row with kept failures is not named as no
+// longer drifting but listed after "; kept as failures: " on the "C-extension drift: " line, self-tested by planting a
+// pinned row drifting and committed twice (exit 1, its failures kept). The step's notice prints the CPU model (from
+// /proc/cpuinfo) and the exact Python version (all of sys.version). This paragraph and its copy in the other file are
+// compared whole by RunJustified (comment markers, line breaks and the lead-in parenthetical aside).
 internal static class MinsertEzdxfTests
 {
     private const double Eps = 1e-6;
@@ -2029,17 +2031,21 @@ internal static class MinsertEzdxfTests
 
             // P6-54: the stale-row wiring is one shell function, self-checked by the step on a planted stale line (the
             // annotation it must yield, else the step fails) before it is applied to the C-extension run's output; the
-            // planted line starts with the prefix the generator prints.
-            const string StaleWarn = "stale_warn() { grep '^pinned C-extension drift rows no longer drifting: ' | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
-            const string StalePlanted = "planted='pinned C-extension drift rows no longer drifting: C1>NB (planted by the step)'";
+            // planted line starts with the prefix the generator prints. P6-56: the function's grep is guarded and the planted
+            // line is printed by the generator (pinned below).
+            const string StaleWarn = "stale_warn() { { grep '^pinned C-extension drift rows no longer drifting: ' || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
+            const string StalePlanted = "planted=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-line 'C1>NB')";
             const string StaleCheck = "if [ \"$(printf '%s\\n' 'differing rows: none' \"$planted\" 'C-extension drift: none' | stale_warn)\" != \"::warning title=ezdxf-check-c-ext-stale::$planted\" ]; then";
             const string StaleApplied = "printf '%s\\n' \"$cext\" | stale_warn\n";
             var staleAt = new[] { StaleWarn, StalePlanted, StaleCheck, StaleApplied }.Select(s => stepText.IndexOf(s, StringComparison.Ordinal)).ToList();
             var staleInOrder = staleAt.All(i => i >= 0) && staleAt.Zip(staleAt.Skip(1), (a, b) => a < b).All(x => x);
             var staleExit = staleAt[2] < 0 ? -1 : stepText.IndexOf("exit 1", staleAt[2], StringComparison.Ordinal);
             var staleFails = staleExit > 0 && staleExit < staleAt[3];
-            var staleUnwired = stepText.Contains("printf '%s\\n' \"$cext\" | grep '^pinned C-extension drift rows no longer drifting: '", StringComparison.Ordinal);
-            c(staleInOrder && staleFails && !staleUnwired && generator.Contains("print(\"pinned C-extension drift rows no longer drifting: \"", StringComparison.Ordinal),
+            // P6-56: the inline grep-to-warning pipeline is gone when the warning's sed is written once (in stale_warn); the
+            // step's cstale grep only counts the stale line's 900-character cut.
+            const string StaleSed = "sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'";
+            var staleUnwired = stepText.IndexOf(StaleSed, StringComparison.Ordinal) != stepText.LastIndexOf(StaleSed, StringComparison.Ordinal);
+            c(staleInOrder && staleFails && !staleUnwired && generator.Contains("return \"pinned C-extension drift rows no longer drifting: \"", StringComparison.Ordinal),
                 "justified: generator: P6-54 the CI step's stale-row grep-to-warning wiring is one function, self-checked on a planted stale line (the step fails unless it yields the warning annotation) before it reads the C-extension run",
                 "positions " + string.Join(",", staleAt.Select(i => i.ToString(CultureInfo.InvariantCulture))) + " fails on mismatch " + staleFails + " inline pipeline left " + staleUnwired);
             // P6-54: the C-extension annotation counts its lines cut at 900 characters.
@@ -2075,9 +2081,9 @@ internal static class MinsertEzdxfTests
             // P6-56: stale_warn exits 0 when no line is stale (grep's no-match guarded), checked by the step under bash
             // -eo pipefail on output with no stale line; the planted stale line is printed by the generator (the function
             // check_main prints it with), not written in the step; and the stale warning's cut at 900 characters is counted.
-            const string StaleWarnGuarded = "stale_warn() { { grep '^pinned C-extension drift rows no longer drifting: ' || true; } | cut -c1-900 | sed 's/^/::warning title=ezdxf-check-c-ext-stale::/'; }";
+            const string StaleWarnGuarded = StaleWarn;
             const string StalePipefail = "if ! quiet=$(set -eo pipefail; printf '%s\\n' 'differing rows: none' 'C-extension drift: none' | stale_warn) || [ -n \"$quiet\" ]; then";
-            const string StaleGenerated = "planted=$(.tools/ezdxf/bin/python -I tests/cad/tools/minsert_ezdxf_centres.py --check --stale-line 'C1>NB')";
+            const string StaleGenerated = StalePlanted;
             const string StaleCounted = "printf '%s\\n' \"$cdiff\" \"$cpick\" \"$clast\" \"$cstale\" | awk 'length > 900'";
             string[] pipefailNeeded = { StaleWarnGuarded, StalePipefail, StaleGenerated, StaleCounted };
             var pipefailAt = pipefailNeeded.Select(s => stepText.IndexOf(s, StringComparison.Ordinal)).ToList();

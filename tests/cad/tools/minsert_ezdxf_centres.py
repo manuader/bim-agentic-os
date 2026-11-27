@@ -31,9 +31,11 @@ other failure (a missing table, an extra, duplicated or unused row, a label) is 
 "kept under the C extensions: ", and fails; a pinned row that stops drifting is named after "pinned C-extension drift
 rows no longer drifting: ", which the step turns into a warning annotation; check_main's C-extension path is
 self-tested on planted files (a new drift row, a missing table, an extra row, an unused row committed, a pinned row
-that stops drifting). The step's notice prints the CPU model (from /proc/cpuinfo) and the exact Python version (all of
-sys.version). This paragraph and its copy in the other file are compared whole by RunJustified (comment markers, line
-breaks and the lead-in parenthetical aside).
+that stops drifting). P6-54: a pinned row with kept failures is not named as no longer drifting but listed after "; kept
+as failures: " on the "C-extension drift: " line, self-tested by planting a pinned row drifting and committed twice
+(exit 1, its failures kept). The step's notice prints the CPU model (from /proc/cpuinfo) and the exact Python version
+(all of sys.version). This paragraph and its copy in the other file are compared whole by RunJustified (comment
+markers, line breaks and the lead-in parenthetical aside).
 
 It builds, with ezdxf's own API, the block RECT and the INSERT/MINSERT entities that MinsertEzdxfTests.Drawing()
 writes by hand (same parameters, listed in CASES), and prints, as C# tuples:
@@ -1122,12 +1124,27 @@ def _nudged(source, generated, names):
     # P6-54: (old, new) text planting a drift of the committed row named names: its first number, found by regex in the
     # committed line, replaced by the next double above this run's generated value, so the row differs with or without
     # the C extensions. (None, None) when the row is not committed exactly once or not generated exactly once.
+    # P6-56: names are all the row's quoted names (a LeafPoints label such as "start" included). Scope of "first":
+    # the first number of the row is the first numeric literal after its quoted names, after "new[] { " when an array
+    # follows them (an outline row such as C1>NB: its first corner x; a Cells row: its centre x), compared with the
+    # generated row's first number; an Axes row (no quoted names) cannot be named.
     prefix = "        (" + ", ".join('"' + n + '"' for n in names) + ", "
     found = list(re.finditer("^(" + re.escape(prefix) + r"(?:new\[\] \{ )?)(-?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?), ", source, re.MULTILINE))
     values = [numbers[0] for _, gnames, numbers in generated if gnames == tuple(names)]
     if len(found) != 1 or len(values) != 1:
         return None, None
     return found[0].group(0), found[0].group(1) + repr(math.nextafter(values[0], math.inf)) + ", "
+
+
+def _stale_line(names):
+    # P6-56: the line naming pinned rows that stopped drifting; check_main prints it and `--check --stale-line NAME...`
+    # prints it alone, for the CI step's planted stale line.
+    return "pinned C-extension drift rows no longer drifting: " + ", ".join(names) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")"
+
+
+def _listed(line, marker):
+    # P6-56: the names listed after marker in line, up to the next "; " or " (" (any position in the list).
+    return line.split(marker, 1)[1].split(" (")[0].split("; ")[0].split(", ") if marker in line else []
 
 
 def _self_tests(generated, source, cs_path):
@@ -1197,11 +1214,12 @@ def _self_tests(generated, source, cs_path):
         lines = out.getvalue().splitlines()
         printed = [l for l in lines if l.startswith(line)]
         if label.startswith("a pinned row that stops"):
-            printed = [l for l in printed if "C1>NB" in l.split(": ", 1)[1].split(" (")[0].split(", ")]
+            printed = [l for l in printed if "C1>NB" in _listed(l, "no longer drifting: ")]
         if label.startswith("a pinned row drifting"):
             stale = [l for l in lines if l.startswith("pinned C-extension drift rows no longer drifting: ")]
-            listed = [l for l in lines if l.startswith("C-extension drift: ") and "; kept as failures: C1>NB" in l]
-            printed = printed if listed and not any("C1>NB" in l.split(": ", 1)[1].split(" (")[0].split(", ") for l in stale) else []
+            # P6-56: C1>NB anywhere in the kept-as-failures list (not only first in C_EXT_DRIFT).
+            listed = [l for l in lines if l.startswith("C-extension drift: ") and "C1>NB" in _listed(l, "; kept as failures: ")]
+            printed = printed if listed and not any("C1>NB" in _listed(l, "no longer drifting: ") for l in stale) else []
         named = unnamed is not None and any(l.startswith("new C-extension drift rows: ") and unnamed in l for l in lines)
         caught = got == status and printed and not named
         print("self-test planted " + label + ": " + ("caught" if caught else "NOT caught") + " (exit " + str(got) + ")")
@@ -1246,7 +1264,7 @@ def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True
               + "; no longer drifting: " + (", ".join(stale) or "none") + "; kept as failures: " + (", ".join(failing) or "none"))
         if stale:
             # P6-52: named on a line of its own, which the CI step turns into a warning annotation.
-            print("pinned C-extension drift rows no longer drifting: " + ", ".join(stale) + " (C_EXT_DRIFT " + ", ".join(C_EXT_DRIFT) + ")")
+            print(_stale_line(stale))
     print("ezdxf " + ezdxf.__version__ + " (C extensions used: " + str(c_ext) + "), numpy " + numpy.__version__ + ": " + str(matched) + " constant rows equal the committed ones, " + str(unused) + " unused, "
           + str(len(committed[0])) + " committed rows all produced unless listed, " + str(len(failures)) + " failures"
           + (" (" + str(expected) + " failure lines under the C extensions: drifting rows judged by C_EXT_DRIFT, the others kept)" if c_ext else ""))
@@ -1255,6 +1273,9 @@ def check_main(cs_path, c_ext=None, source=None, generated=None, self_tests=True
 
 if __name__ == "__main__":
     if sys.argv[1:2] == ["--check"]:
+        if sys.argv[2:3] == ["--stale-line"]:
+            print(_stale_line(sys.argv[3:]))
+            sys.exit(0)
         sys.exit(check_main(sys.argv[2] if len(sys.argv) > 2 else os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "MinsertEzdxfTests.cs")))
     main()
     bulge_main()
