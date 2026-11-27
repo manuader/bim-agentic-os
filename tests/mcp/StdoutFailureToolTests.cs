@@ -455,6 +455,67 @@ internal static class StdoutFailureToolTests
             var oracle19 = Words(cli, "//  19. P5-39", "internal static class SkillListTests");
             Check(oracle19.Contains("the leading System.InvalidOperationException is the wrapper Run's fallback builds", StringComparison.Ordinal),
                 "P5-43: tests/cli/SkillListTests.cs oracle 19 states that the two-level diagnostic's leading System.InvalidOperationException is the wrapper Run's fallback builds | " + Short(oracle19));
+
+            // P5-45 a: one comment-word collapse in this file, the shared CommentWords helper, self-tested on a planted comment.
+            var collapseToken = "StringSplitOptions." + "RemoveEmptyEntries";
+            var helperAt = here.IndexOf("    internal static string CommentWords(string source, string first, string last)\n", StringComparison.Ordinal);
+            var helperEnd = helperAt < 0 ? -1 : here.IndexOf("\n    }\n", helperAt, StringComparison.Ordinal);
+            var collapseAt = here.IndexOf(collapseToken, StringComparison.Ordinal);
+            Check(Count(here, collapseToken) == 1 && helperAt >= 0 && collapseAt > helperAt && collapseAt < helperEnd,
+                "P5-45: this file collapses comment words in one place only, inside the class-level CommentWords helper (no ad-hoc copy in section d) | collapses "
+                + Count(here, collapseToken).ToString(CultureInfo.InvariantCulture) + " helper at " + helperAt.ToString(CultureInfo.InvariantCulture));
+            const string Planted = "class Planted\n{\n    // Planted header (P5-45):   two  spaces\n\t//     indented   continuation\n///triple slash line\n"
+                + "    // last comment line\n    static void Planted(\n}\n";
+            var plantedWords = Words(Planted, "// Planted header (P5-45)", "static void Planted(");
+            Check(plantedWords == "Planted header (P5-45): two spaces indented continuation triple slash line last comment line",
+                "P5-45: the comment-word collapse self-test on a planted comment (markers removed, whitespace runs collapsed, stops before the end-marker line) | " + JsonSerializer.Serialize(plantedWords));
+            Check(Words(Planted, "// Not planted", "static void Planted(") == "" && Words(Planted, "// Planted header (P5-45)", "static void Missing(") == ""
+                && Words(Planted, "// Planted header (P5-45)", "last comment line") == "Planted header (P5-45): two spaces indented continuation triple slash line",
+                "P5-45: the collapse self-test: a missing first or last marker gives the empty text, and the last marker's own line is excluded");
+
+            // P5-45 b: the P5-39 and P5-41 headers of this file are at most 125 columns (the comment width, as P5-43 pins for tests/cli).
+            static string Wide(string source, string first, string last)
+            {
+                var lines = source.Split('\n');
+                var start = Array.FindIndex(lines, line => line.TrimStart().StartsWith(first, StringComparison.Ordinal));
+                var end = start < 0 ? -1 : Array.FindIndex(lines, start, line => line.Contains(last, StringComparison.Ordinal));
+                if (start < 0 || end < 0) return "<header not found>";
+                return string.Join(", ", Enumerable.Range(start, end - start).Where(index => lines[index].Length > 125)
+                    .Select(index => (index + 1).ToString(CultureInfo.InvariantCulture) + " (" + lines[index].Length.ToString(CultureInfo.InvariantCulture) + ")"));
+            }
+            var wide539 = Wide(here, "// P5-39: the remaining MCP stdout edges", "static void RunP5_39(");
+            var wide541 = Wide(here, "// P5-41: the 'mcp stdout failed' stderr line falls back", "static void RunP5_41(");
+            Check(wide539.Length == 0 && wide541.Length == 0,
+                "P5-45: the P5-39 and P5-41 headers of tests/mcp/StdoutFailureToolTests.cs are at most 125 characters per line | P5-39 wider: " + wide539 + "; P5-41 wider: " + wide541);
+            var plantedWide = "x\n// Planted width\n// " + new string('w', 123) + "\n// " + new string('w', 122) + "\nstatic void End(\n";
+            Check(Wide(plantedWide, "// Planted width", "static void End(") == "3 (126)" && Wide(plantedWide, "// Absent", "static void End(") == "<header not found>",
+                "P5-45: the width self-test flags a planted 126-character header line, keeps a 125-character one and refuses a missing header | " + Wide(plantedWide, "// Planted width", "static void End("));
+
+            // P5-45 c: the cross-executable wording pin is stated in both headers.
+            Check(p541.Contains("P5-45: that is a cross-executable pin (tests/mcp reads the tests/cli header; both headers state it)", StringComparison.Ordinal),
+                "P5-45: the P5-41 header states that section d pins tests/cli/SkillListTests.cs wording from tests/mcp (cross-executable) | " + Short(p541));
+            var cliHeader = Words(cli, "// Wording pins, stated (P5-45)", "internal static class SkillListTests");
+            Check(cliHeader.Contains("are pinned from the other test executable, tests/mcp/StdoutFailureToolTests.cs RunP5_41 section d (cross-executable)", StringComparison.Ordinal)
+                && cliHeader.Contains("a tests/cli run alone (the macOS job) does not check them", StringComparison.Ordinal),
+                "P5-45: the tests/cli/SkillListTests.cs header states that its width and oracle 19 wording are pinned from tests/mcp (cross-executable) and not by a tests/cli run alone | " + Short(cliHeader));
+
+            // P5-45 d: the reach of section d, stated in the P5-41 header and read against the workflow.
+            Check(p541.Contains("section d runs only where tests/mcp runs whole, the core (ubuntu-latest) and core-windows (windows-latest) jobs through scripts/verify.ps1", StringComparison.Ordinal)
+                && p541.Contains("the macOS job (ifc-portable, macos-latest) runs tests/mcp with BIM_TEST_P3_38_SECTION=9 only (P3-38 section 9), so it measures no section d check", StringComparison.Ordinal),
+                "P5-45: the P5-41 header names the jobs that measure section d (core, core-windows) and states that the macOS job runs no tests/mcp section but 9 | " + Short(p541));
+            var ciPath = Path.Combine(root, ".github", "workflows", "ci.yml");
+            var ci = File.Exists(ciPath) ? File.ReadAllText(ciPath).ReplaceLineEndings("\n") : "";
+            var verifyPath = Path.Combine(root, "scripts", "verify.ps1");
+            var verify = File.Exists(verifyPath) ? File.ReadAllText(verifyPath).ReplaceLineEndings("\n") : "";
+            Check(ci.Contains("\n  core:\n    runs-on: ubuntu-latest\n", StringComparison.Ordinal) && ci.Contains("\n  core-windows:\n    runs-on: windows-latest\n", StringComparison.Ordinal)
+                && Count(ci, "run: ./scripts/verify.ps1") == 2 && ci.Contains("os: [windows-latest, macos-latest]", StringComparison.Ordinal)
+                && ci.Contains("BIM_TEST_P3_38_SECTION=9 DOTNET_STARTUP_HOOKS=", StringComparison.Ordinal) && Count(ci, "tests/mcp/bin/Release") == 1
+                && verify.Contains("Invoke-EvidenceCommand mcp-contract $Dotnet @('run','--project',\"$root/tests/mcp\"", StringComparison.Ordinal),
+                "P5-45: the stated reach matches the workflow: core (ubuntu-latest) and core-windows (windows-latest) run scripts/verify.ps1, which runs tests/mcp whole; the one macOS tests/mcp run is the BIM_TEST_P3_38_SECTION=9 step");
+
+            // P5-45 e: the duplication left in tests/mcp/TwiceReadToolTests.cs (P5-38) is stated.
+            Check(p541.Contains("tests/mcp/TwiceReadToolTests.cs P5-38 keeps its own inline collapse of the provenance paragraph (a stated duplication", StringComparison.Ordinal),
+                "P5-45: the P5-41 header states the P5-38 inline collapse left in tests/mcp/TwiceReadToolTests.cs | " + Short(p541));
         }
 
         check(failures.Count == 0, "P5-41 mcp stderr fallback: every check passed; failing (" + failures.Count.ToString(CultureInfo.InvariantCulture) + "): " + string.Join(" || ", failures));
