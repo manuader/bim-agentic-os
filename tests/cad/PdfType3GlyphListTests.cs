@@ -838,6 +838,12 @@ internal static class PdfType3GlyphListTests
             C(twoFiles == "CodePins.cs x2,PdfType3GlyphListTests.cs x2" && synthetic == "A.cs x2,B.cs x3,D.cs",
                 "p6-57 per-file stripper count self-test: two files with two or more StripCommentsAndLiterals definitions are both listed as 'name xN' (ordinal order)",
                 "real [" + twoFiles + "] synthetic [" + synthetic + "]");
+            // P6-59 shared-prefix names: "A.cs" (two definitions) sorts before "A.cs b.cs" by file name, although the entry
+            // "A.cs x2" sorts after "A.cs b.cs" as text ('x' > 'b'), so the entries are ordered by name, not by their text.
+            var sharedPrefix = StripperHomes(new[] { ("A.cs b.cs", plantedForwarder), ("A.cs", plantedInPins + plantedForwarder) });
+            C(sharedPrefix == "A.cs x2,A.cs b.cs",
+                "p6-59 'name xN' ordering self-test: entries are in ordinal file-name order, so A.cs x2 comes before A.cs b.cs",
+                "got [" + sharedPrefix + "]");
             // P6-57 definition forms: a generic definition (with or without a where clause), a string? return, a second
             // parameter and a non-static (local) function each count 1. Not counted (stated limits): a declaration without
             // a body (delegate, abstract, partial), a return type written String or System.String or other than string,
@@ -849,6 +855,8 @@ internal static class PdfType3GlyphListTests
                 ("string? return", "    internal static string? StripCommentsAndLiterals(string source) => source;\n", 1),
                 ("second parameter", "    internal static string StripCommentsAndLiterals(string source, bool keepLiterals)\n    {\n        return source;\n    }\n", 1),
                 ("non-static local function", "        string StripCommentsAndLiterals(string source) => source;\n", 1),
+                ("nested generic parameter list (P6-59)", "    static string StripCommentsAndLiterals<T, U<V>>(string source) => source;\n", 1),
+                ("deeper nested generic with a where clause (P6-59)", "    static string StripCommentsAndLiterals<T, U<V<W>>, X>(string source) where T : IList<U<V<W>>>\n    {\n        return source;\n    }\n", 1),
                 ("string? generic with two parameters", "    private static string? StripCommentsAndLiterals<TOptions>(string source, TOptions options) where TOptions : new() => source;\n", 1),
                 ("delegate declaration (no body)", "    internal delegate string StripCommentsAndLiterals(string source);\n", 0),
                 ("call assigned to a string", "        string code = StripCommentsAndLiterals(source);\n", 0),
@@ -953,6 +961,10 @@ internal static class PdfType3GlyphListTests
                 ("with an attribute on the signature line (stated: code above)", "class S\n{\n\n    // the guard comment\n    [Obsolete] private static string? SwallowGuard(string s) => s;\n}\n", null, "code above"),
                 ("under a comment split by a blank line (stated: the part below it)", "class S\n{\n\n    // part one\n\n    // part two\n" + guardDefinition + "}\n", "    // part two\n    ", "comment"),
                 ("under a block comment holding a blank line (stated: code above)", "class S\n{\n\n    /* part one\n\n       part two */\n" + guardDefinition + "}\n", null, "code above"),
+                ("under a [...] line inside a block comment (P6-59: not an attribute)", "class S\n{\n\n    /* the guard comment\n    [Obsolete]\n    */ private static string? SwallowGuard(string s) => s;\n}\n", "    /* the guard comment\n    [Obsolete]\n    */ ", "comment"),
+                ("under a collection-expression line (P6-59: not an attribute)", "class S\n{\n    private int[] xs =\n\n    // the guard comment\n    [1, 2]\n" + guardDefinition + "}\n", null, "code above"),
+                ("under a multi-line attribute (P6-59)", "class S\n{\n\n    // the guard comment\n    [MethodImpl(\n        MethodImplOptions.NoInlining)]\n" + guardDefinition + "}\n", "    // the guard comment\n    ", "comment"),
+                ("directly under a blank line (P6-59)", "class S\n{\n    private int x;\n\n" + guardDefinition + "}\n", null, "no comment"),
             })
             {
                 var got = CommentAbove(sample, guardSignature, out var gotWhy);
